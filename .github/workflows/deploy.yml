@@ -1,0 +1,97 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: azure-deploy-production
+  cancel-in-progress: false
+
+# ADR-005/ADR-009: deploy to the single Azure App Service (Linux, Node 22)
+# via short-lived OIDC federation — no long-lived Azure credentials are
+# stored in GitHub secrets. Requires the one-time human setup documented in
+# docs/deployment/azure-provisioning.md (federated credential + repo
+# secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+# AZURE_WEBAPP_NAME, DATABASE_URL, SESSION_SECRET).
+jobs:
+  quality:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build, migrate, deploy
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (standalone output)
+        run: pnpm build
+
+      - name: Assemble standalone deployment package
+        run: |
+          cp -r .next/static .next/standalone/.next/static
+          cp -r public .next/standalone/public
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # The Postgres Flexible Server firewall has no standing rule for
+      # GitHub-hosted runners (their IPs are ephemeral) — ADR-009's
+      # documented fallback is a per-run rule scoped to this runner's
+      # current IP, added just before migrating and removed in `always()`
+      # regardless of outcome.
+      - name: Open DB firewall for this runner
+        run: |
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          az postgres flexible-server firewall-rule create \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ secrets.AZURE_POSTGRES_SERVER_NAME }}" \
+            --rule-name "github-actions-ci-run-${{ github.run_id }}" \
+            --start-ip-address "$RUNNER_IP" \
+            --end-ip-address "$RUNNER_IP"
+
+      - name: Run database migrations
+        run: pnpm db:migrate
+
+      - name: Close DB firewall for this runner
+        if: always()
+        run: |
+          az postgres flexible-server firewall-rule delete \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ secrets.AZURE_POSTGRES_SERVER_NAME }}" \
+            --rule-name "github-actions-ci-run-${{ github.run_id }}" \
+            --yes
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+          package: .next/standalone

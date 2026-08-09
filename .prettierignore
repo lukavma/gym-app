@@ -1,0 +1,8 @@
+.next/
+node_modules/
+public/sw.js
+pnpm-lock.yaml
+drizzle/*.sql
+drizzle/meta/
+docs/
+.claude/

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+# Phase 0 quality gates (implementation-plan.md). Playwright is intentionally
+# NOT run here — the e2e smoke spec is a local-only harness that needs a real
+# Postgres instance CI does not provide.
+jobs:
+  quality:
+    name: Lint, boundaries, typecheck, tests, build
+    runs-on: ubuntu-latest
+    env:
+      SESSION_SECRET: ci-session-secret-placeholder-not-real-32b
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (includes architecture boundary rules)
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Integration tests (PGlite)
+        run: pnpm test:integration
+
+      - name: Production build
+        run: pnpm build

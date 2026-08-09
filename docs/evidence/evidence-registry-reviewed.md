@@ -1,0 +1,461 @@
+# Evidence Registry
+
+This registry synthesizes the 14 normalized research notes in `docs/research-notes/` **by training concept**, not by paper. Each item has a stable ID (`EVIDENCE-XXX`) for later reference from architecture/design documents. IDs are stable once assigned — do not renumber existing items when adding new ones; append new IDs at the end of the relevant section instead.
+
+Every item lists what actually **contradicts or qualifies** it, if anything does. Where two sources disagree, both are recorded — this registry does not silently pick a winner.
+
+Format per item: **Topic | Claim | Outcome | Evidence confidence | Supported by | Contradicted/qualified by | Evidence summary | Important uncertainty | Safe product implication | Unsafe inference**
+
+Outcome values: `Hypertrophy`, `Strength`, `Both`, `Other` (e.g., readiness/recovery-perception, measurement feasibility).
+
+---
+
+## 1. Weekly training volume
+
+### EVIDENCE-001: Volume shows a positive, continuous dose-response relationship with hypertrophy
+- **Claim:** Weekly set volume (fractional/indirect counting) has a positive, monotonic relationship with hypertrophy gains, best fit by a square-root functional form, with no clear plateau within the range of data available.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Moderate (single Bayesian meta-regression, not peer-reviewed at time of writing, but large underlying dataset — 67 studies/2,058 participants)
+- **Supported by:** Pelland et al. 2024 (`pelland-volume-frequency.md`) — β=0.24%/set [95% CrI 0.15, 0.33], R²marginal=22.3%
+- **Contradicted/qualified by:** ACSM 2026 position stand (`acsm-2026-resistance-training-position-stand.md`) cites a separate meta-regression (Swinton et al., not itself in this corpus) suggesting a functional plateau around ~18–20 weekly sets for hypertrophy — this is an indirect, third-party citation within ACSM, not ACSM's own data, and uses a different modeling approach than Pelland. The two sources are not strictly contradictory (both show diminishing returns at high volume) but disagree on whether a hard plateau exists versus continued, shrinking marginal returns. Separately and additionally, ACSM's own summary table (Table 6, p.860 printed / p.10 of the PDF) states a specific recommended threshold of "≥10 sets/wk (dose-response)" for hypertrophy — this is ACSM's own vote-count-derived takeaway (not a third-party citation like the Swinton figure above), but it is a single-point threshold rather than a curve, and it does not reconcile cleanly with Pelland's continuous, no-hard-plateau model: Pelland's data implies further (shrinking) gains are plausible above 10 sets, whereas presenting "≥10 sets/wk" alone could be read as implying a sufficiency cutoff. Treat ACSM's figure as a coarse, vote-count-based reference point, not a validated optimal or maximal number. Further qualified by **EVIDENCE-028** (Baz-Valle et al. 2022): a smaller, muscle-specific meta-analysis found no significant advantage of >20 vs. 12–20 weekly sets for quadriceps or biceps, but a significant, moderate advantage for triceps — i.e., Pelland's pooled, cross-muscle-group curve may not hold uniformly for every individual muscle, reinforcing that this corpus's volume dose-response evidence describes a population/pooled average, not a guaranteed per-muscle relationship.
+- **Evidence summary:** R²marginal of 22.3% means volume alone explains a modest fraction of hypertrophy variance — most variance is explained by between-study/between-person differences captured in random effects, not by volume itself. The relationship is real but weak-to-moderate in explanatory power, and credible intervals widen substantially at high weekly volumes (few studies test very high volumes).
+- **Important uncertainty:** Whether a true ceiling/plateau exists for hypertrophy, and where it sits, is not resolved by this corpus. Pelland's own square-root model produces continuously diminishing but non-zero returns; it was not designed to test for a hard plateau the way a different functional form might.
+- **Safe product implication:** Present weekly volume as a variable with diminishing (not zero) marginal returns as it increases — avoid implying a flat ceiling exists at a specific number.
+- **Unsafe inference:** Do NOT hard-code a specific "maximum effective weekly volume" (e.g., "20 sets is the cap") as a validated threshold — no paper in this corpus establishes one with precision.
+
+### EVIDENCE-002: Volume shows a positive dose-response relationship with strength, with a functional plateau
+- **Claim:** Weekly set volume has a positive relationship with strength gain, best fit by a reciprocal functional form, which does show a functional plateau (unlike the hypertrophy relationship).
+- **Outcome:** Strength
+- **Evidence confidence:** Moderate (same source/caveats as EVIDENCE-001)
+- **Supported by:** Pelland et al. 2024 (`pelland-volume-frequency.md`) — β=0.21%/set [95% CrI 0.16, 0.26], R²marginal=26.1%
+- **Contradicted/qualified by:** None directly; broadly consistent with ACSM's vote-count synthesis (`acsm-2026-resistance-training-position-stand.md`) that volume/sets is one of several variables favoring strength dose-response (7 reviews, QoE=71%), though ACSM does not itself characterize the functional shape. Separately, ACSM's own summary table (Table 6) states a specific threshold — "≥10 sets/wk (dose-response)" for hypertrophy — as its own recommended takeaway; see the note appended to EVIDENCE-001 below for how this relates to (and does not simply confirm) Pelland's continuous curve.
+- **Evidence summary:** Unlike hypertrophy, the strength-volume curve in Pelland's data shows returns flattening out at higher volumes — additional sets beyond a certain point contribute progressively less to strength gain.
+- **Important uncertainty:** The exact volume at which the plateau becomes practically negligible is not pinned down with precision; R²marginal of 26.1% still leaves most variance unexplained by volume alone.
+- **Safe product implication:** For strength-focused programming, it is reasonable to suggest that very high additional volume yields comparatively little extra strength benefit versus a moderate volume — but without specifying an exact numeric ceiling.
+- **Unsafe inference:** Do NOT translate the "functional plateau" language into a specific prescriptive set-count cutoff.
+
+### EVIDENCE-003: Volume/sets is one of several variables favoring both strength and hypertrophy dose-response in a large umbrella review
+- **Claim:** Across 137 systematic reviews (>30,000 participants), training volume (sets) is one of the variables associated with superior strength dose-response (7 of the reviews examined, n=5,633, QoE=71%) and, more weakly, superior hypertrophy dose-response (5 reviews, n=2,267, QoE=50%). ACSM's own summary table (Table 6) additionally states specific recommended thresholds: "≥80% 1RM (dose-response)" for strength and "≥10 sets/wk (dose-response)" for hypertrophy — see the qualifying note under EVIDENCE-001 for how the volume figure relates to Pelland's continuous curve.
+- **Outcome:** Both
+- **Evidence confidence:** Moderate for the strength-volume association (QoE 71% across 7 reviews); Low-Moderate for the hypertrophy-volume association (QoE only 50%, i.e., essentially a coin-flip level of "vote" agreement across the underlying reviews)
+- **Supported by:** ACSM 2026 (`acsm-2026-resistance-training-position-stand.md`)
+- **Contradicted/qualified by:** None directly contradicts; the weak QoE for hypertrophy-volume is itself an internal qualifier, and is broadly consistent with Pelland's finding of a real-but-modest (R²marginal=22.3%) volume-hypertrophy relationship.
+- **Evidence summary:** ACSM's QoE% is a vote-count of underlying reviews' conclusions, not a pooled effect size, so it should be read as "how consistently did the underlying literature agree," not as a magnitude.
+- **Important uncertainty:** QoE is not comparable in kind to Pelland's R²/regression coefficients; combining these two sources strengthens confidence that volume matters at all, but neither pins down a precise dose-response curve on its own.
+- **Safe product implication:** Treat "more weekly volume, up to a point, tends to help both strength and hypertrophy" as a reasonably well-supported general direction.
+- **Unsafe inference:** Do NOT treat the QoE percentages as effect sizes or use them to derive numeric set targets.
+
+### EVIDENCE-028: Muscle-specific hypertrophy dose-response to weekly volume is not uniform — a high-volume advantage was found for triceps brachii but not quadriceps femoris or biceps brachii
+- **Claim:** Comparing moderate (12–20 sets/week) to high (>20 sets/week) volume, a systematic review + meta-analysis in young trained men found no significant hypertrophy difference for quadriceps femoris or biceps brachii, but a significant, moderate-magnitude advantage for high volume specifically in triceps brachii.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Low-Moderate (peer-reviewed, homogeneous pooled estimates [I²=0–14%], but small evidence base per muscle [5–8 effects] and modest average study quality [PEDro 4.7/7])
+- **Supported by:** Baz-Valle et al. 2022 (`baz-valle-training-volume.md`) — quadriceps SMD=−0.20 [95% CI −0.49, 0.10], P=0.19; biceps SMD=−0.10 [95% CI −0.46, 0.26], P=0.59; triceps SMD=−0.50 [95% CI −0.88, −0.11], P=0.01.
+- **Contradicted/qualified by:** Does not contradict EVIDENCE-001 (Pelland's pooled, cross-muscle-group, continuous dose-response curve) but qualifies it — Pelland's curve is a pooled average across muscle groups, while this finding shows the underlying per-muscle relationship can vary (null for two muscles, positive for a third). The two papers also use different set-counting conventions (Baz-Valle: full-credit for indirect/synergist sets per Schoenfeld et al. 2019b; Pelland: fractional/0.5-credit, found to be the better-fitting convention in EVIDENCE-004), which limits direct numeric comparison between their volume figures.
+- **Evidence summary:** The authors' own proposed explanation for the triceps exception is that it acts predominantly as a synergist (not prime mover) in many multi-joint pressing exercises common in the underlying studies, so more total (direct + indirect) volume may be needed to reach an equivalent stimulus — a plausible but not independently/mechanistically tested explanation.
+- **Important uncertainty:** No low-volume (<12 sets/week) quantitative comparison exists in this review; the high-volume category is open-ended and internally heterogeneous (24–45 sets/week in the underlying studies), so no maximum recoverable volume or point of diminishing/negative returns is established for any muscle.
+- **Safe product implication:** Support tracking and reasoning about volume per individual muscle group (not only as an aggregate), and treat 12–20 weekly sets as a studied reference band for quadriceps and biceps hypertrophy specifically — not as an established default or optimum. This evidence supports that >20 weekly sets were not clearly superior for these muscles, but it does not establish how 12–20 compares with <12 sets. Some muscles (e.g., ones commonly trained indirectly, like triceps) may plausibly respond differently.
+- **Unsafe inference:** Do NOT claim this validates Renaissance Periodization's (or any other framework's) specific numeric MV/MEV/MAV/MRV landmarks for any muscle group — this review tests only two coarse volume bands with an unbounded upper category, not four individually-calibrated landmarks. Do NOT derive an exact optimal set count or an exact maximum recoverable volume for any specific muscle from this evidence.
+
+---
+
+## 2. Direct vs. indirect/fractional sets
+
+### EVIDENCE-004: Fractional (partial-credit) counting of indirect/synergist sets fits dose-response data better than full-credit or no-credit counting
+- **Claim:** When modeling the volume-hypertrophy and volume-strength relationships, a "fractional" set-counting approach (synergist-muscle involvement in compound exercises counted as 0.5 of a direct set, rather than 0 or 1) was selected as the best-fitting counting method via Bayes Factor model comparison.
+- **Outcome:** Both
+- **Evidence confidence:** Moderate — this is a statistical modeling-choice result from a single (preprint) source, not a direct experimental test of direct-vs-indirect set counting as a training intervention.
+- **Supported by:** Pelland et al. 2024 (`pelland-volume-frequency.md`)
+- **Contradicted/qualified by:** No other paper in this corpus directly addresses direct-vs-indirect set counting. This is a single-source, single-method topic.
+- **Evidence summary:** This finding says that fractional counting produces a statistically better-fitting dose-response model than the alternatives tested — it is evidence about how to measure/count volume for research and (by extension) tracking purposes, not a physiological claim about how much stimulus indirect sets actually provide.
+- **Important uncertainty:** Whether 0.5 is the "correct" fractional weight (versus, say, 0.33 or 0.67), and whether the fraction should vary by muscle group or exercise, is not established — 0.5 was simply the best-fitting value among those tested in this one analysis.
+- **Safe product implication:** If an app tracks per-muscle volume across compound and isolation exercises, weighting indirect/synergist involvement as a partial (not full, not zero) set is a defensible modeling choice consistent with this evidence.
+- **Unsafe inference:** Do NOT present "0.5 sets for indirect involvement" as a precisely validated physiological constant — it is a best-fitting statistical parameter from one dataset, not a directly measured biological quantity, and this topic has essentially one source in the entire corpus.
+
+---
+
+## 3. Training frequency
+
+### EVIDENCE-005: Frequency has a clear, meaningful positive relationship with strength gain
+- **Claim:** Training frequency (sessions per muscle group per week) shows a positive dose-response relationship with strength gain, best fit by a reciprocal functional form, with the 95% credible interval clearly excluding a null effect (100% posterior probability of a positive slope).
+- **Outcome:** Strength
+- **Evidence confidence:** Moderate
+- **Supported by:** Pelland et al. 2024 (`pelland-volume-frequency.md`) — β=3.27%/session [95% CrI 2.74, 3.84], R²marginal=25.7%; e.g. modeled ES at frequency=1 is 12.72% vs. frequency=2 is 17.32%.
+- **Contradicted/qualified by:** None directly.
+- **Evidence summary:** This is one of the stronger, cleaner dose-response findings in the corpus for strength — the CrI is narrow and clearly excludes zero.
+- **Important uncertainty:** Frequency and volume are correlated in real training designs (more sessions often means more total volume) — Pelland's meta-regression models these as separate covariates, but full independence in the underlying primary studies cannot be guaranteed.
+- **Safe product implication:** Higher per-muscle training frequency (within reasonable limits) can be presented as a meaningfully supported strength-oriented lever.
+- **Unsafe inference:** Do NOT assume frequency effects are independent of total volume in all cases, or derive a specific numeric "optimal frequency" from this single regression coefficient.
+
+### EVIDENCE-006: Frequency's relationship with hypertrophy is weak and statistically compatible with a negligible effect
+- **Claim:** Training frequency shows only a weak, uncertain relationship with hypertrophy gain; the 95% credible interval crosses zero.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Low
+- **Supported by:** Pelland et al. 2024 (`pelland-volume-frequency.md`) — β=0.32%/session [95% CrI −0.14, 0.82], only 91.3% posterior probability of a positive effect (below the ~95% threshold typically used to claim a credible effect); reciprocal model, R²marginal not separately highlighted as strong.
+- **Contradicted/qualified by:** Converges with, rather than contradicts, ACSM 2026 (`acsm-2026-resistance-training-position-stand.md`), whose vote-count synthesis found hypertrophy dose-response was **not** favored by frequency across its underlying reviews. Two independent evidence bases (a Bayesian meta-regression and a separate umbrella review) point the same direction, which increases confidence in the *direction* of this finding even though the underlying strength of evidence for each individually is modest.
+- **Evidence summary:** Authors themselves describe this as "compatible with negligible effects" — the data neither strongly support nor rule out a small positive effect.
+- **Important uncertainty:** It's unclear whether frequency's weak independent effect on hypertrophy is because frequency doesn't matter much once volume is accounted for, or because the available studies don't vary frequency enough independent of volume to detect an effect.
+- **Safe product implication:** Frequency should not be marketed as a major independent hypertrophy lever; volume (total weekly sets) is the better-supported hypertrophy variable, and frequency can instead be framed primarily as a practical tool for *distributing* that volume (e.g., across more manageable session sizes) rather than as an adaptation driver in its own right.
+- **Unsafe inference:** Do NOT claim "training a muscle more frequently increases hypertrophy" as a validated finding — this corpus's most direct dose-response evidence says the opposite (a near-null, uncertain effect), corroborated directionally by an independent umbrella review.
+
+### EVIDENCE-007: More sessions is associated with greater hypertrophy specifically among previously-trained individuals in a load-comparison meta-regression
+- **Claim:** In a meta-regression examining moderators of load-comparison effect sizes, number of training sessions was positively associated with hypertrophy effect size in the moderate-vs-low-load and high-vs-moderate-load comparisons.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Low-Moderate — single covariate finding within a broader network meta-analysis whose primary purpose was load comparison, not frequency per se.
+- **Supported by:** Lopez et al. 2021 (`lopez-training-load.md`) — moderate-vs-low: coef 0.09±0.04 [95% CI 0.01, 0.16], P=0.031; high-vs-moderate: coef 0.08±0.04 [95% CI 0.01, 0.15], P=0.045.
+- **Contradicted/qualified by:** This finding is about session *count* as a covariate within a short (≤14-week) trial, not a controlled frequency manipulation — it is conceptually adjacent to, but methodologically distinct from, Pelland's direct frequency-hypertrophy analysis (EVIDENCE-006), which found a near-null effect. The two should not be treated as directly comparable, since Lopez's "sessions" variable conflates duration and frequency in a way Pelland's dedicated frequency model does not.
+- **Evidence summary:** This is a secondary/exploratory covariate result from a paper whose main focus was load, not frequency — treat as weak supporting/contextual signal only.
+- **Important uncertainty:** Whether this reflects a true frequency effect, a duration effect, or simply more total volume, cannot be disentangled from the reported statistics.
+- **Safe product implication:** None specific — this item mainly serves as a caution against conflating "session count" with "frequency" when reading dose-response literature.
+- **Unsafe inference:** Do NOT use this as independent confirmation of a frequency-hypertrophy effect; it measures a different, confounded construct than Pelland's frequency variable.
+
+---
+
+## 4. Training load and repetition ranges
+
+### EVIDENCE-008: Hypertrophy is largely load-independent across low/moderate/high load zones when training to volitional failure
+- **Claim:** In a network meta-analysis restricted to training performed to volitional failure, low-load (<60%1RM/>15RM), moderate-load (60–79%1RM/9–15RM), and high-load (≥80%1RM/≤8RM) training produced statistically similar hypertrophy outcomes, with no significant difference between any pair, and this held in a best-quality study subgroup.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Moderate
+- **Supported by:** Lopez et al. 2021 (`lopez-training-load.md`) — High vs Low SMD 0.12 [95% CI −0.06, 0.29] P=0.241; Moderate vs Low SMD 0.20 [−0.04, 0.44] P=0.113; High vs Moderate SMD −0.09 [−0.33, 0.16] P=0.469; I²=0% (no heterogeneity); no significant publication bias.
+- **Contradicted/qualified by:** None directly contradicts; strongly corroborated by ACSM 2026 (`acsm-2026-resistance-training-position-stand.md`), whose independent umbrella-review synthesis found hypertrophy dose-response was **not** favored by load when volume was equated (citing a comparison of 30% vs. 100% 1RM showing no difference). Also directionally consistent with Van Every/Nippard's narrative-review statement that hypertrophy "can be obtained across a wide range of loads" (`van-every-nippard-load-induced-hypertrophy-2025.md`), though that statement is a single citation, not independent data.
+- **Evidence summary:** This is one of the best-corroborated findings in the entire corpus — a peer-reviewed network meta-analysis (Lopez, 747 participants, I²=0%) and an independent peer-reviewed umbrella review (ACSM) reach the same conclusion via different underlying literatures.
+- **Important uncertainty:** Lopez's evidence base is short-duration (mean 8.9 weeks, max 14 weeks) and skewed toward untrained/recreationally trained young adults (no highly strength-trained individuals) — whether load-independence for hypertrophy holds over months/years of training or in advanced lifters is not established.
+- **Safe product implication:** An app can reasonably present multiple load/rep-range options (e.g., moderate 9–15RM or heavy ≤8RM) as comparably valid pathways to hypertrophy, provided training is taken close to failure, rather than prescribing one "correct" hypertrophy load zone.
+- **Unsafe inference:** Do NOT claim this holds for very low loads performed far from failure (not tested), for long-term/multi-year training (not tested), or for advanced/strength-trained lifters (not represented in Lopez's sample).
+
+### EVIDENCE-009: Strength gain is load-dependent — higher loads produce greater 1RM improvement
+- **Claim:** In the same network meta-analysis, higher training loads produced significantly greater 1RM strength gains than lower loads, in a graded (though not fully significant at every step) pattern.
+- **Outcome:** Strength
+- **Evidence confidence:** Moderate
+- **Supported by:** Lopez et al. 2021 (`lopez-training-load.md`) — High vs Low SMD 0.60–0.63 [95% CI 0.38, 0.88] P<0.001; Moderate vs Low SMD 0.34–0.35 [0.05, 0.65] P=0.002–0.003; High vs Moderate SMD 0.26–0.28, P=0.066–0.068 (did not reach statistical significance, described by authors as "approaching" significance).
+- **Contradicted/qualified by:** None directly contradicts; corroborated by ACSM 2026 (`acsm-2026-resistance-training-position-stand.md`), whose synthesis found strength dose-response favored by load ≥80%1RM among its variables.
+- **Evidence summary:** The High-vs-Low and Moderate-vs-Low comparisons are statistically solid; the High-vs-Moderate comparison is only a trend, not a confirmed difference — so "higher is better" is well supported at the extremes (high or moderate beats low) but the specific high-vs-moderate edge is not statistically confirmed in this dataset.
+- **Important uncertainty:** Whether high load truly beats moderate load for strength, or whether the observed difference is noise, remains open (P≈0.066–0.068, i.e., a trend just outside conventional significance thresholds); heterogeneity was non-trivial for the strength model (I²=39.9–43.7%) unlike the clean hypertrophy model (I²=0%).
+- **Safe product implication:** For a user with a strength-specific goal, it is reasonable to favor moderate-to-high loads (≥~60%1RM/≤15RM) over very low loads, and to note that heavier loads have a directional (if not fully confirmed) edge over moderate loads for maximal-strength outcomes specifically.
+- **Unsafe inference:** Do NOT present the High-vs-Moderate strength advantage as statistically confirmed — it is a trend (P>0.05) in this dataset, not a significant finding.
+
+### EVIDENCE-010: The load/hypertrophy and load/strength relationships diverge — a central strength-vs-hypertrophy distinction
+- **Claim:** The same body of load-comparison evidence shows opposite patterns for the two outcomes: load essentially does not matter for hypertrophy (within the 3 zones tested, to failure) but load matters substantially for strength.
+- **Outcome:** Both (comparative)
+- **Evidence confidence:** Moderate — this is the authors' own explicitly stated headline finding, robust to a best-quality-studies sensitivity check.
+- **Supported by:** Lopez et al. 2021 (`lopez-training-load.md`), explicitly named as one of the paper's "three important findings"; corroborated by ACSM 2026's independent parallel conclusions (load favored for strength dose-response, not favored for hypertrophy dose-response when volume-equated).
+- **Contradicted/qualified by:** None in this corpus.
+- **Evidence summary:** This divergence is one of the most consequential, best-corroborated findings across the whole registry — two independent, peer-reviewed sources (a dedicated network meta-analysis and a large umbrella review) converge on the same strength/hypertrophy split for the same variable (load).
+- **Important uncertainty:** Same caveats as EVIDENCE-008/009 (short duration, untrained-skewed population for Lopez specifically).
+- **Safe product implication:** This is one of the strongest candidates in the entire corpus for a goal-based programming distinction: load selection should be treated as a strength-relevant variable (favor heavier loads for a strength goal) but not a hypertrophy-relevant variable (multiple load zones equally valid for a hypertrophy goal, provided proximity to failure and volume are adequate).
+- **Unsafe inference:** Do NOT extend this to imply load is "irrelevant" to hypertrophy in all circumstances (e.g., extremely light loads far from failure were not part of the tested zones) or extend the strength finding to non-1RM performance measures (isometric/isokinetic strength were explicitly excluded from Lopez's review).
+
+---
+
+## 5. Proximity to failure / RIR
+
+### EVIDENCE-011: Proximity to failure has a negligible relationship with strength gain
+- **Claim:** Across a wide range of estimated RIR (0–23), proximity to failure shows an essentially flat, null relationship with strength gain.
+- **Outcome:** Strength
+- **Evidence confidence:** Low (single, non-peer-reviewed, non-pre-registered meta-regression, non-systematic search)
+- **Supported by:** Robinson et al. 2023 (`robinson-proximity-to-failure.md`) — linear-log model, β=0.003 [95% CI −0.012, 0.018], 243 effects/55 studies.
+- **Contradicted/qualified by:** No other paper in this corpus directly models a strength/RIR dose-response curve, so this finding is currently uncorroborated and unchallenged by an independent source.
+- **Evidence summary:** The confidence interval is narrow and centered near zero — this is a fairly clean null result, but from a single non-peer-reviewed source.
+- **Important uncertainty:** RIR was estimated (not directly, objectively measured) in the underlying primary studies; measurement error in self-estimated RIR (see EVIDENCE-014) could attenuate a true relationship toward null.
+- **Safe product implication:** For strength-focused training, proximity to failure should not be presented as a strongly evidence-backed lever — sets can likely be stopped well short of failure without a clear strength penalty, based on this source, but this should be framed as preliminary given the single-preprint evidence base.
+- **Unsafe inference:** Do NOT claim this is a well-established, peer-reviewed, or consensus finding — it rests on one non-peer-reviewed meta-regression.
+
+### EVIDENCE-012: Robinson meta-regression finds a continuous, statistically robust relationship between proximity to failure and hypertrophy
+- **Claim:** Training closer to failure (lower RIR) is associated with greater hypertrophy, in a linear, dose-response fashion, with the 95% CI excluding a null effect and the result preserved in a sensitivity analysis restricted to sets performed with <10 RIR.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Low (non-peer-reviewed, non-pre-registered, non-systematic search, modest R²)
+- **Supported by:** Robinson et al. 2023 (`robinson-proximity-to-failure.md`) — linear model, β=−0.019 [95% CI −0.035, −0.004], 140 effects/26 studies; sensitivity analysis β=−0.023 [95% CI −0.042, −0.004].
+- **Contradicted/qualified by:** **Directly in tension with EVIDENCE-013 (Refalo).** See the dedicated conflict note below.
+- **Evidence summary:** Robinson models proximity-to-failure as a continuous variable across a wide RIR range and reports a statistically robust (CI excludes null, survives sensitivity check) linear relationship.
+- **Important uncertainty:** RIR is estimated, not measured; the review's search was non-systematic and the analysis was not pre-registered, both of which increase risk of selective inclusion or researcher-degrees-of-freedom effects relative to a fully systematic, pre-registered review.
+- **Safe product implication:** Directionally supports "closer to failure trends toward more hypertrophy" as a reasonable default lean for hypertrophy-focused programming — but see the conflict note for why this should not be treated as a strong, precise dose-response rule.
+- **Unsafe inference:** Do NOT treat the specific regression coefficient (β=−0.019%/RIR-unit) as a precise, ready-to-use dosing parameter.
+
+### EVIDENCE-013: Refalo meta-analysis finds only a trivial, statistically fragile relationship between failure training and hypertrophy
+- **Claim:** Training sets to momentary muscular failure produces, at most, a trivial and statistically fragile hypertrophy advantage over stopping short of failure; sub-analyses by failure definition and by fatigue-proxy moderators (velocity loss, volume-load, relative load) were not statistically significant.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Low
+- **Supported by:** Refalo et al. 2023 (`refalo-proximity-to-failure.md`) — overall set-failure-vs-non-failure ES=0.19 [95% CI 0.00, 0.37], P=0.045 (sensitivity analysis with correlation assumptions r=0.6–0.9 shifts P between 0.016 and 0.104, i.e., significance is not robust to reasonable analytic-assumption changes); Theme A (momentary failure vs. non-failure) ES=0.12 [−0.13, 0.37], P=0.343, not significant; Theme B (other set-failure definitions) ES=0.27 [−0.03, 0.57], P=0.077, not significant; high-vs-moderate velocity loss ES=0.08 [−0.16, 0.32], P=0.529, not significant; volume-load moderator P=0.884, relative-load moderator P=0.525, both not significant.
+- **Contradicted/qualified by:** **Directly in tension with EVIDENCE-012 (Robinson).** See conflict note below.
+- **Evidence summary:** This is a peer-reviewed, published systematic review + meta-analysis, categorically framed (failure vs. non-failure) rather than continuous, and its headline effect is right at the edge of conventional statistical significance and not robust to reasonable sensitivity-analysis assumptions.
+- **Important uncertainty:** Categorical framing (failure/non-failure) may obscure a real but non-linear (e.g., plateauing) dose-response relationship that a continuous model like Robinson's could better detect — or, conversely, Robinson's continuous model may be picking up a spurious trend that a more conservative categorical/peer-reviewed analysis correctly fails to confirm. The corpus does not resolve which interpretation is correct.
+- **Safe product implication:** Support a cautious, weak-to-moderate lean toward "training with some effort/proximity to failure is reasonable for hypertrophy," while explicitly avoiding a claim that literal failure is required, since neither paper found failure necessary and Refalo's own peer-reviewed analysis found the failure-vs-non-failure difference to be trivial and fragile.
+- **Unsafe inference:** Do NOT claim that reaching literal muscular failure is necessary, optimal, or clearly superior for hypertrophy — the best-controlled peer-reviewed evidence in this corpus finds, at most, a trivial and statistically fragile advantage.
+
+### Conflict note: Robinson vs. Refalo on proximity-to-failure and hypertrophy — unresolved
+
+Both papers, drawing on overlapping (but not identical) underlying literatures, **agree** that (a) training closer to failure trends toward more hypertrophy than training farther from failure, and (b) literal momentary failure does not appear to be strictly required for hypertrophy gains. They **disagree** on the shape, strength, and robustness of the relationship:
+
+- **Robinson** (preprint, not peer-reviewed, not pre-registered, non-systematic search; continuous linear-model framing): reports a statistically robust, dose-response-shaped relationship across a wide RIR range, surviving a sensitivity check.
+- **Refalo** (peer-reviewed, systematic, pre-registered-style methodology; categorical failure-vs-non-failure framing): reports a trivial-magnitude effect that is not robust to reasonable sensitivity-analysis assumptions, and proposes the true relationship may be non-linear/plateauing rather than continuously linear.
+
+This registry does **not** resolve this conflict by picking a winner. Both are Low-confidence individually (Robinson for methodological/preprint reasons, Refalo for statistical fragility despite better methodology), and the disagreement itself — continuous/robust vs. categorical/fragile — is a genuine, currently unresolved feature of this research area, not an artifact of one paper being simply "wrong." Any product-facing claim about proximity to failure and hypertrophy should reflect this as a directional, low-to-moderate-confidence lean, not a precise or strongly evidenced rule.
+
+**Update (papers 11–14 integration pass):** A third, methodologically distinct source — **EVIDENCE-029** (Refalo et al. 2024, a well-controlled within-participant RCT directly comparing training to failure vs. 1–2 RIR) — has since been added to this corpus. It does not resolve the Robinson-vs-Refalo(2023) disagreement about the *shape or robustness* of the continuous proximity-to-failure/hypertrophy dose-response curve, and should not be read as doing so. What it does add is a different kind of evidence entirely: a controlled intervention trial (rather than a cross-study meta-regression or meta-analysis) directly testing failure against a specific close-to-failure target, finding no credible hypertrophy difference (pd=48%, pd>TE=3%). Because this is a genuinely complementary methodology (experimental, not observational/meta-analytic) reaching a consistent conclusion with both Robinson's and Refalo(2023)'s shared agreement point — that literal failure does not appear necessary for hypertrophy — the *collective, claim-level* confidence for the narrower claim "training reasonably close to failure (roughly 1–2 RIR) can produce hypertrophy similar to training to failure" is judged **Moderate** (up from Low for any single source alone), per this registry's claim-level confidence rule. This upgrade applies specifically to that narrower claim, not to the broader, still-unresolved question of the full proximity-to-failure dose-response curve shape across the entire RIR range — that broader question remains Low-confidence and open (see `docs/evidence/research-gaps.md` GAP-02).
+
+### EVIDENCE-014: Self-estimated RIR accuracy is generally better closer to failure and degrades farther from failure
+- **Claim:** Across multiple individual studies, self-estimated RIR (via ERF or RPE-RIR scales) tends to be a more accurate prediction of actual reps-to-failure when the estimate is made close to failure, and less accurate when made farther from failure.
+- **Outcome:** Other (measurement/feasibility, not a training-outcome finding)
+- **Evidence confidence:** Moderate for the general directional pattern; Low for any specific moderator (sex, training experience, exercise/limb type — see below)
+- **Supported by:** Bastos et al. 2024 (`bastos-rir.md`) — 10 of 31 research teams (32%) reported this pattern; described as aligning with an external meta-analysis (Halperin et al. 2022, not itself in this corpus).
+- **Contradicted/qualified by:** This is a vote-count across heterogeneous studies (no pooled effect size computed by Bastos itself); sex, training-experience, and exercise-type moderators of RIR accuracy were found to be **conflicting** across individual studies within this same review (e.g., some studies find men more accurate than women, others find no sex difference; some find experience improves accuracy, others don't; an external meta-analysis found no significant upper-vs-lower-body accuracy difference where several individual included studies had found one).
+- **Evidence summary:** This is a measurement-feasibility finding, not a training-outcome finding — it speaks to how much to trust a user's self-reported RIR value, not to what RIR target produces better results.
+- **Important uncertainty:** No consistent quantitative error margin (e.g., "± X reps") is established across the reviewed studies; accuracy moderators (sex, experience, exercise type) remain genuinely contested in the literature, not just under-studied.
+- **Safe product implication:** If an app logs user-reported RIR, self-reports should be treated as a noisy, directionally-useful signal that is likely more trustworthy when users report being close to failure (e.g., 0–2 RIR) than when far from it (e.g., 5+ RIR) — but without a precise, validated accuracy/error model.
+- **Unsafe inference:** Do NOT build automated load micro-adjustment logic that assumes uniform RIR accuracy across all users, sexes, training-experience levels, or exercise types — this review documents that these moderators are actively contested, not settled.
+
+### EVIDENCE-029: A within-participant RCT found training to failure and training with 1–2 RIR produce statistically indistinguishable quadriceps hypertrophy, while failure training produces consistently greater acute neuromuscular fatigue
+- **Claim:** Over 8 weeks, resistance-trained individuals training unilaterally to momentary muscular failure (FAIL) on one leg and with a 1–2 RIR target (RIR: 2-RIR leg press, 1-RIR leg extension) on the contralateral leg showed no credible difference in quadriceps thickness gain, while FAIL produced consistently greater within-session velocity loss and repetition loss across the intervention.
+- **Outcome:** Both (hypertrophy primary finding; fatigue/repetition-loss secondary/mechanistic findings)
+- **Evidence confidence:** Moderate for the core hypertrophy-equivalence finding (well-controlled within-participant design; Bayesian estimate pd=48%, pd>TE=3%, i.e., only 3% probability the true difference exceeds a typical-error-sized effect), capped at Moderate because this is a single small study (n≈18–19), limited to quadriceps, two exercises, and 8 weeks; Low-Moderate for the muscle-specific (rectus femoris vs. vastus lateralis) divergence and the accumulated-volume-offset mechanism, both smaller/more speculative sub-findings.
+- **Supported by:** Refalo et al. 2024 (`refalo-2024-rir-vs-failure.md`) — quadriceps thickness: FAIL +6.96% [HDI 0.119, 0.243cm], RIR +6.98% [HDI 0.115, 0.247cm], between-protocol difference −0.001cm [HDI −0.063, 0.058], pd=48%, pd>TE=3%; velocity loss Week 1: FAIL −9.9% vs. RIR −4.4%, pd=98%; repetition loss leg press: FAIL −20.4% vs. RIR −15.8%, pd=100%.
+- **Contradicted/qualified by:** Does not contradict EVIDENCE-011/012/013; see the extended Robinson-vs-Refalo conflict note above for how this evidence relates to (without resolving) that disagreement. The RIR protocol used different targets per exercise (1-RIR, 2-RIR) rather than one uniform value, so this is evidence for a 1–2 RIR neighborhood, not a single pinpointed RIR value.
+- **Evidence summary:** This is intervention-trial (not meta-analytic/observational) evidence, and a methodologically strong within-participant design that removes between-subject confounds — a genuinely different and complementary evidence type to the two meta-regression/meta-analysis sources already in this corpus (EVIDENCE-012, EVIDENCE-013).
+- **Important uncertainty:** Small sample (n=18–19), single muscle-group family (quadriceps only, single ultrasound site per muscle), only 8 weeks, asymmetric RIR targets across the two exercises tested, and a within-session accumulated-volume-offset mechanism (high repetition loss under FAIL offsetting its per-set proximity advantage) that is plausible but not independently confirmed.
+- **Safe product implication:** The application can reasonably present training within roughly 1–2 RIR as a legitimate, evidence-consistent alternative to training to failure for a hypertrophy goal, and can note that training to failure tends to produce greater acute fatigue without a correspondingly greater hypertrophy benefit in this evidence base.
+- **Unsafe inference:** Do NOT infer that 1-RIR or 2-RIR specifically is "the" optimal proximity-to-failure target — no single RIR value was isolated and compared against a range of alternatives. Do NOT convert this into an automated trigger rule (e.g., "stop at RIR 2"); it supports offering non-failure training as a viable strategy at the architecture/strategy level, not a specific decision threshold.
+
+### EVIDENCE-030: RIR self-report accuracy in experienced lifters is typically within about 1 repetition of the true target, statistically equivalent across RIR targets and repeated exposure in one dedicated accuracy study — extending, and partly refining, EVIDENCE-014
+- **Claim:** In a randomized crossover trial isolating RIR prediction accuracy on the bench press, experienced lifters (mean >7 years training) predicted RIR with average absolute error of 0.40 reps (1-RIR target) to 0.90 reps (3-RIR target), with a modest overall tendency toward underprediction (raw error −0.17±1.00 reps combined); formal equivalence testing (±1 rep range) found no meaningful accuracy difference between 1-RIR and 3-RIR targets, between sets, or between sessions.
+- **Outcome:** Other (measurement/feasibility, not a training-outcome finding)
+- **Evidence confidence:** Moderate — single peer-reviewed randomized crossover trial with formal statistical equivalence testing (methodologically stronger than simple null-hypothesis testing for establishing "no meaningful difference"), but single exercise, single lab/research-program lineage, and a narrow, highly experienced population.
+- **Supported by:** Refalo et al. 2024 (`refalo-2024-rir-accuracy.md`) — combined absolute accuracy 0.65±0.78 reps; 1-RIR absolute 0.40±0.68 reps; 3-RIR absolute 0.90±0.81 reps; all pairwise comparisons (1-RIR vs. 3-RIR, set 1 vs. set 2, session 1 vs. session 2) statistically equivalent within a ±1 rep smallest-effect-size-of-interest range.
+- **Contradicted/qualified by:** Directionally corroborates EVIDENCE-014's general pattern that RIR error tends to be smaller closer to failure (0.40 reps at 1-RIR vs. 0.90 reps at 3-RIR here). However, this study found no *statistically distinguishable* accuracy difference between 1-RIR and 3-RIR under formal equivalence testing, and no session-to-session improvement — a partial refinement of, not a full match to, some prior literature (cited within this paper) suggesting accuracy clearly improves approaching failure or with repeated exposure; the authors attribute the discrepancy to a methodological difference (open-ended call-out timing in this study vs. fixed-repetition-checkpoint prediction protocols in some prior studies). Secondary, less rigorously isolated accuracy data reported incidentally within EVIDENCE-029's own trial (Refalo et al. 2024 RIR-vs-failure, Table 3) are directionally consistent (sub-1-rep average absolute error, slight overestimation trend near failure).
+- **Evidence summary:** This is the corpus's most methodologically rigorous single source specifically on RIR measurement accuracy (dedicated design, formal equivalence testing), and it should be read as sharpening, not overturning, EVIDENCE-014's broader vote-count-based conclusion.
+- **Important uncertainty:** Single exercise (bench press) only; subjects did not count/pace their own reps during the set (real-world logging conditions, where users typically are counting, were not replicated); sample is highly experienced (mean >7 years) and above-average strength — accuracy for novice/intermediate users is untested here.
+- **Safe product implication:** Treat any user-logged RIR value as a useful but noisy signal. In this study of experienced lifters under controlled conditions, mean absolute error was approximately 0.4–0.9 repetitions depending on the target. This supports architectural tolerance of RIR noise (e.g., not treating a logged value as an exact number), not a specific numeric correction algorithm or a universal ±1-rep error model.
+- **Unsafe inference:** Do NOT treat a user-entered RIR value as an objectively precise measurement. Do NOT build automated progression logic that assumes sub-repetition RIR precision, or that assumes accuracy is uniformly better very close to failure than a few reps out — this specific study found no statistically confirmed difference there, in contrast to some other literature.
+
+---
+
+## 6. Progression and autoregulation
+
+### EVIDENCE-015: A "target RIR, adjust load based on whether it was met" pattern is the dominant real-world/study approach to autoregulation, but is not itself validated as superior by this corpus
+- **Claim:** Across the RIR-prescription literature reviewed, the most common method for using RIR to guide training was to set a target RIR per set/session and adjust load in subsequent sets or sessions based on whether that target was achieved.
+- **Outcome:** Other (descriptive pattern) / indirectly Strength (see supporting single-study citation below)
+- **Evidence confidence:** Low — this is a descriptive pattern observed across studies (13 of 31 in one scoping review), not a causally validated finding of this registry's corpus.
+- **Supported by:** Bastos et al. 2024 (`bastos-rir.md`), describing this pattern across included primary studies. One single primary study cited within Bastos (Graham & Cleather, 2021 — not independently processed as its own note in this corpus) reportedly found RIR-autoregulated load produced greater 12-week strength gains than a fixed %1RM prescription.
+- **Contradicted/qualified by:** A different single study cited within the same review (Shattock & Tee, 2022, also not independently processed here) found a velocity-based training approach outperformed an RPE-RIR approach for strength/power — i.e., even within the same secondary source, autoregulation-via-RIR is not uniformly shown to be the best approach compared to every alternative.
+- **Evidence summary:** This is a pattern-of-practice finding plus two single-study citations reported secondhand (via Bastos), not independently verified against their own source PDFs in this corpus — treat as suggestive, not confirmed.
+- **Important uncertainty:** The magnitude and consistency of any RIR-autoregulation advantage over fixed-load prescription is not established at the level of a pooled/systematic finding in this corpus; only isolated individual-study comparisons are available.
+- **Safe product implication:** "Prescribe a target RIR, adjust load in the next set/session if the target is missed" is a reasonable, literature-consistent heuristic seed for an autoregulation feature — but it should be framed as a common-practice heuristic, not as a proven-superior method.
+- **Unsafe inference:** Do NOT claim RIR-based autoregulation has been shown to be superior to fixed-load or velocity-based progression in general — the evidence is a small number of individual, non-independently-verified studies with mixed comparative results.
+
+### EVIDENCE-031: Load progression and repetition progression, both taken to concentric failure, produce statistically indistinguishable strength and hypertrophy gains over 10 weeks in untrained individuals
+- **Claim:** In a within-subject (contralateral-limb) RCT, progressing overload by increasing load at a fixed rep target (LOADprog) versus progressing by increasing repetitions at a fixed load (REPSprog) — both protocols taken to concentric failure every set — produced no significant interaction or protocol effect for either 1RM strength or muscle CSA over 10 weeks.
+- **Outcome:** Both
+- **Evidence confidence:** Moderate — single RCT, but methodologically strong (within-subject/contralateral-limb design removing between-subject confounds, a priori power calculation, CONSORT-reported).
+- **Supported by:** Chaves et al. 2024 (`chaves-overload-progression.md`) — 1RM: no interaction (F=1.71, P=0.20), no protocol effect (F=3.21, P=0.08); LOADprog +32.8%, REPSprog +31.4%, MD=−1.0kg [95% CI −2.6, 0.6]. CSA: no interaction (F=0.02, P=0.87), no protocol effect (F=0.57, P=0.45); LOADprog +11.2%, REPSprog +10.5%, MD=0.1cm² [95% CI −0.5, 0.8]. Accumulated volume load did NOT differ between protocols (MD 1,174kg [95% CI −1,289, 3,637], P=0.346) despite REPSprog accumulating significantly more total repetitions and LOADprog accumulating significantly more total load — and no significant correlation between volume load and outcomes was found in either protocol (all R between −0.04 and 0.20, all P>0.19).
+- **Contradicted/qualified by:** No other paper in this corpus directly tests this comparison — this is the corpus's first and only direct evidence on progression-scheme choice. Note both protocols were trained to failure, so this says nothing about how progression scheme interacts with non-failure/RIR-based training (see EVIDENCE-029 for the separate failure-vs-RIR comparison, which used a fixed-load protocol design rather than testing progression schemes).
+- **Evidence summary:** This is a clean, converging result (no divergence between strength and hypertrophy outcomes, unlike many other findings in this corpus) — both overload strategies worked, and worked comparably.
+- **Important uncertainty:** Untrained population only (no data on whether trained/advanced lifters would show a different pattern); single exercise (unilateral leg extension); 10 weeks only; double progression and autoregulated/RIR-based progression schemes were not tested as separate arms; cross-education/systemic effects between contralateral limbs are a general theoretical caveat of unilateral designs not specifically addressed by the authors.
+- **Safe product implication:** The application architecture should support multiple progression strategies (e.g., load-based progression and repetition-based progression) rather than assuming load progression is the only valid form of overload — this is an architecture-level implication (the system should be able to represent and apply more than one progression scheme), not a specific algorithmic rule.
+- **Unsafe inference:** Do NOT convert this into an unsupported automated trigger algorithm (e.g., "if final-set RIR ≥ 2, add 2.5kg") — the evidence supports multiple progression strategies being viable, not a specific numeric decision threshold for when/how much to progress. Do NOT generalize to trained/advanced populations, to non-failure training contexts, or to double-progression/autoregulated schemes, none of which were tested here.
+
+*(Chaves et al. 2024 [EVIDENCE-031] is now the corpus's first direct, systematic test of a progression-scheme comparison — load progression vs. repetition progression, both to failure. Broader progression-scheme dose-response questions remain open: this corpus still has no controlled comparison involving double progression, autoregulated/RIR-based progression as a distinct tested arm, trained/advanced populations, or durations beyond 10 weeks. This is a narrowed, not closed, gap; see `docs/evidence/research-gaps.md`.)*
+
+---
+
+## 7. Strength-specific programming
+
+*(This section cross-references items detailed fully elsewhere; see the linked EVIDENCE IDs for full statistical detail.)*
+
+### EVIDENCE-016: Resistance training improves strength versus control, with several variables (frequency, load, volume, exercise order) associated with superior dose-response
+- **Claim:** Across 26 systematic reviews (n=23,204), RT reliably improves strength versus non-RT control (QoE=73%); dose-response for strength was favored by higher frequency, higher load (≥80%1RM), higher volume/sets, and (for one variable set) specific exercise ordering.
+- **Outcome:** Strength
+- **Evidence confidence:** Moderate — high for the top-line RT-vs-control claim; lower (resting on narrower review counts, per-variable QoE ranging 69–88% — e.g. frequency 69%, volume/sets 71%, load 79%, exercise order 88%) for the granular per-variable dose-response claims.
+- **Supported by:** ACSM 2026 (`acsm-2026-resistance-training-position-stand.md`).
+- **Contradicted/qualified by:** None; consistent with EVIDENCE-005 (frequency), EVIDENCE-009 (load), EVIDENCE-002/003 (volume).
+- **Evidence summary:** This is the broadest single evidentiary base in the corpus for the general claim "RT builds strength" — see individual variable-specific items (EVIDENCE-002, 005, 009) for quantitative dose-response detail.
+- **Important uncertainty:** The QoE vote-count method does not convey effect-size magnitude.
+- **Safe product implication:** Strength-goal programming can reasonably prioritize frequency, load, and volume as the best-evidenced levers, in that rough order of evidence strength per this source.
+- **Unsafe inference:** Do NOT treat QoE percentages as effect sizes.
+
+### EVIDENCE-017: Periodized training outperforms non-periodized training for strength, but the effect is small and heterogeneity is substantially driven by one influential study
+- **Claim:** Under volume-equated conditions, periodized resistance training produces greater 1RM strength gains than non-periodized training, though the effect shrinks and heterogeneity drops sharply when one influential study is excluded.
+- **Outcome:** Strength
+- **Evidence confidence:** Moderate
+- **Supported by:** Moesgaard et al. 2022 (`moesgaard-periodization.md`) — NP vs. periodized: ES=0.31 [95% CI 0.04, 0.57], P=0.02 (I²=73%); sensitivity analysis removing one influential study (Monteiro et al.): ES=0.19, P=0.04, I² drops to 38%.
+- **Contradicted/qualified by:** The same paper found NO significant periodization effect on hypertrophy under the same volume-equated conditions (EVIDENCE-020) — an explicit strength/hypertrophy divergence.
+- **Evidence summary:** The strength-favoring effect for periodization is real but modest, and roughly half of the between-study heterogeneity is attributable to a single study — treat the point estimate as somewhat fragile.
+- **Important uncertainty:** Mean PEDro methodological-quality score across included studies was modest (4.8/8); exact periodization model details (linear, undulating, block, etc.) were pooled together in this particular comparison (NP vs. any periodized approach), so this item does not distinguish between periodization styles (see EVIDENCE-018 for LP vs. UP specifically).
+- **Safe product implication:** A structured, planned progression/periodization scheme can be presented as modestly evidence-supported for strength-focused users, with appropriately hedged confidence.
+- **Unsafe inference:** Do NOT claim a large or precisely quantified strength benefit from periodization — the effect is small (ES≈0.2–0.3) and sensitive to one study's inclusion.
+
+### EVIDENCE-018: Linear periodization outperforms undulating periodization for strength only in trained individuals, not untrained
+- **Claim:** Linear periodization (LP) produced greater 1RM strength gains than undulating periodization (UP), but this effect was driven entirely by a trained-subgroup effect, with no effect in untrained individuals.
+- **Outcome:** Strength
+- **Evidence confidence:** Moderate
+- **Supported by:** Moesgaard et al. 2022 (`moesgaard-periodization.md`) — LP vs UP overall: ES=0.31 [95% CI 0.02, 0.61], P=0.04 (sensitivity-adjusted ES=0.15, P=0.05); trained subgroup: ES=0.61, P=0.05; untrained subgroup: ES=0.06, P=0.67 (no effect).
+- **Contradicted/qualified by:** No hypertrophy effect for LP vs. UP was found in the same paper (EVIDENCE-020).
+- **Evidence summary:** The training-status interaction (effect present in trained, absent in untrained) is a meaningful qualifier — this is not a universal LP-over-UP advantage.
+- **Important uncertainty:** The overall effect itself is sensitivity-fragile (P right at 0.04–0.05 boundary, shifting with a single study's removal).
+- **Safe product implication:** If distinguishing periodization models for strength purposes, a preference for linear periodization could reasonably be reserved for more experienced/trained users rather than applied universally.
+- **Unsafe inference:** Do NOT apply an LP-over-UP strength recommendation to untrained/beginner users — the evidence specifically shows no effect in that subgroup.
+
+---
+
+## 8. Hypertrophy-specific programming
+
+*(This section cross-references items detailed fully elsewhere.)*
+
+### EVIDENCE-019: Resistance training improves hypertrophy versus control; dose-response favored by contraction type (eccentric overload) and, more weakly, volume — not by load or frequency
+- **Claim:** Across 12 systematic reviews (n=14,924), RT improves hypertrophy versus control (QoE=79%); hypertrophy dose-response was favored by contraction type (eccentric-overload emphasis) and volume/sets (5 reviews, QoE=50% — a notably weaker signal), but was NOT favored by training load (when volume equated) or by frequency.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Moderate for the top-line RT-vs-control claim; Low-Moderate for volume (QoE only 50%); Moderate for the load/frequency "no advantage" findings, since these are corroborated independently elsewhere in the corpus.
+- **Supported by:** ACSM 2026 (`acsm-2026-resistance-training-position-stand.md`).
+- **Contradicted/qualified by:** Corroborates, rather than contradicts, EVIDENCE-008 (Lopez: load-independence for hypertrophy) and EVIDENCE-006 (Pelland: near-null frequency-hypertrophy effect).
+- **Evidence summary:** This source, combined with EVIDENCE-008 and EVIDENCE-006, forms the corpus's strongest converging evidence that load and frequency are comparatively poor independent levers for hypertrophy, while volume and effort/contraction-type variables carry more weight.
+- **Important uncertainty:** The hypertrophy-volume QoE (50%) is markedly weaker than the strength-volume QoE (71%) from the same source — volume's role in hypertrophy is directionally supported but with less consistency across the underlying review literature than for strength.
+- **Safe product implication:** For hypertrophy-goal programming, prioritize volume and sufficient per-set effort/proximity to failure over load selection or high frequency as primary levers.
+- **Unsafe inference:** Do NOT treat "eccentric overload favored for hypertrophy" as a mandate for specialized eccentric-overload equipment/protocols for general users — this rests on a QoE vote-count across a subset of reviews, not a large, precise effect size.
+
+### EVIDENCE-020: Periodization does not significantly affect hypertrophy under volume-equated conditions (neither periodized-vs-non-periodized, nor linear-vs-undulating)
+- **Claim:** When training volume is held equal, neither the presence/absence of periodization, nor the choice between linear and undulating periodization models, produces a statistically significant difference in hypertrophy outcomes.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Moderate
+- **Supported by:** Moesgaard et al. 2022 (`moesgaard-periodization.md`) — NP vs. periodized: ES=0.13 [95% CI −0.10, 0.36], P=0.27, I²=0%; LP vs. UP: ES=0.05 [95% CI −0.20, 0.29], P=0.72, I²=0%.
+- **Contradicted/qualified by:** None; this is the paper's own explicit strength/hypertrophy divergence finding, paired with EVIDENCE-017/018 for strength.
+- **Evidence summary:** Both hypertrophy comparisons show zero heterogeneity (I²=0%) and comfortably non-significant results — this is a comparatively clean null finding, unlike the fragile-but-positive strength findings from the same paper.
+- **Important uncertainty:** Hypertrophy was measured mostly indirectly (e.g., limb girths/estimates rather than direct imaging in many included studies) — a systematic measurement-precision limitation the authors themselves note.
+- **Safe product implication:** For hypertrophy-goal users, periodization structure (or lack thereof, or choice of LP vs. UP) can reasonably be presented as a secondary/preference-level variable rather than an outcome-critical one, provided total volume is adequate and consistent.
+- **Unsafe inference:** Do NOT claim periodization is "useless" in general — this null finding is specific to hypertrophy outcomes under volume-equated designs; the same paper found periodization DOES matter for strength (EVIDENCE-017/018).
+
+### EVIDENCE-021: A broad range of repetition tempos (~2–8 seconds total) appear to support similar hypertrophy
+- **Claim:** Total repetition duration across a fairly wide range (approximately 2 to 8 seconds) can support significant hypertrophy, with unclear evidence on whether biasing eccentric or concentric phase duration specifically confers additional benefit.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Moderate (per the source authors' own rating), though based on a narrative (non-systematic) review with several conflicting single-study results underlying the synthesis.
+- **Supported by:** Androulakis Korakakis et al. 2024 (`korakakis-nippard-training-technique-2024.md`), synthesizing multiple individual primary studies with conflicting directional findings (e.g., faster concentric favored in one older-adult study; longer eccentric favored, non-significantly, in one trained-male study; no difference in others).
+- **Contradicted/qualified by:** Individual underlying studies conflict with each other on the direction of any tempo-manipulation effect (see note details); this is an area with no consistent single-study replication.
+- **Evidence summary:** The 2–8 second window is a broad, permissive range rather than a precise recommendation — it mainly rules out extremes (very fast, sub-1-second reps, or very slow, super-slow-style protocols) rather than identifying an optimum within the range.
+- **Important uncertainty:** No systematic search or quality appraisal underlies this narrative review; several conclusions rest on single small studies in narrow populations (e.g., older men, soccer players).
+- **Safe product implication:** An app can reasonably avoid prescribing a strict tempo and instead present tempo as flexible within a broad window for hypertrophy purposes.
+- **Unsafe inference:** Do NOT recommend a specific "optimal" eccentric or concentric duration as evidence-based — findings on phase-specific manipulation conflict across studies.
+
+### EVIDENCE-022: Biasing range of motion toward long muscle lengths is a reasonable default for hypertrophy; partial ROM at long lengths can match or exceed full ROM for some muscles
+- **Claim:** Current (limited) evidence supports biasing exercise ROM toward long muscle lengths as a default for maximizing hypertrophy; for some muscles (quadriceps femoris, biceps brachii, triceps brachii), partial ROM emphasizing long muscle lengths can match or exceed full-ROM training.
+- **Outcome:** Hypertrophy
+- **Evidence confidence:** Moderate for the headline "bias toward long muscle lengths" conclusion (per source authors' own rating); Low for muscle-specific claims, which often rest on very few studies.
+- **Supported by:** Androulakis Korakakis et al. 2024 (`korakakis-nippard-training-technique-2024.md`), itself citing a meta-analysis subgroup (Wolf et al., only 3 studies) and a systematic review (Kassiano et al.) plus one primary study on gastrocnemius showing muscle-head-specific dissociation (medial gastrocnemius favored long-length partial ROM specifically; lateral gastrocnemius favored full ROM or long-length partial ROM equally, but not short-length partial).
+- **Contradicted/qualified by:** The authors themselves explicitly caution the key subgroup finding rests on only 3 studies; one supporting data point is an unpublished conference abstract with unpublished methods.
+- **Evidence summary:** This is a plausible, biologically coherent, but thinly-evidenced pattern — genuinely useful directional signal, not a robust, broadly replicated finding.
+- **Important uncertainty:** Whether the long-muscle-length-ROM advantage generalizes across most muscles/exercises, or is specific to the handful of muscles tested so far (quadriceps, biceps, triceps, gastrocnemius, some hip extensors), is unknown — muscle-head-specific dissociation within the same muscle (gastrocnemius) suggests generalization is not safe to assume.
+- **Safe product implication:** If exposing ROM guidance, a general lean toward emphasizing the stretched/lengthened position of an exercise is reasonably supported as a default, framed as a mild preference rather than a strict rule, and should not be assumed uniform across all muscles.
+- **Unsafe inference:** Do NOT prescribe a specific ROM percentage (e.g., "use 50% ROM") as a general, muscle-agnostic hypertrophy rule — the "50%" figures cited are specific protocol parameters from individual studies on specific muscles, not general prescriptions.
+
+### EVIDENCE-023: No literature exists on strict vs. non-strict (momentum-assisted) technique and hypertrophy — an explicit gap, not a finding
+- **Claim:** There is currently no direct empirical research examining the effect of strict versus non-strict (momentum/ancillary-muscle-assisted) repetition technique on hypertrophy.
+- **Outcome:** Other (explicit absence of evidence)
+- **Evidence confidence:** N/A — this is a stated gap, not a claim to be confidence-rated.
+- **Supported by:** Androulakis Korakakis et al. 2024 (`korakakis-nippard-training-technique-2024.md`) — the authors state directly: "there is no literature directly examining the effect of strict versus non-strict repetition techniques on hypertrophy." The one indirectly relevant source is a mechanical-modeling/simulation study (not an empirical hypertrophy trial), explicitly flagged by the review's own authors as needing to "be viewed with circumspection."
+- **Contradicted/qualified by:** N/A.
+- **Evidence summary:** This is one of the clearest, most explicit "we don't know" statements in the entire corpus.
+- **Important uncertainty:** Total — no empirical data exists.
+- **Safe product implication:** Any guidance about strict vs. loose technique should be framed as general safety/technique convention, not as evidence-based hypertrophy optimization.
+- **Unsafe inference:** Do NOT present any strict-vs-non-strict technique rule as hypertrophy-evidence-based — none exists in this corpus (or, per the authors, in the literature generally as of this review).
+
+---
+
+## 9. Periodization / mesocycles
+
+*(Primary quantitative content is under EVIDENCE-017, 018, and 020 above; this section consolidates the cross-outcome picture.)*
+
+### EVIDENCE-024: Periodization's benefit, where it exists, is strength-specific and does not extend to hypertrophy under volume-equated conditions
+- **Claim:** The clearest single finding on periodization in this corpus is a strength/hypertrophy divergence: periodized training modestly outperforms non-periodized training for strength (EVIDENCE-017), and linear periodization modestly outperforms undulating periodization for strength in trained individuals only (EVIDENCE-018) — but neither comparison shows a significant hypertrophy effect (EVIDENCE-020).
+- **Outcome:** Both (comparative/divergent)
+- **Evidence confidence:** Moderate — single systematic review + meta-analysis (35 studies, 1,022 participants, all volume-equated designs), which is a methodologically strong design choice (isolating periodization structure from volume) but a single evidentiary source for this specific topic.
+- **Supported by:** Moesgaard et al. 2022 (`moesgaard-periodization.md`).
+- **Contradicted/qualified by:** No other paper in this corpus directly studies periodization structure, so this finding is currently uncorroborated by an independent source, though it is internally consistent (the strength/hypertrophy divergence pattern here echoes the same pattern seen for training load in EVIDENCE-010).
+- **Evidence summary:** Volume-equated design is a methodological strength — it isolates periodization structure itself as the manipulated variable rather than conflating it with volume differences.
+- **Important uncertainty:** Modest average methodological quality (PEDro mean 4.8/8) across included studies; substantial heterogeneity (I²=70–73%) in the strength comparisons, roughly half attributable to one influential study.
+- **Safe product implication:** Structured periodization can be offered as a strength-oriented feature with modest evidence support; for hypertrophy-only goals, periodization structure is reasonably deprioritized relative to ensuring adequate, consistent volume.
+- **Unsafe inference:** Do NOT claim periodization has been shown to be unimportant in general — only that its demonstrated benefit in this evidence base is specific to strength, not hypertrophy, under volume-equated conditions.
+
+---
+
+## 10. Deloading
+
+### EVIDENCE-025: A single 1-week complete-cessation deload did not affect hypertrophy but was associated with smaller strength gains, versus continuous training, in one RCT
+- **Claim:** In resistance-trained young adults undergoing a 9-week, high-volume (90 sets/week combined) lower-body hypertrophy-oriented program, inserting one week of complete training cessation at the midpoint produced hypertrophy outcomes statistically indistinguishable from continuous training, but was associated with smaller gains in maximal strength (both dynamic 1RM and isometric).
+- **Outcome:** Both (divergent)
+- **Evidence confidence:** Moderate (single, well-conducted, preregistered, blinded, Bayesian-analyzed RCT; capped below High due to single-study status, modest sample after dropout [n=39], a disclosed funding conflict of interest, and narrow population/protocol specificity)
+- **Supported by:** Coleman et al. 2024 (`coleman-deload.md`) — hypertrophy: 95% credible intervals overlapped zero for all measured sites, posterior probabilities favoring deload-group inclusion 0.273–0.835; dynamic strength (1RM Smith squat): ~85.1% posterior probability favoring continuous training (TRAD); isometric knee extension: ~92.4% posterior probability favoring TRAD; local muscular endurance and CMJ power: trivial, sub-practically-significant differences.
+- **Contradicted/qualified by:** No other paper in this corpus tests deloading directly, so this is currently a single, uncorroborated source for this topic. The study itself notes its finding is somewhat unexpected given how commonly deloads are used in strength/power sport practice — i.e., common practice is not itself evidence that this specific protocol (complete cessation) is beneficial.
+- **Evidence summary:** This is causal, experimental (not merely descriptive/survey) evidence, but for exactly one deload protocol (1 week, complete cessation, midpoint of a 9-week block) — it says nothing about other deload styles, durations, timings, or frequencies.
+- **Important uncertainty:** The authors explicitly note that real-world deloads are more commonly reduced-volume/reduced-load rather than complete cessation, and speculate (without testing) that a reduced-volume deload might behave differently (e.g., dissipating fatigue without the "lethargy"/detraining-like effect observed here for complete cessation). A disclosed funding/authorship conflict of interest (funded by Renaissance Periodization; a co-author co-founded RP) should be weighed, even though the study's methodology is comparatively rigorous.
+- **Safe product implication:** If an app allows users to log a full rest week, it is reasonable to communicate that hypertrophy progress is unlikely to be meaningfully set back by one week of complete rest, while flagging that a temporary dip in strength-test performance (e.g., 1RM) immediately following a full rest week would be consistent with this evidence and should not automatically be interpreted as program failure or loss of adaptation.
+- **Unsafe inference:** Do NOT generalize this to reduced-volume/reduced-load deloads (untested here), to other deload durations or frequencies (untested), to non-resistance-trained populations, to upper-body musculature (not directly measured), or as a general "deloading works/doesn't work" claim — this is evidence about one narrow, specific protocol only.
+
+---
+
+## 11. Range of motion / exercise technique
+
+*(Primary quantitative content is under EVIDENCE-021, 022, 023 above; this section consolidates the technique-specific picture and adds exercise-kinematics evidence.)*
+
+### EVIDENCE-026: Exercise-specific kinematic guidance (grip width, stance, foot position) is currently based mostly on biomechanical/anatomical convention, not hypertrophy-outcome research
+- **Claim:** With one narrow exception (a single 9-week foot-position study showing region-specific calf hypertrophy from different foot positions), exercise-specific kinematic/positioning guidelines are not derived from direct hypertrophy-outcome research; EMG-activation studies exist but activation is not established as a validated predictor of hypertrophy.
+- **Outcome:** Hypertrophy (where relevant) / Other (measurement validity caveat)
+- **Evidence confidence:** Low
+- **Supported by:** Androulakis Korakakis et al. 2024 (`korakakis-nippard-training-technique-2024.md`).
+- **Contradicted/qualified by:** N/A — this is itself a "here's what's missing" finding.
+- **Evidence summary:** The evidence base here is essentially one study for a direct hypertrophy-outcome kinematic manipulation, plus a caveat that the more commonly cited EMG-based technique guidance doesn't have validated predictive value for hypertrophy.
+- **Important uncertainty:** Nearly total for most specific kinematic guidance (grip width, stance, joint angle conventions) beyond the single calf-foot-position study.
+- **Safe product implication:** Exercise-technique guidance (form cues, stance, grip) should be presented as biomechanics/safety-based convention, not as hypertrophy-optimized science.
+- **Unsafe inference:** Do NOT present specific grip-width, stance, or joint-angle recommendations as hypertrophy-evidence-based beyond the one narrow (calf, foot-position) exception.
+
+---
+
+## 12. Recovery-related variables
+
+### EVIDENCE-027: This corpus contains very little direct evidence on recovery variables as standalone dose-response topics
+- **Claim:** No paper in this corpus directly studies inter-set rest interval length, sleep, nutrition timing, or stress management as a controlled dose-response variable against strength or hypertrophy outcomes. The only recovery-adjacent data available are secondary/incidental measures from the deload RCT.
+- **Outcome:** Other
+- **Evidence confidence:** N/A (absence-of-evidence statement)
+- **Supported by:** Absence across all 14 processed papers; the closest available data are secondary "readiness to train" measures from Coleman et al. 2024 (`coleman-deload.md`): some evidence of greater sleep quality in the deload group at mid-intervention, greater muscle soreness in the deload group post-intervention, and reduced self-reported training motivation in the deload group from week 4 to week 9 (continuous-training group reported no motivation change) — all described by the study's own authors as "relatively modest" with "questionable" practical meaningfulness.
+- **Contradicted/qualified by:** N/A.
+- **Evidence summary:** This section is included per the required registry structure, but its honest content is that the corpus does not support any dose-response or prescriptive claims about recovery variables — only a few incidental, low-weight, single-study observations.
+- **Important uncertainty:** Total, for essentially all commonly-discussed recovery variables (inter-set rest length, sleep duration/quality as an outcome moderator, nutrition timing, stress, active recovery).
+- **Safe product implication:** Do not build recovery-variable features (e.g., "your sleep affects your gains by X%") on this corpus — there is no supporting evidence here.
+- **Unsafe inference:** Do NOT manufacture recovery-related dosing rules (rest-interval-length recommendations, sleep thresholds, etc.) and attribute them to this evidence base — they are not supported. This is flagged as a research gap in `docs/evidence/research-gaps.md`.
+
+---
+
+## Verification pass 1 — original 10-paper corpus
+
+This section documents the final QC pass performed before treating this registry as complete.
+
+- **Papers processed:** 10/10 papers in `docs/research/` have a corresponding normalized note in `docs/research-notes/` (see `docs/research-notes/README.md` for the full inventory).
+- **Evidence claims created:** 27 numbered items (`EVIDENCE-001` through `EVIDENCE-027`), plus one dedicated unnumbered conflict note (Robinson vs. Refalo, under §5), across all 12 required sections.
+- **High-impact claims manually re-verified against source PDFs:** 17 evidence items, spanning 7 of the 10 papers, were directly cross-checked by re-opening the original PDFs at their cited page locations (not merely re-reading the already-written research notes) and comparing exact figures against what is written above:
+  - `EVIDENCE-001`, `EVIDENCE-002` — Pelland volume-hypertrophy and volume-strength β coefficients, credible intervals, and R² values (PDF pp.20–23).
+  - `EVIDENCE-005`, `EVIDENCE-006` — Pelland frequency-strength and frequency-hypertrophy β coefficients and posterior probabilities (PDF p.20, cross-checked via targeted extraction).
+  - `EVIDENCE-008`, `EVIDENCE-009`, `EVIDENCE-010` — Lopez network meta-analysis Table 2 SMDs, CIs, P-values, and heterogeneity (I²) for both load-hypertrophy and load-strength comparisons (PDF pp.7–8, printed pp.1210–1211).
+  - `EVIDENCE-011`, `EVIDENCE-012` — Robinson strength (null) and hypertrophy (robust) proximity-to-failure regression coefficients and CIs (PDF pp.12–15).
+  - `EVIDENCE-013` and the Robinson-vs-Refalo conflict note — Refalo's overall effect size, sensitivity-analysis P-value range, and all four non-significant sub-theme/moderator results (PDF pp.7–11, printed pp.655–659).
+  - `EVIDENCE-017`, `EVIDENCE-018`, `EVIDENCE-020` — Moesgaard's NP-vs-periodized and LP-vs-UP results for both strength and hypertrophy, including the trained/untrained subgroup split and the Monteiro-removal sensitivity analysis (PDF pp.6–14).
+  - `EVIDENCE-025` — Coleman's posterior probabilities for hypertrophy, dynamic strength, isometric strength, local muscular endurance, and CMJ power (PDF pp.9–13).
+  - `EVIDENCE-001`, `EVIDENCE-002`, `EVIDENCE-003`, `EVIDENCE-009`, `EVIDENCE-016`, `EVIDENCE-019` — ACSM's Table 4 (per-variable QoE%) and Table 6 (summary thresholds) (PDF pp.7–10, printed pp.857–860).
+- **Corrections made as a result of this verification pass:**
+  1. **Fixed a fabricated range.** `EVIDENCE-002`, `EVIDENCE-003`, `EVIDENCE-016`, and `EVIDENCE-019` previously stated the ACSM strength-volume QoE as "71–79%." Direct re-reading of ACSM's Table 4 showed this was wrong: the Volume/Sets row for strength reports a single clean figure (QoE=71%, 7 reviews); 79% belongs to a different variable (Load, 6 reviews) that had been conflated into the same range. Corrected to report each variable's QoE separately.
+  2. **Added a previously-omitted primary-source data point.** ACSM's own Table 6 explicitly states recommended thresholds — "≥80% 1RM (dose-response)" for strength and "≥10 sets/wk (dose-response)" for hypertrophy — as its own vote-count-derived summary. This was found during page-location review but had not yet been incorporated. Added to `EVIDENCE-001` and `EVIDENCE-003` with an explicit caveat that it is a coarse, single-point threshold from a vote-count methodology, not a validated optimum, and that it sits awkwardly (does not simply "confirm") against Pelland's continuous, non-plateauing volume-hypertrophy curve.
+  3. **Added a matching precision detail.** `EVIDENCE-005` now reports Pelland's "100% posterior probability of a positive slope" for frequency-strength, matching the level of detail already given for frequency-hypertrophy in `EVIDENCE-006` (91.3%).
+  - No other discrepancies were found — all other cross-checked SMDs, effect sizes, confidence/credible intervals, P-values, heterogeneity statistics, and posterior probabilities in the sections above matched their source PDFs exactly.
+- **Unresolved conflicts:** One genuine cross-source conflict remains unresolved by design: **Robinson vs. Refalo on the shape/robustness of the proximity-to-failure → hypertrophy relationship** (see the dedicated conflict note under §5). This is a true disagreement between two independent analyses, not an artifact of miscopying, and this registry intentionally does not pick a winner. Two further items are **divergent findings within a single paper's own results**, not conflicts between sources, and should not be conflated with the Robinson/Refalo case: Moesgaard's periodization effect is present for strength but absent for hypertrophy (`EVIDENCE-017`/`EVIDENCE-018` vs. `EVIDENCE-020`), and Lopez's load effect is present for strength but absent for hypertrophy (`EVIDENCE-009` vs. `EVIDENCE-008`) — both are single-source, internally-consistent divergences, not disagreements between papers.
+- **PDFs that could not be reliably parsed:** None. All 10 PDFs extracted cleanly (body text, tables, and figures/forest-plot captions were all legible and extractable). The only data-integrity issue found anywhere in the corpus was the `04_`/`05_` filename-vs-content swap documented in `docs/research-notes/README.md` — this is a labeling issue on disk, not a parsing failure, and remains unresolved (files not renamed) pending a human maintainer's decision.
+
+### Verification pass 2 — papers 11–14 integration (2026-08-09)
+
+This pass covers the four papers added after the initial 10-paper corpus was finalized. Per the incremental-integration approach, the full prior verification exercise above was **not** repeated; instead, all four new papers were read directly from source PDF (not reconstructed from any intermediate summary), and the specific new/materially-affected claims were checked against Results/Table/Discussion sections at the time each research note and registry item was written.
+
+- **Papers processed:** 14/14 papers in `docs/research/` now have a corresponding normalized note in `docs/research-notes/` (see updated `docs/research-notes/README.md` inventory).
+- **Evidence claims created:** 4 new numbered items (`EVIDENCE-028` through `EVIDENCE-031`), plus one extension paragraph appended to the existing Robinson-vs-Refalo conflict note (§5). No existing EVIDENCE ID was renumbered or removed.
+- **New/materially-affected claims verified directly against source PDFs (not merely against the newly-written notes):**
+  - `EVIDENCE-028` (Baz-Valle) — quadriceps/biceps/triceps SMDs, CIs, P-values, and I² from Figure 2(a–c) and the surrounding text (PDF p.202, 204); volume-band definitions and per-study set counts from Table 2 (PDF p.205).
+  - `EVIDENCE-029` (Refalo 2024 RIR-vs-failure) — quadriceps thickness posterior estimates, HDIs, and pd/pd>TE values (PDF p.93–94); velocity-loss and repetition-loss weekly figures (PDF p.95–96); accumulated volume-load/repetition-volume figures and Figure 6 (PDF p.96–97). Cross-checked that the RIR protocol used asymmetric per-exercise targets (2-RIR leg press, 1-RIR leg extension) rather than a single uniform value, directly from the Methods section (PDF p.89–90), to avoid overstating this as evidence for one specific RIR number.
+  - `EVIDENCE-030` (Refalo 2024 RIR-accuracy) — raw/absolute accuracy means and CIs for combined, 1-RIR, and 3-RIR conditions, and all three equivalence-testing comparisons (1-RIR vs. 3-RIR, set vs. set, session vs. session) (PDF p.4–5); exploratory regression R² values (PDF p.5).
+  - `EVIDENCE-031` (Chaves) — 1RM and CSA interaction/protocol-effect F- and P-values, group-level percent changes, and mean differences with CIs (PDF Results section); accumulated-reps, accumulated-load, and volume-load figures including the non-significant volume-load-vs-outcome correlations (all R between −0.04 and 0.20, all P>0.19).
+  - GAP-01 and GAP-02 re-assessment (see `docs/evidence/research-gaps.md`) was cross-checked against the same source locations as `EVIDENCE-028`/`EVIDENCE-029` above rather than re-verified separately.
+- **Step 10 check (load/frequency-at-failure conflation):** Searched the full registry, all research notes, and `docs/evidence/product-evidence-boundaries.md` for language that could conflate "load doesn't matter for hypertrophy when trained to failure" (an accurately-scoped finding, specific to Lopez et al.'s load comparison, EVIDENCE-008) with "frequency doesn't matter for hypertrophy" (a separately-tested finding, EVIDENCE-006, not conditioned on failure in Pelland's frequency model). No instance of this conflation was found — existing text (EVIDENCE-006, EVIDENCE-008, EVIDENCE-010, ACSM note lines, and Category A/B items in `product-evidence-boundaries.md`) already lists load-at-failure and frequency as separate, independently-scoped findings rather than presenting frequency as conditional on failure training. No correction was necessary.
+- **Corrections made as a result of this pass:** None to existing (EVIDENCE-001 through EVIDENCE-027) items' figures — only additive cross-reference notes were appended (e.g., to EVIDENCE-001, and the Robinson-vs-Refalo conflict note) to reflect how the new papers relate to existing claims; no existing statistic was found to be wrong.
+- **Unresolved conflicts (updated):** The Robinson-vs-Refalo(2023) disagreement on proximity-to-failure/hypertrophy curve shape (§5) remains genuinely unresolved by design — EVIDENCE-029 adds corroborating intervention-level evidence for the narrower, shared claim that literal failure is not required, but does not adjudicate the curve-shape disagreement itself. This distinction is treated carefully in the updated conflict note and in `docs/evidence/research-gaps.md` GAP-02, to avoid overstating resolution.
+- **PDFs that could not be reliably parsed:** None. All 4 new PDFs (11–14) extracted cleanly, including all statistical tables and figure captions referenced above.

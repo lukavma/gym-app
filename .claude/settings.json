@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"docs/research-notes\" \"docs/evidence\" && ls docs)",
+      "Bash(powershell -Command \"Get-Item 'C:\\\\DEV\\\\gym-app\\\\docs\\\\research\\\\01_acsm_2026_resistance_training.pdf' | Select-Object Name, Length\")",
+      "Bash(python -c ' *)",
+      "Bash(python3 -c ' *)",
+      "Bash(powershell -Command \"Get-ChildItem -Path docs/research -Filter '*.pdf' | Select-Object Name, Length\")",
+      "Bash(pdfinfo \"docs/research/05_lopez_training_load.pdf\")"
+    ],
+    "additionalDirectories": [
+      "C:\\DEV\\gym-app\\docs"
+    ]
+  }
+}

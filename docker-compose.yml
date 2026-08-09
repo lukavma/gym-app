@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gymapp
+      POSTGRES_PASSWORD: gymapp
+      POSTGRES_DB: gymapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - gymapp-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gymapp -d gymapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  gymapp-db-data:
