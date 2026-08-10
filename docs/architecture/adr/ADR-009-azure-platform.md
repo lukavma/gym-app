@@ -1,14 +1,14 @@
 # ADR-009: Platform — Azure App Service, Azure Database for PostgreSQL, GitHub Actions OIDC
 
 ## Status
-Accepted (2026-08-09). Supersedes the Vercel + Neon hosting selections previously recorded in `architecture-plan.md` §3/§8 and ADR-003 (ADR-003 amended same date for the database portion).
+Accepted (2026-08-09). Supersedes the Vercel + Neon hosting selections previously recorded in `architecture-plan.md` §3/§8 and ADR-003 (ADR-003 amended same date for the database portion). **Amended 2026-08-10:** region changed from Germany West Central to West Europe, and Node version changed from 22 LTS to 24 LTS (see Amendments below); no other part of the decision changed.
 
 ## Context
 A platform mandate requires the application to run entirely on Azure-managed services. This replaces hosting/persistence vendors only — Next.js/React/TypeScript, Drizzle, PostgreSQL, the PWA/offline architecture, auth model, and the modular monolith are unaffected. The selection criteria stay what they were: smallest, lowest-operations setup for a single-user app, no enterprise machinery.
 
 ## Decision
 
-**Compute: Azure App Service (Linux), Basic B1, Node 22 LTS**, region Germany West Central, running the Next.js **standalone output** (`node server.js` startup command), Always On enabled, HTTPS-only (platform-managed TLS on `*.azurewebsites.net`; custom domain optional later).
+**Compute: Azure App Service (Linux), Basic B1, Node 24 LTS**, region West Europe, running the Next.js **standalone output** (`node server.js` startup command), Always On enabled, HTTPS-only (platform-managed TLS on `*.azurewebsites.net`; custom domain optional later).
 
 **Database: Azure Database for PostgreSQL Flexible Server**, PostgreSQL 16, Burstable B1ms (1 vCPU / 2 GiB), 32 GiB storage, same region. Automated backups with 7-day point-in-time restore (built in). Public access with firewall rules (developer IP + "allow Azure services" for CI migrations), TLS required. No HA, no read replicas, no VNet integration. Access from the app via the plain `pg` (node-postgres) driver + Drizzle — the app is now a long-lived server, so no serverless driver or external pooler is needed (a small in-process `pg.Pool` suffices).
 
@@ -32,3 +32,11 @@ A platform mandate requires the application to run entirely on Azure-managed ser
 - **Losses:** no PR preview deployments; no database branching — dev/e2e now use local Docker Postgres 16 (`docker compose up db`), keeping Azure to exactly one server.
 - Azure resources (resource group, server, App Service, OIDC federated credential) are **human-provisioned prerequisites**; the repo carries their configuration as documentation + workflow YAML, not IaC — Bicep/Terraform would be over-engineering for four resources (revisit only if environments multiply).
 - Exit path unchanged in kind: plain Postgres (`pg_dump` restores anywhere) + a standard Node server (runs on any host).
+
+## Amendments (2026-08-10)
+
+### Node version changed to 24 LTS
+Node 22 was picked as "the current LTS" when this ADR was written, with no dependency- or platform-specific reason recorded. By provisioning time, Node 22 had entered Maintenance LTS (security fixes only, EOL April 2027) while Node 24 is Active LTS (EOL April 2028) and is fully supported by Azure App Service Linux (`NODE:24-lts`). With no code yet depending on 22-specific behavior (Phase 0 just landed), switching now avoids a forced runtime migration later. `package.json` engines, CI workflows, and this document's App Service runtime all use Node 24.
+
+### Region changed to West Europe
+During provisioning, `az postgres flexible-server list-skus --location germanywestcentral` returned `"reason": "Provisioning is restricted in this region"` for this subscription — Postgres Flexible Server cannot currently be created there at all (not a SKU/quota issue, a regional restriction; lifting it would require an Azure support request). Both App Service and the Postgres server were provisioned in **West Europe** instead, keeping app and database co-located and staying within the EU. Resource naming (`-weu` suffix) and all region references throughout the docs reflect this. No other part of ADR-009 changes; revisit the region choice only if Germany-specific data residency later becomes an actual requirement, not just a preference.

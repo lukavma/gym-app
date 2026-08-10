@@ -19,7 +19,7 @@ GitHub Actions.
 
 ## Prerequisites
 
-- Node 22.x
+- Node 24.x
 - pnpm (see `packageManager` in `package.json`)
 - Docker (for local Postgres via `docker-compose.yml`)
 
@@ -99,8 +99,8 @@ workout in later phases).
 
 ## Deployment
 
-Azure App Service (Linux, Node 22, Basic B1) + Azure Database for
-PostgreSQL Flexible Server (Postgres 16), both in Germany West Central —
+Azure App Service (Linux, Node 24, Basic B1) + Azure Database for
+PostgreSQL Flexible Server (Postgres 16), both in West Europe —
 see [ADR-009](docs/architecture/adr/ADR-009-azure-platform.md) for why.
 
 - One-time Azure resource + GitHub OIDC setup:

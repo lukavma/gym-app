@@ -50,14 +50,14 @@ Boundary enforced by ESLint import rules + a CI check; the progression engine ph
 | Local storage | IndexedDB via `idb` | Active session + outbox + bundle cache (ADR-005) |
 | Service worker | Serwist | Maintained next-pwa successor; precache + minimal runtime caching |
 | API | REST-ish route handlers + Zod validation, thin typed client | Explicit, replayable payloads suit the offline outbox better than RPC magic |
-| ORM / DB | Drizzle ORM → PostgreSQL 16 (Azure Database for PostgreSQL Flexible Server, Germany West Central) | SQL-first types, managed Postgres with built-in PITR backups (ADR-003/009) |
+| ORM / DB | Drizzle ORM → PostgreSQL 16 (Azure Database for PostgreSQL Flexible Server, West Europe) | SQL-first types, managed Postgres with built-in PITR backups (ADR-003/009) |
 | Tests | Vitest (+ PGlite for integration), Playwright (E2E) | Real-Postgres-semantics tests without Docker |
 | Auth | Single-account email+password, argon2id, iron-session cookie | Right-sized for one user (ADR-004) |
-| Hosting | Azure App Service (Linux B1, Node 22, standalone Next.js output) | Lowest-ops Azure-managed host for a long-lived Node server; platform TLS; Always On (ADR-009) |
+| Hosting | Azure App Service (Linux B1, Node 24, standalone Next.js output) | Lowest-ops Azure-managed host for a long-lived Node server; platform TLS; Always On (ADR-009) |
 | Telemetry | Application Insights (workspace-based, default sampling) | Server-side failure visibility for the sync path at negligible cost (ADR-009) |
 | IDs | UUIDv7, client-generated for offline-created rows | Idempotent sync, index-friendly |
 
-Node 22 LTS, pnpm. No Redis, no queues, and no Azure services beyond ADR-009's minimal set (App Service, Flexible Server, Application Insights) — in particular no AKS, Functions, API Management, Service Bus, VNets, or Key Vault in MVP.
+Node 24 LTS, pnpm. No Redis, no queues, and no Azure services beyond ADR-009's minimal set (App Service, Flexible Server, Application Insights) — in particular no AKS, Functions, API Management, Service Bus, VNets, or Key Vault in MVP.
 
 ## 4. System boundaries & major components
 

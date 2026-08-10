@@ -7,7 +7,7 @@ Accepted (2026-08-09). Revised same date: database hosting moved from Neon to Az
 Durable personal data (years of training history) with strict integrity needs (partial unique indexes, FK policies, check constraints, JSONB snapshots). Constraints: lowest available ops, modest cost, real backups without building them — and, per the platform mandate, Azure-managed services.
 
 ## Decision
-- **PostgreSQL 16** on **Azure Database for PostgreSQL Flexible Server** (Burstable B1ms, 32 GiB, Germany West Central — SKU/region detail in ADR-009), accessed via the plain **`pg` (node-postgres) driver** with a small in-process pool — the App Service host is a long-lived Node server, so no serverless driver or external pooler is needed.
+- **PostgreSQL 16** on **Azure Database for PostgreSQL Flexible Server** (Burstable B1ms, 32 GiB, West Europe — SKU/region detail in ADR-009), accessed via the plain **`pg` (node-postgres) driver** with a small in-process pool — the App Service host is a long-lived Node server, so no serverless driver or external pooler is needed.
 - **Drizzle ORM** + drizzle-kit migrations (generated SQL committed to the repo).
 - **PGlite** (WASM Postgres) for integration tests — real Postgres semantics (partial indexes, deferrable constraints, JSONB) in-process, no Docker.
 - **Local Docker Postgres 16** for dev and e2e databases (replaces Neon's branch databases; keeps Azure to exactly one server).

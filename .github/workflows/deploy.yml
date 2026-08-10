@@ -9,7 +9,7 @@ concurrency:
   group: azure-deploy-production
   cancel-in-progress: false
 
-# ADR-005/ADR-009: deploy to the single Azure App Service (Linux, Node 22)
+# ADR-005/ADR-009: deploy to the single Azure App Service (Linux, Node 24)
 # via short-lived OIDC federation — no long-lived Azure credentials are
 # stored in GitHub secrets. Requires the one-time human setup documented in
 # docs/deployment/azure-provisioning.md (federated credential + repo
@@ -41,7 +41,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: pnpm
 
       - name: Install dependencies
