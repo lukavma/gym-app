@@ -1,3 +1,10 @@
+# Flat, non-symlinked node_modules. Next's standalone-output file tracer and
+# Azure's zip-based deploy tooling don't handle pnpm's default symlinked
+# node_modules/.pnpm virtual store layout correctly (symlinks get flattened
+# into plain files during zip packaging, and some of next's internal
+# require.resolve() calls aren't traced through the symlink indirection).
+nodeLinker: hoisted
+
 allowBuilds:
   esbuild: true
   protobufjs: true
