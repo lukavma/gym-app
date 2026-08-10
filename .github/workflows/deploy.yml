@@ -73,8 +73,8 @@ jobs:
           echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
           az postgres flexible-server firewall-rule create \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ secrets.AZURE_POSTGRES_SERVER_NAME }}" \
-            --rule-name "github-actions-ci-run-${{ github.run_id }}" \
+            --server-name "${{ secrets.AZURE_POSTGRES_SERVER_NAME }}" \
+            --name "github-actions-ci-run-${{ github.run_id }}" \
             --start-ip-address "$RUNNER_IP" \
             --end-ip-address "$RUNNER_IP"
 
@@ -86,8 +86,8 @@ jobs:
         run: |
           az postgres flexible-server firewall-rule delete \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ secrets.AZURE_POSTGRES_SERVER_NAME }}" \
-            --rule-name "github-actions-ci-run-${{ github.run_id }}" \
+            --server-name "${{ secrets.AZURE_POSTGRES_SERVER_NAME }}" \
+            --name "github-actions-ci-run-${{ github.run_id }}" \
             --yes
 
       - name: Deploy to Azure App Service
