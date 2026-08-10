@@ -50,10 +50,19 @@ jobs:
       - name: Build (standalone output)
         run: pnpm build
 
+      # azure/webapps-deploy@v3 zips the package for Kudu zip-deploy, and
+      # that zipping does not preserve real symlinks — pnpm's node_modules
+      # relies on symlinks (e.g. node_modules/next -> .pnpm/next@.../...),
+      # so a naive zip turns each symlink into a plain file containing the
+      # link target text, which then fails to `require()` at runtime.
+      # `cp -rL` dereferences symlinks into real file copies so the zipped
+      # package only contains regular files/directories.
       - name: Assemble standalone deployment package
         run: |
           cp -r .next/static .next/standalone/.next/static
           cp -r public .next/standalone/public
+          mkdir -p deploy-package
+          cp -rL .next/standalone/. deploy-package/
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -94,4 +103,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          package: .next/standalone
+          package: deploy-package
