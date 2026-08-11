@@ -3,6 +3,14 @@ name: Deploy to Azure
 on:
   push:
     branches: [main]
+    # Skip production deploys for commits that only touch docs. GitHub only
+    # skips the run when EVERY changed file in the push matches one of these
+    # patterns; if the same push also touches app/config/infra files, the
+    # deploy still runs normally. `workflow_dispatch` below is unaffected by
+    # paths-ignore, so a deploy can always be forced manually if needed.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   workflow_dispatch:
 
 concurrency:

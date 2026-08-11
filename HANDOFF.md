@@ -36,16 +36,16 @@ something.
 
 ## Key resource identifiers
 
-| Resource | Name |
-|---|---|
-| Resource group | `rg-gymapp-prod-weu` |
-| App Service plan | `asp-gymapp-prod-weu` |
-| App Service (web app) | `app-gymapp-prod-weu-martis01` |
+| Resource                 | Name                                           |
+| ------------------------ | ---------------------------------------------- |
+| Resource group           | `rg-gymapp-prod-weu`                           |
+| App Service plan         | `asp-gymapp-prod-weu`                          |
+| App Service (web app)    | `app-gymapp-prod-weu-martis01`                 |
 | Postgres Flexible Server | `psql-gymapp-prod-weu-martis01` (db: `gymapp`) |
-| Log Analytics workspace | `log-gymapp-prod-weu` |
-| Application Insights | `appi-gymapp-prod-weu` |
-| GitHub OIDC Entra app | `gha-gymapp-prod` |
-| Repo | `lukavma/gym-app` on GitHub |
+| Log Analytics workspace  | `log-gymapp-prod-weu`                          |
+| Application Insights     | `appi-gymapp-prod-weu`                         |
+| GitHub OIDC Entra app    | `gha-gymapp-prod`                              |
+| Repo                     | `lukavma/gym-app` on GitHub                    |
 
 Full provisioning narrative (including the `az` commands that built all of
 this): `docs/deployment/azure-provisioning.md`.
@@ -94,6 +94,27 @@ similar symlink/module-resolution weirdness ever resurfaces.
 If you ever touch `pnpm-workspace.yaml`'s `nodeLinker` or the deploy
 packaging step in `deploy.yml`, know why they're there before "simplifying"
 them — both are load-bearing for production, not incidental.
+
+## Deploy trigger: docs-only pushes no longer deploy
+
+`.github/workflows/deploy.yml`'s `push` trigger now has:
+
+```yaml
+paths-ignore:
+  - "docs/**"
+  - "**/*.md"
+```
+
+A push where every changed file matches one of those patterns (any `.md`
+file at any depth, plus anything under `docs/`) no longer runs the deploy
+workflow — no build, no migration, no App Service redeploy. `ci.yml` is
+unaffected and still runs on every push (its own independent `on: push`
+trigger, not gated by these patterns), so lint/typecheck/tests still cover
+doc-only commits. A push that touches even one non-matching file (app code,
+config, `package.json`, workflow files, etc.) alongside docs still deploys
+normally — GitHub only skips the run when _all_ changed files match the
+ignore list. `workflow_dispatch` is unaffected either way, so a deploy can
+always be forced manually from the Actions tab if needed.
 
 ## Other gotchas surfaced this session (not blocking, just FYI)
 
