@@ -57,7 +57,7 @@ Integration tests need no env (PGlite in-memory, migrations applied programmatic
 
 ### 1.4 Migrations & seeds
 
-- Schema changes only via `drizzle-kit generate` → committed SQL in `src/db/migrations/` → applied by `drizzle-kit migrate` as a CI release step against production (before each App Service deployment; reaches the DB via the Azure-services firewall allowance, dynamic runner-IP rule as fallback — ADR-009) and on dev start. Never edit an applied migration.
+- Schema changes only via `drizzle-kit generate` → committed SQL in `drizzle/` → applied by `drizzle-kit migrate` as a CI release step against production (before each App Service deployment; reaches the DB via the Azure-services firewall allowance, dynamic runner-IP rule as fallback — ADR-009) and on dev start. Never edit an applied migration.
 - Seeds are idempotent upserts keyed by slug (`muscle_groups`, exercise catalog, RP volume preset) in `src/db/seed/`, safe to rerun on every deploy.
 
 ### 1.5 Testing policy (non-negotiable suites in bold)

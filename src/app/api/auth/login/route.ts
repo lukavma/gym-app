@@ -6,6 +6,7 @@ import {
   InvalidCredentialsError,
   ThrottledError,
 } from "@/server/auth/service";
+import { extractClientIp } from "@/server/http/clientIp";
 
 // Argon2id verification happens inside login() — must stay on the Node
 // runtime (not Edge).
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_input" }, { status: 400 });
   }
 
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const ip = extractClientIp(request.headers.get("x-forwarded-for")) ?? "unknown";
 
   try {
     await login(getDb(), parsed.data, { ip });

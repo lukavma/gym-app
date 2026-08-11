@@ -21,6 +21,13 @@ const citext = customType<{ data: string }>({
 export const users = pgTable(
   "users",
   {
+    // Legacy Phase-0 value: this generates UUIDv4 (`gen_random_uuid()`), not
+    // the UUIDv7 convention (data-model.md §1) established from Phase 1
+    // onward. The production `users` table already has real rows on this
+    // default, and there is exactly one such row — rewriting it offers no
+    // benefit and risks a destructive migration for a cosmetic fix, so it is
+    // left untouched by design. Do not copy `.defaultRandom()` onto new
+    // tables; generate IDs with `newId()` from `@/domain/ids/uuidv7` instead.
     id: uuid("id").primaryKey().defaultRandom(),
     email: citext("email").notNull(),
     passwordHash: text("password_hash").notNull(),

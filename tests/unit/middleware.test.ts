@@ -42,4 +42,31 @@ describe("middleware", () => {
     // re-issues the cookie so its expiry is refreshed from activity.
     expect(response.headers.get("set-cookie")).toContain("gym_app_session=");
   });
+
+  it("returns 401 JSON (not a redirect) for an unauthenticated protected API route", async () => {
+    const request = new NextRequest(new URL("http://localhost/api/exercises"));
+    const response = await middleware(request);
+    expect(response.status).toBe(401);
+    expect(response.headers.get("location")).toBeNull();
+    await expect(response.json()).resolves.toEqual({ error: "unauthenticated" });
+  });
+
+  it("keeps public auth/setup/health API routes reachable without a session", async () => {
+    for (const path of ["/api/auth/login", "/api/auth/setup", "/api/health"]) {
+      const request = new NextRequest(new URL(`http://localhost${path}`));
+      const response = await middleware(request);
+      expect(response.status).not.toBe(401);
+      expect(response.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("allows an authenticated protected API request through", async () => {
+    const cookie = await sealedSessionCookie("11111111-1111-1111-1111-111111111111");
+    const request = new NextRequest(new URL("http://localhost/api/exercises"), {
+      headers: { cookie },
+    });
+    const response = await middleware(request);
+    expect(response.status).not.toBe(401);
+    expect(response.headers.get("location")).toBeNull();
+  });
 });

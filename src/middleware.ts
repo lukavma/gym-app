@@ -19,6 +19,13 @@ export async function middleware(request: NextRequest) {
   const response = NextResponse.next();
   const authenticated = await touchSessionInMiddleware(request, response);
   if (!authenticated) {
+    // API routes are consumed by the app's own fetch client, never a
+    // browser navigation — an HTML redirect would just hand back a login
+    // page body where JSON was expected. UI routes redirect to /login;
+    // everything else (all protected API routes) gets a plain 401.
+    if (pathname.startsWith("/api")) {
+      return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+    }
     const loginUrl = new URL("/login", request.url);
     return NextResponse.redirect(loginUrl);
   }

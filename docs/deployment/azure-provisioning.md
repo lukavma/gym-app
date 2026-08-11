@@ -25,9 +25,14 @@ Optional but useful for verification:
 * PostgreSQL `psql` client
 * GitHub CLI (`gh`)
 
-**Status: PENDING HUMAN VERIFICATION.**
+**Status: production resources exist and are live.** See `HANDOFF.md` for
+current verification evidence (health check, login route, Application
+Insights telemetry). This document remains the reusable, step-by-step
+provisioning and disaster-recovery guide — the commands below are the
+procedure to (re-)run for any environment, not a record of what has already
+been done for the current one.
 
-These commands are intended to be run manually. Do not treat this document itself as evidence that the resources exist.
+These commands are intended to be run manually. Do not treat this document itself as evidence that a *future* re-provisioning run has already completed — check the target environment (or `HANDOFF.md` for the current production environment) instead.
 
 ---
 
@@ -248,6 +253,37 @@ az postgres flexible-server db list `
   --server-name $env:POSTGRES_SERVER_NAME `
   --output table
 ```
+
+### 3.6 Allow the `citext` extension
+
+Azure Database for PostgreSQL Flexible Server only permits `CREATE EXTENSION`
+for extensions on the server's allowlist. The Phase 0 migration runs
+`CREATE EXTENSION IF NOT EXISTS citext;` (`drizzle/0000_cool_nomad.sql`) for
+the case-insensitive `users.email` column — on a fresh server this fails
+until `citext` is added to the `azure.extensions` server parameter. Do this
+before running migrations (§12):
+
+```powershell
+az postgres flexible-server parameter set `
+  --resource-group $env:RESOURCE_GROUP `
+  --server-name $env:POSTGRES_SERVER_NAME `
+  --name azure.extensions `
+  --value CITEXT
+```
+
+Verify:
+
+```powershell
+az postgres flexible-server parameter show `
+  --resource-group $env:RESOURCE_GROUP `
+  --server-name $env:POSTGRES_SERVER_NAME `
+  --name azure.extensions `
+  --output table
+```
+
+The value should include `CITEXT`. If other extensions are already
+allowlisted on the target server, pass a comma-separated `--value` (e.g.
+`"CITEXT,UUID-OSSP"`) instead of overwriting the list with `CITEXT` alone.
 
 ---
 
@@ -605,15 +641,19 @@ Add the following values as **environment secrets**:
 | `AZURE_POSTGRES_SERVER_NAME` | `$env:POSTGRES_SERVER_NAME` |
 | `AZURE_WEBAPP_NAME`          | `$env:WEBAPP_NAME`          |
 | `DATABASE_URL`               | `$DATABASE_URL`             |
-| `SESSION_SECRET`             | `$SESSION_SECRET`           |
 
 No:
 
 ```text
 AZURE_CLIENT_SECRET
+SESSION_SECRET
 ```
 
-is required for the OIDC deployment path.
+is required in GitHub. `AZURE_CLIENT_SECRET` is unnecessary for the OIDC
+deployment path; `SESSION_SECRET` is a **production runtime** value that
+belongs only in App Service App Settings (§8), never duplicated into
+GitHub — the deploy workflow's build step uses a fixed, harmless
+placeholder instead (see `.github/workflows/deploy.yml`).
 
 Do not add a publish profile unless OIDC is genuinely unavailable.
 
@@ -659,7 +699,7 @@ Do not replace OIDC with a stored Azure client secret.
 
 ## 12. Database migration path
 
-Before the first production deployment, confirm that the production `DATABASE_URL` is correct.
+Before the first production deployment, confirm the `citext` extension has been allowlisted (§3.6) — otherwise the migration below fails on `CREATE EXTENSION citext`. Also confirm that the production `DATABASE_URL` is correct.
 
 If `psql` is available:
 
@@ -846,6 +886,7 @@ Full workout offline synchronization is not part of Phase 0.
 * [ ] PostgreSQL Flexible Server state is `Ready`
 * [ ] PostgreSQL 16 configured
 * [ ] `gymapp` database exists
+* [ ] `citext` allowlisted via `azure.extensions` (§3.6)
 * [ ] local PostgreSQL connectivity succeeds
 * [ ] Phase 0 Drizzle migration applied
 * [ ] `users` and `auth_throttle` exist
@@ -870,6 +911,7 @@ Full workout offline synchronization is not part of Phase 0.
 * [ ] GitHub `production` Environment exists
 * [ ] required environment secrets configured
 * [ ] no `AZURE_CLIENT_SECRET`
+* [ ] no `SESSION_SECRET` (production value lives only in App Service App Settings, §8)
 * [ ] workflow contains `id-token: write`
 * [ ] workflow uses `environment: production`
 

@@ -22,7 +22,14 @@ concurrency:
 # stored in GitHub secrets. Requires the one-time human setup documented in
 # docs/deployment/azure-provisioning.md (federated credential + repo
 # secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
-# AZURE_WEBAPP_NAME, DATABASE_URL, SESSION_SECRET).
+# AZURE_WEBAPP_NAME, DATABASE_URL).
+#
+# SESSION_SECRET is intentionally NOT a GitHub secret: the production value
+# lives only in Azure App Service App Settings (ADR-009 §Secrets/config) and
+# is never read by this workflow. The build step below needs *a*
+# syntactically valid value (sessionConfig.ts requires >=32 chars at import
+# time) but never uses it to seal/unseal a real cookie during CI/CD, so a
+# fixed placeholder is used instead of duplicating the real secret here.
 jobs:
   quality:
     uses: ./.github/workflows/ci.yml
@@ -36,7 +43,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      SESSION_SECRET: build-time-placeholder-not-used-at-runtime-32b
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     steps:
