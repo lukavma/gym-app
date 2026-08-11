@@ -105,6 +105,9 @@ jobs:
       - name: Run database migrations
         run: pnpm db:migrate
 
+      - name: Run database seed
+        run: pnpm db:seed
+
       - name: Close DB firewall for this runner
         if: always()
         run: |

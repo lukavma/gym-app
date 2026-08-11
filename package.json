@@ -22,10 +22,12 @@
     "test": "pnpm test:unit && pnpm test:integration",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx src/db/seed/run.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
+    "@serwist/next": "^9.0.11",
     "applicationinsights": "^3.4.0",
     "drizzle-orm": "^0.44.2",
     "iron-session": "^8.0.4",
@@ -34,19 +36,19 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "serwist": "^9.0.11",
-    "@serwist/next": "^9.0.11",
     "styled-jsx": "^5.1.6",
+    "uuidv7": "^1.2.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",
     "@eslint/eslintrc": "^3.2.0",
     "@playwright/test": "^1.49.1",
+    "@tailwindcss/postcss": "^4.0.0",
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
-    "@tailwindcss/postcss": "^4.0.0",
     "drizzle-kit": "^0.31.1",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.4.6",
@@ -54,6 +56,7 @@
     "postcss": "^8.4.49",
     "prettier": "^3.4.2",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.7.3",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.2.4"

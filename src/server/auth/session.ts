@@ -21,3 +21,12 @@ export async function destroySession(): Promise<void> {
   const session = await getSession();
   session.destroy();
 }
+
+// Defense in depth for protected route handlers: middleware already blocks
+// unauthenticated requests before they reach here, but route handlers run in
+// a separate (Node) runtime from middleware (Edge) and shouldn't assume that
+// invariant holds without checking it themselves.
+export async function requireUserId(): Promise<string | null> {
+  const session = await getSession();
+  return session.userId ?? null;
+}
