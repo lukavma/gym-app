@@ -42,6 +42,12 @@ export const DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT: Record<Equipment, number> = {
   other: 2.5,
 };
 
+// `exercises.load_step_kg` is `numeric(4,2)` (data-model.md §2.4), so 99.99
+// is the largest value the column can actually store. Kept as one constant
+// so domain validation, the API, and the UI all share the same ceiling as
+// persistence (Phase 1 review L1).
+export const MAX_LOAD_STEP_KG = 99.99;
+
 const contributionInputSchema = z.object({
   muscleGroupId: muscleGroupSlugSchema,
   role: contributionRoleSchema,
@@ -88,7 +94,7 @@ export const createExerciseSchema = z
     movementPattern: z.string().trim().min(1).max(100).optional(),
     mechanics: mechanicsSchema,
     laterality: lateralitySchema.default("bilateral"),
-    loadStepKg: z.number().gt(0).max(1000).optional(),
+    loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).optional(),
     notes: z.string().trim().max(2000).optional(),
     contributions: contributionsListSchema,
   })
@@ -112,7 +118,7 @@ export const updateExerciseSchema = z
     movementPattern: z.string().trim().min(1).max(100).nullable().optional(),
     mechanics: mechanicsSchema.optional(),
     laterality: lateralitySchema.optional(),
-    loadStepKg: z.number().gt(0).max(1000).optional(),
+    loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
     contributions: contributionsListSchema
       .transform((contributions) => contributions.map(withDefaultWeight))

@@ -3,7 +3,11 @@ import { z } from "zod";
 import { getDb } from "@/server/db";
 import { requireUserId } from "@/server/auth/session";
 import { archiveActionSchema } from "@/domain/exercises/schema";
-import { setExerciseArchived, ExerciseNotFoundError } from "@/server/exercises/service";
+import {
+  setExerciseArchived,
+  ExerciseNameConflictError,
+  ExerciseNotFoundError,
+} from "@/server/exercises/service";
 
 export const runtime = "nodejs";
 
@@ -32,6 +36,9 @@ export async function POST(request: Request, { params }: RouteParams) {
   } catch (err) {
     if (err instanceof ExerciseNotFoundError) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    if (err instanceof ExerciseNameConflictError) {
+      return NextResponse.json({ error: "name_conflict" }, { status: 409 });
     }
     throw err;
   }

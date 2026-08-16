@@ -3,7 +3,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/ui/Button";
-import { EQUIPMENT_TYPES, LATERALITY_TYPES, MECHANICS_TYPES } from "@/domain/exercises/schema";
+import {
+  EQUIPMENT_TYPES,
+  LATERALITY_TYPES,
+  MAX_LOAD_STEP_KG,
+  MECHANICS_TYPES,
+} from "@/domain/exercises/schema";
 import {
   ContributionEditor,
   emptyContributionRow,
@@ -29,6 +34,10 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
   const [equipment, setEquipment] = useState<(typeof EQUIPMENT_TYPES)[number]>("barbell");
   const [mechanics, setMechanics] = useState<(typeof MECHANICS_TYPES)[number]>("compound");
   const [laterality, setLaterality] = useState<(typeof LATERALITY_TYPES)[number]>("bilateral");
+  // Kept as a string for a controlled numeric input; empty means "use the
+  // equipment's default load step" (domain/exercises/schema.ts
+  // DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT), mirroring ContributionEditor's weight field.
+  const [loadStepKg, setLoadStepKg] = useState("");
   const [notes, setNotes] = useState("");
   const [contributions, setContributions] = useState<ContributionRow[]>([
     emptyContributionRow("primary"),
@@ -55,6 +64,7 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
         setEquipment(ex.equipment);
         setMechanics(ex.mechanics);
         setLaterality(ex.laterality);
+        setLoadStepKg(String(ex.loadStepKg));
         setNotes(ex.notes ?? "");
         setArchivedAt(ex.archivedAt);
         setContributions(
@@ -95,6 +105,7 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
       equipment,
       mechanics,
       laterality,
+      loadStepKg: loadStepKg.trim() === "" ? undefined : Number(loadStepKg),
       notes: notes.trim() === "" ? undefined : notes,
       contributions: buildContributionsPayload(),
     };
@@ -248,6 +259,21 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
             </option>
           ))}
         </select>
+      </label>
+
+      <label className="flex flex-col gap-1 text-sm text-slate-300">
+        Load step (kg)
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          max={MAX_LOAD_STEP_KG}
+          step="0.25"
+          placeholder="Equipment default"
+          value={loadStepKg}
+          onChange={(e) => setLoadStepKg(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+        />
       </label>
 
       <ContributionEditor rows={contributions} onChange={setContributions} />

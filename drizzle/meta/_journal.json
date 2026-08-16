@@ -15,6 +15,20 @@
       "when": 1786486564292,
       "tag": "0001_modern_blonde_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786879647583,
+      "tag": "0002_add_exercise_catalog_seed_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786892202437,
+      "tag": "0003_chief_miracleman",
+      "breakpoints": true
     }
   ]
 }

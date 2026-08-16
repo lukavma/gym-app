@@ -110,9 +110,17 @@ describe("createExerciseSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a loadStepKg above the 1000 ceiling", () => {
-    const result = createExerciseSchema.safeParse(baseInput({ loadStepKg: 1001 }));
+  it("rejects a loadStepKg above the numeric(4,2) column ceiling (Phase 1 review L1)", () => {
+    // exercises.load_step_kg is numeric(4,2) — max storable value is 99.99
+    // (data-model.md §2.4); domain validation must reject anything the
+    // column can't hold, not 500 on insert.
+    const result = createExerciseSchema.safeParse(baseInput({ loadStepKg: 100 }));
     expect(result.success).toBe(false);
+  });
+
+  it("accepts a loadStepKg at the numeric(4,2) column ceiling", () => {
+    const result = createExerciseSchema.safeParse(baseInput({ loadStepKg: 99.99 }));
+    expect(result.success).toBe(true);
   });
 
   it("rejects an unknown equipment value", () => {

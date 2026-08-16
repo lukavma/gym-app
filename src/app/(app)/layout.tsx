@@ -10,6 +10,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/exercises" className="hover:text-slate-200">
           Exercises
         </Link>
+        <Link href="/programs" className="hover:text-slate-200">
+          Programs
+        </Link>
       </nav>
       {children}
     </main>

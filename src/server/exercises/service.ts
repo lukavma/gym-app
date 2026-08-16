@@ -261,14 +261,20 @@ export async function setExerciseArchived(
   action: ArchiveAction,
 ): Promise<ExerciseRecord> {
   const archivedAt = action === "archive" ? new Date() : null;
-  const [row] = await db
-    .update(exercises)
-    .set({ archivedAt, updatedAt: new Date() })
-    .where(and(eq(exercises.id, id), eq(exercises.userId, userId)))
-    .returning();
-  if (!row) throw new ExerciseNotFoundError();
-  const [record] = await attachContributions(db, [row]);
-  return record ?? toRecord(row, []);
+  try {
+    const [row] = await db
+      .update(exercises)
+      .set({ archivedAt, updatedAt: new Date() })
+      .where(and(eq(exercises.id, id), eq(exercises.userId, userId)))
+      .returning();
+    if (!row) throw new ExerciseNotFoundError();
+    const [record] = await attachContributions(db, [row]);
+    return record ?? toRecord(row, []);
+  } catch (err) {
+    if (err instanceof ExerciseNotFoundError) throw err;
+    if (isPostgresErrorCode(err, UNIQUE_VIOLATION)) throw new ExerciseNameConflictError();
+    throw err;
+  }
 }
 
 export async function deleteExercise(db: AppDb, userId: string, id: string): Promise<void> {

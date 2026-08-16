@@ -107,6 +107,19 @@ describe("exercises service (PGlite integration)", () => {
     expect(restored.archivedAt).toBeNull();
   });
 
+  it("throws ExerciseNameConflictError (not a raw DB error) when unarchiving into an active name collision", async () => {
+    // Phase 1 review M1: archiving frees the name for reuse (uq_exercises_active_name
+    // is partial on archived_at IS NULL); the reverse direction — unarchiving into a
+    // name someone else now holds — must map the same way, not 500.
+    const original = await createExercise(db, userId, SQUAT_INPUT);
+    await setExerciseArchived(db, userId, original.id, "archive");
+    await createExercise(db, userId, SQUAT_INPUT);
+
+    await expect(setExerciseArchived(db, userId, original.id, "unarchive")).rejects.toThrow(
+      ExerciseNameConflictError,
+    );
+  });
+
   it("filters the list by a case-insensitive name search", async () => {
     await createExercise(db, userId, SQUAT_INPUT);
     await createExercise(db, userId, { ...SQUAT_INPUT, name: "Bench Press" });

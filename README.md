@@ -63,6 +63,47 @@ Playwright needs a running local Postgres with migrations applied
 (`docker compose up -d db && pnpm db:migrate`); it starts its own dev
 server automatically (see `playwright.config.ts`).
 
+### Deferrable unique constraints need a manual migration patch
+
+Some tables use a `UNIQUE (..., position)`-style constraint that must be
+`DEFERRABLE INITIALLY DEFERRED` so a same-transaction reorder (swapping two
+rows' `position`/`set_number` values) doesn't trip a uniqueness violation
+mid-transaction. **`drizzle-kit` cannot express this**: the `unique()`
+builder in `drizzle-orm`'s pg-core has no `.deferrable()` API, and the
+migration-diffing snapshot (`drizzle/meta/*.json`) has no `deferrable`
+field on its unique-constraint entries. Running `pnpm db:generate` for a
+table like this produces a plain (non-deferrable) `UNIQUE` constraint in
+the generated SQL.
+
+**Workflow:** after `pnpm db:generate` touches one of these tables (new
+table, new constraint, or a column rename that regenerates the
+`CONSTRAINT` line), open the generated migration file and hand-append
+`DEFERRABLE INITIALLY DEFERRED` to the constraint, matching the style
+already in `drizzle/0003_chief_miracleman.sql`. This is safe against
+future `db:generate` runs because drizzle-kit diffs its own TS-schema
+snapshot, not live SQL — the plain `unique()` call in the schema file
+stays the accurate source of truth for the snapshot even though it can't
+spell "deferrable" itself. Don't try to "fix" this by redesigning the
+migration approach (e.g. hand-written SQL migrations, a custom
+drizzle-kit plugin); the annotate-after-generate workflow is the accepted
+tradeoff — see the comment above each affected table's `pgTable()` call
+(`src/db/schema/exercisePrescriptions.ts`,
+`src/db/schema/blockScheduleEntries.ts`) for the fully-worked rationale.
+
+Constraints that need this, so far:
+
+| Constraint                     | Table                    | Columns                             | Phase                              |
+| ------------------------------ | ------------------------ | ----------------------------------- | ---------------------------------- |
+| `uq_prescriptions_position`    | `exercise_prescriptions` | `(template_id, position)`           | 2                                  |
+| `uq_schedule_position`         | `block_schedule_entries` | `(block_id, position)`              | 2                                  |
+| `uq_session_exercise_position` | `session_exercises`      | `(session_id, position)`            | 3 (planned, `data-model.md` §2.13) |
+| `uq_set_number`                | `set_logs`               | `(session_exercise_id, set_number)` | 3 (planned, `data-model.md` §2.14) |
+
+When Phase 3 introduces `session_exercises`/`set_logs`, generate the
+migration as normal, then apply this same hand-patch before committing —
+do not skip review of that migration file just because `db:generate`
+"succeeded".
+
 ## Architecture boundary
 
 `src/domain → src/db → src/server → src/app/api → app/ui`, one-way only,
