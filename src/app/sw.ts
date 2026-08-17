@@ -268,7 +268,8 @@ const runtimeCaching: RuntimeCaching[] =
           }),
         },
         {
-          matcher: ({ url: { pathname }, sameOrigin }) => sameOrigin && !pathname.startsWith("/api/"),
+          matcher: ({ url: { pathname }, sameOrigin }) =>
+            sameOrigin && !pathname.startsWith("/api/"),
           handler: new NetworkFirst({
             cacheName: "others",
             plugins: [new ExpirationPlugin({ maxEntries: 32, maxAgeSeconds: 24 * 60 * 60 })],

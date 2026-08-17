@@ -17,11 +17,7 @@ const MAX_WEIGHT_KG = 9999.99;
 const MAX_REPS = 100;
 const MAX_RIR = 10;
 
-function validateSetInput(
-  weightKg: number,
-  reps: number,
-  rir: number | null,
-): string | null {
+function validateSetInput(weightKg: number, reps: number, rir: number | null): string | null {
   if (!Number.isFinite(weightKg) || weightKg < 0) return "Weight must be 0 or more.";
   if (weightKg > MAX_WEIGHT_KG) return `Weight must be ${MAX_WEIGHT_KG} kg or less.`;
   if (!Number.isInteger(reps) || reps < 1) return "Reps must be a whole number of 1 or more.";

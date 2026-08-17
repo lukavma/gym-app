@@ -92,10 +92,10 @@ tradeoff — see the comment above each affected table's `pgTable()` call
 
 Constraints that need this, so far:
 
-| Constraint                     | Table                    | Columns                             | Phase                              |
-| ------------------------------ | ------------------------ | ----------------------------------- | ---------------------------------- |
-| `uq_prescriptions_position`    | `exercise_prescriptions` | `(template_id, position)`           | 2                                  |
-| `uq_schedule_position`         | `block_schedule_entries` | `(block_id, position)`              | 2                                  |
+| Constraint                     | Table                    | Columns                             | Phase                    |
+| ------------------------------ | ------------------------ | ----------------------------------- | ------------------------ |
+| `uq_prescriptions_position`    | `exercise_prescriptions` | `(template_id, position)`           | 2                        |
+| `uq_schedule_position`         | `block_schedule_entries` | `(block_id, position)`              | 2                        |
 | `uq_session_exercise_position` | `session_exercises`      | `(session_id, position)`            | 3, `data-model.md` §2.13 |
 | `uq_set_number`                | `set_logs`               | `(session_exercise_id, set_number)` | 3, `data-model.md` §2.14 |
 
