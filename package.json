@@ -28,8 +28,10 @@
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
     "@serwist/next": "^9.0.11",
+    "@tanstack/react-query": "^5.101.4",
     "applicationinsights": "^3.4.0",
     "drizzle-orm": "^0.44.2",
+    "idb": "^8.0.3",
     "iron-session": "^8.0.4",
     "next": "^15.4.6",
     "pg": "^8.13.1",
@@ -38,7 +40,8 @@
     "serwist": "^9.0.11",
     "styled-jsx": "^5.1.6",
     "uuidv7": "^1.2.1",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

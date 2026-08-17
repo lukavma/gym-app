@@ -1,0 +1,112 @@
+import type { PrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot";
+import type { SetScheme } from "@/domain/schemes/setScheme";
+import type { RirBand } from "@/domain/schemes/rirBand";
+import type { ResolvedProgression } from "@/domain/progression/registry";
+
+// Mirrors src/server/today/service.ts's response shapes by contract — the
+// `sync` element cannot import `server` (eslint.config.mjs boundaries: only
+// `domain`/`sync` are reachable from here), so client DTOs are declared
+// locally, the same convention already used by src/ui/*/types.ts.
+
+export interface HistorySetSummaryDto {
+  setNumber: number;
+  weightKg: number;
+  reps: number;
+  rir: number | null;
+  isWarmup: boolean;
+}
+
+export interface HistorySessionSummaryDto {
+  sessionId: string;
+  startedAt: string;
+  isDeload: boolean;
+  sets: HistorySetSummaryDto[];
+}
+
+export interface TodayBundleExerciseEntryDto {
+  prescriptionId: string;
+  exerciseId: string;
+  exerciseName: string;
+  scheme: SetScheme;
+  targetRir: RirBand | null;
+  restSeconds: number | null;
+  progression: ResolvedProgression;
+  baselineLoadKg: number | null;
+  // pwa-offline-strategy.md §4 "exercises metadata (loadStepKg…)" — the
+  // exercise's own load increment, threaded through unchanged from
+  // `exercises.load_step_kg` so the UI can round/step prefills without a
+  // second round trip.
+  loadStepKg: number;
+  prefill: { loadKg: number | null; reps: number | null };
+  // pwa-offline-strategy.md §4 splits what the single `history` array used
+  // to serve into two roles: `previousPerformance` (last 3 non-deload
+  // sessions, for display) and `history` (last 5, for the future
+  // recommendation/progression engine's input window). Both share the same
+  // per-session shape today; they're populated independently server-side
+  // (see MEDIUM-5 in the Phase 3 review) so they can diverge later without
+  // a DTO change.
+  previousPerformance: HistorySessionSummaryDto[];
+  history: HistorySessionSummaryDto[];
+}
+
+export interface ActiveSessionSetDto {
+  id: string;
+  setNumber: number;
+  isWarmup: boolean;
+  weightKg: number;
+  reps: number;
+  rir: number | null;
+  loggedAt: string;
+  notes: string | null;
+}
+
+export interface ActiveSessionExerciseDto {
+  id: string;
+  exerciseId: string;
+  exerciseName: string;
+  position: number;
+  source: "template" | "adhoc";
+  prescription: PrescriptionSnapshot | null;
+  skipped: boolean;
+  notes: string | null;
+  sets: ActiveSessionSetDto[];
+}
+
+export interface ActiveSessionDto {
+  id: string;
+  blockId: string | null;
+  templateId: string | null;
+  templateName: string | null;
+  weekIndex: number | null;
+  isDeload: boolean;
+  status: "in_progress";
+  startedAt: string;
+  clientId: string | null;
+  notes: string | null;
+  exercises: ActiveSessionExerciseDto[];
+}
+
+export type TodayResolutionDto =
+  | {
+      kind: "scheduled";
+      blockId: string;
+      templateId: string;
+      templateName: string;
+      weekIndex: number | null;
+      isDeload: boolean;
+      exercises: TodayBundleExerciseEntryDto[];
+    }
+  | { kind: "rest" }
+  | { kind: "no_schedule" };
+
+export interface TodayBundleDto {
+  today: TodayResolutionDto;
+  activeSession: ActiveSessionDto | null;
+  // ISO timestamp set server-side at bundle-assembly time (HIGH-5/MEDIUM-5
+  // in the Phase 3 review) — the client compares this against "now" (or
+  // against a `bundleCache` entry's own fetchedAt) to explicitly show
+  // staleness rather than inferring it from a thrown fetch, since the SW's
+  // NetworkFirst/3s strategy for `/api/today-bundle` can resolve 200 from
+  // its own cache without the fetch ever throwing.
+  generatedAt: string;
+}

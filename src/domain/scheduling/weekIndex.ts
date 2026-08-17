@@ -8,7 +8,7 @@
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-function parseDateOnly(date: string): number {
+export function parseDateOnly(date: string): number {
   const parts = date.split("-").map(Number);
   const [year, month, day] = parts as [number, number, number];
   return Date.UTC(year, month - 1, day);

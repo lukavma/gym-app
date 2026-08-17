@@ -29,6 +29,13 @@
       "when": 1786892202437,
       "tag": "0003_chief_miracleman",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786917734164,
+      "tag": "0004_zippy_wolfsbane",
+      "breakpoints": true
     }
   ]
 }

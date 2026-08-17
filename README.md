@@ -96,10 +96,13 @@ Constraints that need this, so far:
 | ------------------------------ | ------------------------ | ----------------------------------- | ---------------------------------- |
 | `uq_prescriptions_position`    | `exercise_prescriptions` | `(template_id, position)`           | 2                                  |
 | `uq_schedule_position`         | `block_schedule_entries` | `(block_id, position)`              | 2                                  |
-| `uq_session_exercise_position` | `session_exercises`      | `(session_id, position)`            | 3 (planned, `data-model.md` §2.13) |
-| `uq_set_number`                | `set_logs`               | `(session_exercise_id, set_number)` | 3 (planned, `data-model.md` §2.14) |
+| `uq_session_exercise_position` | `session_exercises`      | `(session_id, position)`            | 3, `data-model.md` §2.13 |
+| `uq_set_number`                | `set_logs`               | `(session_exercise_id, set_number)` | 3, `data-model.md` §2.14 |
 
-When Phase 3 introduces `session_exercises`/`set_logs`, generate the
+Both are delivered: the hand-patch is already applied in
+`drizzle/0004_zippy_wolfsbane.sql`, and live `pg_constraint` inspection
+confirms `condeferrable=t, condeferred=t` on both. The next table that
+needs this treatment should follow the same workflow — generate the
 migration as normal, then apply this same hand-patch before committing —
 do not skip review of that migration file just because `db:generate`
 "succeeded".

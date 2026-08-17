@@ -9,3 +9,6 @@ export * from "./workoutTemplates";
 export * from "./exercisePrescriptions";
 export * from "./blocks";
 export * from "./blockScheduleEntries";
+export * from "./workoutSessions";
+export * from "./sessionExercises";
+export * from "./setLogs";

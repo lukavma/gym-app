@@ -25,3 +25,30 @@ Records genuine contradictions between binding spec documents (not ordinary scop
 **Resolution:** `blocks.volume_preset_id` is added now, in Phase 2, as a plain nullable `uuid` column with **no FK constraint**. This matches the column's own semantics — the ER diagram (data-model.md §3) already draws `blocks }o..|| volume_presets : "views with"` as a dotted, context-only relationship, and §5's derived-data note treats block "current week"/context views as pure display, not integrity-critical. No Phase 2 code reads or writes this column (nothing in Phase 2's scope produces a volume preset id to store); it exists purely so Phase 6 doesn't need `ADD COLUMN` on a live table. Phase 6 will add `ALTER TABLE blocks ADD CONSTRAINT blocks_volume_preset_id_volume_presets_id_fk FOREIGN KEY (volume_preset_id) REFERENCES volume_presets(id) ON DELETE SET NULL` once `volume_presets` exists, per data-model.md §2.9.
 
 **Follow-up:** None needed — Phase 6 closes this by adding the constraint per the existing spec; no doc wording is wrong here, it's purely a build-order artifact of a linear phase sequence referencing a not-yet-built table.
+
+---
+
+## D-03: Phase 3 sync applies conditional field patches in arrival order, not timestamp-compared full-row LWW
+
+**Status:** Accepted by the user on 2026-08-17 for Phase 3 / the MVP. Not resolved — deliberately carried, with revisit triggers below.
+
+**Conflict:** `implementation-plan.md`'s Phase 3 section specifies "idempotent **full-row** upserts keyed by client UUIDv7; **LWW on `updated_at`**", and `pwa-offline-strategy.md` §5 states "ops are full-row upserts/deletes keyed by entity UUID, so replays converge". The delivered Phase 3 sync does not match the second half of that contract:
+
+- The **client** half does match: after the Phase 3 remediation, every mutator in `src/sync/activeSession.ts` emits full-row payloads through `src/domain/sync/payloadBuilders.ts` (independently verified on the wire — see `docs/reviews/phase-3-remediation-verification.md`).
+- The **server** half does not. The three update paths in `src/server/sync/service.ts` (`workoutSessions`, `sessionExercises`, `setLogs`) build a conditional field patch — `if (payload.field !== undefined) patch.field = …` — seeded with a *server*-stamped `updatedAt`, and apply it in the order ops arrive.
+- Critically, the sync op schemas in `src/domain/sync/schema.ts` carry **no client write timestamp at all**: `updatedAt` appears nowhere in the transmitted payloads. So the server has nothing to compare, and last-write-wins is arrival-order-only *by construction*, not because a comparison was forgotten. Ordering is compliant with `pwa-offline-strategy.md` §6 ("by arrival order"); the granularity and the timestamp comparison are not.
+
+**Resolution (accepted risk):** Ship Phase 3 as built. The risk is accepted for the personal, single-account, single-active-session MVP: ADR-004 fixes the product at one account, the `uq_sessions_one_in_progress` partial unique index plus the takeover flow prevent two devices from concurrently owning one in-progress session, and no Phase 3 code path produces the divergence this contract exists to prevent.
+
+**Residual risk being carried:** concurrent multi-device editing — most plausibly **post-completion history corrections**, which are not protected by the in-progress-session lock. Two devices editing different fields of the same completed row, or the same field in an order that does not match wall-clock intent, can produce a stored row that reflects arrival order or a field-level merge rather than the logically newest complete row. That row would be internally consistent and would not be silently dropped, but it need not equal what either device last displayed.
+
+**Explicitly out of bounds:** this acceptance is **not** permission to introduce CRDTs, vector clocks, operational transforms, or any general merge machinery. Nothing in the current or planned MVP justifies that complexity.
+
+**Revisit triggers — any one of these reopens this deviation:**
+
+- regular concurrent use from more than one device;
+- an observed sync conflict or an unexpected field merge in real data;
+- planned expansion beyond the single-user / single-active-device posture;
+- a dedicated sync-contract redesign during later hardening.
+
+**Follow-up (what a correct future change requires):** not a one-line fix. It needs an explicit design covering (1) a client-generated write timestamp added to the sync op contract and to the payload builders; (2) server-side full-row conditional updates gated on that timestamp (`… WHERE updated_at <= :clientUpdatedAt`, or an equivalent guarded upsert) instead of unconditional field patches; (3) conflict tests that actually exercise divergent concurrent edits, including the history-correction path; and (4) compatibility with operations already queued in the offline outbox at upgrade time — old ops without a timestamp must still apply deterministically. Until that design exists, do not partially implement it.
