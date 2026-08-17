@@ -1,13 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import { ExerciseCard } from "./ExerciseCard";
 import { AddAdhocExercise } from "./AddAdhocExercise";
 
-export function WorkoutExecution() {
+interface WorkoutExecutionProps {
+  // Supplied only by the offline app shell (src/ui/OfflineShell.tsx), which
+  // needs full document navigations rather than client-side router pushes.
+  navigate?: (href: string) => void;
+}
+
+export function WorkoutExecution({ navigate }: WorkoutExecutionProps) {
   const router = useRouter();
+  const go = useCallback(
+    (href: string) => (navigate ? navigate(href) : router.push(href)),
+    [navigate, router],
+  );
   const session = useActiveSessionStore((s) => s.session);
   const hydrated = useActiveSessionStore((s) => s.hydrated);
   const hydrate = useActiveSessionStore((s) => s.hydrate);
@@ -27,8 +37,11 @@ export function WorkoutExecution() {
   }, [session?.id, session?.notes]);
 
   useEffect(() => {
-    if (hydrated && !session) router.replace("/today");
-  }, [hydrated, session, router]);
+    if (hydrated && !session) {
+      if (navigate) navigate("/today");
+      else router.replace("/today");
+    }
+  }, [hydrated, session, router, navigate]);
 
   if (!hydrated || !session) {
     return <p className="text-sm text-slate-400">Loading…</p>;
@@ -39,7 +52,7 @@ export function WorkoutExecution() {
     setBusy(true);
     try {
       await complete();
-      router.push("/today");
+      go("/today");
     } finally {
       setBusy(false);
     }
@@ -50,7 +63,7 @@ export function WorkoutExecution() {
     setBusy(true);
     try {
       await discard();
-      router.push("/today");
+      go("/today");
     } finally {
       setBusy(false);
     }
@@ -67,10 +80,18 @@ export function WorkoutExecution() {
         )}
       </header>
 
+      {/* Finding C — the old copy asserted a cause it cannot know ("it
+          conflicts with a session on another device"), which is misleading in
+          a single-account app (ADR-004) where the usual cause is that this
+          session is no longer in progress server-side. State the fact and the
+          consequence instead, including the consequence of discarding: sets
+          that never synced are not in History and are lost with it. */}
       {sessionBlocked && (
         <p className="rounded-lg border border-red-800 bg-red-950 px-3 py-2 text-xs text-red-300">
-          This workout can&apos;t sync anymore (it conflicts with a session on another device).
-          Further changes are disabled — discard it to start fresh.
+          The server rejected this workout&apos;s changes, so it can&apos;t sync anymore — usually
+          because this session is no longer in progress there. Further changes are disabled.
+          Discarding removes it from this device, and anything that never synced won&apos;t appear
+          in History.
         </p>
       )}
 

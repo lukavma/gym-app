@@ -206,7 +206,15 @@ function toHistoryDto(h: HistorySessionExerciseRow): HistorySessionDto {
   };
 }
 
-async function getActiveSession(db: AppDb, userId: string): Promise<ActiveSessionDto | null> {
+// Exported for `/api/active-session` (Finding C), which serves this on its
+// own so the client can read live active-session state without going through
+// the cacheable today bundle. `status` is hard-coded `"in_progress"` below
+// because the query only ever selects in-progress rows — a completed or
+// discarded session is simply absent, i.e. `null`.
+export async function getActiveSession(
+  db: AppDb,
+  userId: string,
+): Promise<ActiveSessionDto | null> {
   const [session] = await db
     .select()
     .from(workoutSessions)

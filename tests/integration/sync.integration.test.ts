@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import type { AppDb } from "@/db/client";
 import { createTestDb } from "./testDb";
 import { sessionExercises, setLogs, users, workoutSessions } from "@/db/schema";
@@ -16,6 +16,11 @@ import {
   type PrescriptionSnapshot,
 } from "@/domain/schemas/prescriptionSnapshot";
 import type { SyncOpEnvelope } from "@/domain/sync/schema";
+import {
+  buildSetDeletionOps,
+  type SetLogOp,
+  type SetLogRowFields,
+} from "@/domain/sync/setDeletionOps";
 
 async function insertTestUser(db: AppDb, email = "lifter@example.com") {
   const [user] = await db
@@ -565,5 +570,191 @@ describe("sync service (PGlite integration)", () => {
     expect(setResult.rejected).toEqual([
       { opId: conflictSet.opId, entity: "setLog", reason: "set_number_conflict" },
     ]);
+  });
+});
+
+// Finding D — contiguous set numbering after a deletion, proved against real
+// PostgreSQL rather than only against the pure planner in
+// tests/unit/setDeletion.test.ts. The ops applied here are the ops the client
+// actually enqueues: buildSetDeletionOps is the same module
+// src/sync/activeSession.ts (in-session) and src/sync/corrections.ts
+// (post-completion history) call.
+describe("set deletion renumbering (PGlite integration)", () => {
+  let db: AppDb;
+  let userId: string;
+  let exerciseId: string;
+  let sessionId: string;
+  let sessionExerciseId: string;
+  let clientSets: SetLogRowFields[];
+
+  const startedAt = new Date("2026-08-17T09:00:00.000Z").toISOString();
+
+  async function readSets() {
+    return db
+      .select({ id: setLogs.id, setNumber: setLogs.setNumber, weightKg: setLogs.weightKg })
+      .from(setLogs)
+      .where(eq(setLogs.sessionExerciseId, sessionExerciseId))
+      .orderBy(asc(setLogs.setNumber));
+  }
+
+  function toEnvelopes(ops: readonly SetLogOp[]): SyncOpEnvelope[] {
+    return ops.map((op) => ({
+      opId: op.opId,
+      entity: op.entity,
+      operation: op.operation,
+      payload: op.payload,
+    }));
+  }
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    await seedMuscleGroups(db);
+    userId = (await insertTestUser(db)).id;
+    exerciseId = (await insertSquat(db, userId)).id;
+    sessionId = newId();
+    sessionExerciseId = newId();
+
+    // Four work sets, numbered 1..4 — the state the device was in.
+    clientSets = [1, 2, 3, 4].map((setNumber) => ({
+      id: newId(),
+      setNumber,
+      isWarmup: false,
+      weightKg: 100 + setNumber,
+      reps: 8,
+      rir: 2,
+      loggedAt: startedAt,
+      notes: null,
+    }));
+
+    const seedOps: SyncOpEnvelope[] = [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: { id: sessionId, startedAt, templateName: "Push Day" },
+      },
+      {
+        opId: newId(),
+        entity: "sessionExercise",
+        operation: "upsert",
+        payload: { id: sessionExerciseId, sessionId, exerciseId, position: 0, source: "template" },
+      },
+      ...clientSets.map((set) => ({
+        opId: newId(),
+        entity: "setLog" as const,
+        operation: "upsert" as const,
+        payload: {
+          id: set.id,
+          sessionExerciseId,
+          setNumber: set.setNumber,
+          weightKg: set.weightKg,
+          reps: set.reps,
+          rir: set.rir,
+          loggedAt: set.loggedAt,
+        },
+      })),
+    ];
+    const seeded = await applySyncBatch(db, userId, seedOps);
+    expect(seeded.rejected).toEqual([]);
+  });
+
+  it.each([
+    { label: "first", index: 0 },
+    { label: "middle", index: 1 },
+    { label: "last", index: 3 },
+  ])("leaves 1..n contiguous after deleting the $label set", async ({ index }) => {
+    const target = clientSets[index]!;
+    const { deleted, remaining, ops } = buildSetDeletionOps({
+      sessionExerciseId,
+      setId: target.id,
+      sets: clientSets,
+    });
+    expect(deleted?.id).toBe(target.id);
+
+    const result = await applySyncBatch(db, userId, toEnvelopes(ops));
+    // Every op applied — a rejected renumber op would leave PostgreSQL
+    // non-contiguous while the device showed 1..n.
+    expect(result.rejected).toEqual([]);
+    expect(result.applied).toHaveLength(ops.length);
+
+    const rows = await readSets();
+    // No duplicate and no missing row: exactly the survivors, numbered 1..n.
+    expect(rows.map((r) => r.setNumber)).toEqual([1, 2, 3]);
+    expect(rows.map((r) => r.id)).toEqual(remaining.map((s) => s.id));
+    // The deleted row is gone, and the survivors kept their own values —
+    // renumbering must not shift weights onto the wrong set.
+    expect(rows.map((r) => r.id)).not.toContain(target.id);
+    expect(rows.map((r) => r.weightKg)).toEqual(remaining.map((s) => s.weightKg));
+  });
+
+  it("renumbers a completed session's sets too (post-completion history deletion)", async () => {
+    const completed = await applySyncBatch(db, userId, [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: {
+          id: sessionId,
+          status: "completed",
+          completedAt: new Date("2026-08-17T10:00:00.000Z").toISOString(),
+        },
+      },
+    ]);
+    expect(completed.rejected).toEqual([]);
+
+    const { ops } = buildSetDeletionOps({
+      sessionExerciseId,
+      setId: clientSets[1]!.id,
+      sets: clientSets,
+    });
+    const result = await applySyncBatch(db, userId, toEnvelopes(ops));
+
+    expect(result.rejected).toEqual([]);
+    const rows = await readSets();
+    expect(rows.map((r) => r.setNumber)).toEqual([1, 2, 3]);
+    expect(rows.map((r) => r.id)).toEqual([
+      clientSets[0]!.id,
+      clientSets[2]!.id,
+      clientSets[3]!.id,
+    ]);
+  });
+
+  it("rejects the renumbering if the ops are applied in descending order", async () => {
+    // Proof that buildSetDeletionOps's ascending order is load-bearing and not
+    // cosmetic. The sync API runs one transaction per op, so the DEFERRABLE
+    // INITIALLY DEFERRED uq_set_number is checked at each op's own COMMIT:
+    // renumbering 4→3 before 3→2 commits two rows holding set_number 3.
+    const { ops } = buildSetDeletionOps({
+      sessionExerciseId,
+      setId: clientSets[1]!.id,
+      sets: clientSets,
+    });
+    const [deleteOp, ...renumberOps] = toEnvelopes(ops);
+    const descending = [deleteOp!, ...renumberOps.reverse()];
+
+    const result = await applySyncBatch(db, userId, descending);
+
+    expect(result.rejected).toEqual([
+      { opId: descending[1]!.opId, entity: "setLog", reason: "set_number_conflict" },
+    ]);
+  });
+
+  it("is idempotent when the whole deletion batch is replayed", async () => {
+    // Offline reality: the flush can be interrupted after the server applied
+    // ops it never got to acknowledge, so the same batch arrives twice.
+    const { ops } = buildSetDeletionOps({
+      sessionExerciseId,
+      setId: clientSets[0]!.id,
+      sets: clientSets,
+    });
+    const envelopes = toEnvelopes(ops);
+
+    const first = await applySyncBatch(db, userId, envelopes);
+    const second = await applySyncBatch(db, userId, envelopes);
+
+    expect(first.rejected).toEqual([]);
+    expect(second.rejected).toEqual([]);
+    const rows = await readSets();
+    expect(rows.map((r) => r.setNumber)).toEqual([1, 2, 3]);
   });
 });

@@ -21,6 +21,19 @@ export async function enqueueOp(input: OutboxOpInput): Promise<void> {
   await db.put("outbox", buildOutboxRecord(input));
 }
 
+// Finding D — several ops that only make sense together (a set deletion plus
+// the renumbering of its siblings) enqueued in one IndexedDB transaction, so
+// a process death mid-write can't leave the queue holding the delete without
+// the renumbering. Insertion order is preserved by createdAt/opId, both
+// monotonic, which is what listPendingOps orders by.
+export async function enqueueOps(inputs: readonly OutboxOpInput[]): Promise<void> {
+  if (inputs.length === 0) return;
+  const db = await getIdb();
+  const tx = db.transaction("outbox", "readwrite");
+  await Promise.all(inputs.map((input) => tx.store.put(buildOutboxRecord(input))));
+  await tx.done;
+}
+
 // FIFO — `byCreatedAt` index returns rows in ascending creation order,
 // matching pwa-offline-strategy.md §5's ordering requirement. MEDIUM-2:
 // backoff is only meaningful if respected here — a pending op whose

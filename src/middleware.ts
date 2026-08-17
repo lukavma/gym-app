@@ -1,7 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { touchSessionInMiddleware } from "@/server/auth/edgeSession";
+import { OFFLINE_SHELL_PATH } from "@/domain/pwa/offlineShell";
 
-const PUBLIC_PATHS = new Set(["/login", "/setup"]);
+// The offline app shell must be public for the same reason `/sw.js` and the
+// manifest are exempt from the matcher below: it is fetched by the service
+// worker at install time, and a 307 to `/login` there would precache a login
+// page as the app shell.
+const PUBLIC_PATHS = new Set(["/login", "/setup", OFFLINE_SHELL_PATH]);
 const PUBLIC_PATH_PREFIXES = ["/api/auth/login", "/api/auth/setup", "/api/health", "/icons"];
 
 function isPublicPath(pathname: string): boolean {

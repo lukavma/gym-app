@@ -1,5 +1,6 @@
 import { newId } from "@/domain/ids/uuidv7";
-import { enqueueOp } from "./outbox";
+import { buildSetDeletionOps, type SetLogRowFields } from "@/domain/sync/setDeletionOps";
+import { enqueueOp, enqueueOps } from "./outbox";
 import { flushOutbox } from "./flush";
 
 export type HistorySetCorrectionPatch = Partial<{
@@ -31,12 +32,20 @@ export async function correctHistorySet(
   void flushOutbox();
 }
 
-export async function deleteHistorySet(setId: string): Promise<void> {
-  await enqueueOp({
-    opId: newId(),
-    entity: "setLog",
-    operation: "delete",
-    payload: { id: setId },
-  });
+// Finding D — the post-completion half of contiguous renumbering: the same
+// ops, in the same order, as the in-session path, enqueued in one IndexedDB
+// transaction so the queue can never hold the deletion without the
+// renumbering that keeps set numbers 1..n. `sets` must be the exercise's sets
+// as they were BEFORE the deletion; the caller applies `remaining` locally
+// (src/ui/history/HistoryDetail.tsx renumbers optimistically the same way).
+export async function deleteHistorySet(
+  sessionExerciseId: string,
+  setId: string,
+  sets: readonly SetLogRowFields[],
+): Promise<void> {
+  const { deleted, ops } = buildSetDeletionOps({ sessionExerciseId, setId, sets });
+  if (!deleted) return;
+
+  await enqueueOps(ops);
   void flushOutbox();
 }

@@ -1,8 +1,15 @@
 import { create } from "zustand";
 import * as activeSession from "./activeSession";
 import { listDeadLetterOps } from "./outbox";
+import { fetchRemoteActiveSession, isAdoptableRemoteSession } from "./remoteActiveSession";
 import type { StartSessionInput, LogSetInput, EditSetPatch } from "./activeSession";
 import type { ActiveSessionDto } from "./types";
+
+// Finding C — the outcome of trying to adopt a session the server reported as
+// in progress. `gone` means the server has freshly told us it is no longer
+// in progress (completed, discarded, or replaced); `unreachable` means we
+// could not ask. Neither ever results in a local session.
+export type AdoptRemoteOutcome = "adopted" | "gone" | "unreachable";
 
 // Thin reactive mirror over src/sync/activeSession.ts's IndexedDB-backed
 // mutators, shared across the Today and workout-execution pages so both
@@ -15,7 +22,7 @@ interface ActiveSessionState {
   hydrated: boolean;
   hydrate: () => Promise<void>;
   start: (input: StartSessionInput) => Promise<void>;
-  adoptRemote: (remote: ActiveSessionDto) => Promise<void>;
+  adoptRemote: (sessionId: string) => Promise<AdoptRemoteOutcome>;
   addAdhocExercise: (exerciseId: string, exerciseName: string) => Promise<void>;
   setExerciseSkipped: (sessionExerciseId: string, skipped: boolean) => Promise<void>;
   setExerciseNotes: (sessionExerciseId: string, notes: string | null) => Promise<void>;
@@ -47,9 +54,19 @@ export const useActiveSessionStore = create<ActiveSessionState>((set, get) => ({
     const session = await activeSession.startSession(input);
     set({ session, hydrated: true });
   },
-  adoptRemote: async (remote) => {
-    await activeSession.hydrateFromServer(remote);
-    set({ session: remote, hydrated: true });
+  // Takes an id, not a session object, on purpose: the caller is not allowed
+  // to supply the state that gets adopted. Whatever the UI was displaying
+  // (necessarily some snapshot fetched earlier), the row that lands in
+  // IndexedDB is re-read from the server here, immediately before the write,
+  // and only if it is still that same session and still in progress.
+  adoptRemote: async (sessionId) => {
+    const live = await fetchRemoteActiveSession();
+    if (live.status !== "fresh") return "unreachable";
+    if (!isAdoptableRemoteSession(live.activeSession, sessionId)) return "gone";
+    await activeSession.hydrateFromServer(live.activeSession);
+    set({ session: live.activeSession, hydrated: true });
+    await get().refreshSessionBlocked();
+    return "adopted";
   },
   addAdhocExercise: async (exerciseId, exerciseName) => {
     const session = await activeSession.addAdhocExercise(exerciseId, exerciseName);

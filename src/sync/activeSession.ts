@@ -5,13 +5,13 @@ import {
   buildWorkoutSessionUpsertPayload,
   buildSessionExerciseUpsertPayload,
   buildSetLogUpsertPayload,
-  buildSetLogDeletePayload,
 } from "@/domain/sync/payloadBuilders";
 import {
   wrapPrescriptionSnapshot,
   STRATEGY_VERSIONS,
   type PrescriptionSnapshot,
 } from "@/domain/schemas/prescriptionSnapshot";
+import { buildSetDeletionOps } from "@/domain/sync/setDeletionOps";
 import type {
   ActiveSessionDto,
   ActiveSessionExerciseDto,
@@ -43,7 +43,18 @@ export async function clearLocalSession(): Promise<void> {
 
 // Cold-client resume and cross-device "resume (view cached)": adopt a
 // server-hydrated session verbatim as this device's local state.
+//
+// Finding C — the last line of defence, and the reason it throws rather than
+// returning a flag: everything downstream of this write treats the local
+// activeSession as an in-progress workout it may append sets to. A completed
+// or discarded session written here becomes a local session whose every
+// subsequent op the server rejects as `session_locked`, which is what the
+// device actually did. Callers must revalidate against
+// src/sync/remoteActiveSession.ts first; this refuses anything else outright.
 export async function hydrateFromServer(remote: ActiveSessionDto): Promise<void> {
+  if (remote.status !== "in_progress") {
+    throw new Error(`Refusing to hydrate a session with status "${remote.status}"`);
+  }
   const db = await getIdb();
   await db.put("activeSession", remote, ACTIVE_SESSION_KEY);
 }
@@ -326,25 +337,29 @@ export async function editSet(
   return session;
 }
 
+// Finding D — deleting a set renumbers the survivors to a contiguous 1..n.
+// The local aggregate, the renumbering, the delete op and every renumber op
+// are committed in the one IndexedDB transaction commitSessionMutation
+// already provides (HIGH-1), so the device can never end up having deleted a
+// set without having queued the renumbering that goes with it. Op order
+// inside the batch is significant — see planSetDeletion.
 export async function deleteSet(
   sessionExerciseId: string,
   setId: string,
 ): Promise<ActiveSessionDto> {
   const session = await requireLocalSession();
   const exercise = findExercise(session, sessionExerciseId);
-  exercise.sets = exercise.sets.filter((s) => s.id !== setId);
-
-  await commitSessionMutation({
-    session,
-    ops: [
-      {
-        opId: newId(),
-        entity: "setLog",
-        operation: "delete",
-        payload: buildSetLogDeletePayload({ id: setId }),
-      },
-    ],
+  const { deleted, remaining, ops } = buildSetDeletionOps({
+    sessionExerciseId: exercise.id,
+    setId,
+    sets: exercise.sets,
   });
+  // Already gone — emitting a delete op would be harmless, but a renumbering
+  // pass over rows we have no reason to touch would not be.
+  if (!deleted) return session;
+  exercise.sets = remaining;
+
+  await commitSessionMutation({ session, ops });
   void flushOutbox();
   return session;
 }

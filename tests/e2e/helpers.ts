@@ -104,3 +104,36 @@ export async function waitForServiceWorkerReady(page: Page, timeoutMs = 20_000):
     )
     .toBe(true);
 }
+
+// Activated is not the same as in control. `src/app/sw.ts` sets
+// `clientsClaim: false` on purpose (pwa-offline-strategy.md §8 — a worker must
+// never take over a page mid-session), so the document that installed the
+// worker keeps running uncontrolled: its requests never reach the SW and
+// nothing it fetches lands in a runtime cache. Anything asserting on what the
+// SW cached, or on the SW answering a request, has to get the page under its
+// control first — which a reload does, since the next navigation is claimed by
+// the already-activated worker.
+export async function waitForServiceWorkerControl(page: Page, timeoutMs = 20_000): Promise<void> {
+  await waitForServiceWorkerReady(page, timeoutMs);
+  const controlled = () => page.evaluate(() => Boolean(navigator.serviceWorker.controller));
+  if (await controlled()) return;
+  await page.reload();
+  await expect.poll(controlled, { timeout: timeoutMs }).toBe(true);
+}
+
+// The only way to take a service-worker-backed page genuinely offline here.
+//
+// `context.setOffline(true)` and `context.route("**/*", abort)` both act on the
+// PAGE's network stack. Requests issued by the SERVICE WORKER bypass both and
+// still reach the real server, so an "offline" page can be answered by live
+// HTTP — measured, not assumed: with either in force, `/api/today-bundle`
+// still came back fresh and `/today` was still served from the network. An
+// offline spec built on them proves nothing.
+//
+// The host resolver lives in the browser's shared network service, so breaking
+// name resolution there cuts page and worker alike. The ORIGIN is untouched
+// (`http://localhost:3000`), which is what keeps the SW registration, Cache
+// Storage, IndexedDB and the secure context service workers require. Being a
+// launch argument, it applies per browser PROCESS — which suits these specs,
+// since each offline phase is a fresh launch of a persisted profile anyway.
+export const OFFLINE_RESOLVER_ARG = "--host-resolver-rules=MAP localhost ~NOTFOUND";

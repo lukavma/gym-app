@@ -101,6 +101,13 @@ export type TodayResolutionDto =
 
 export interface TodayBundleDto {
   today: TodayResolutionDto;
+  // Finding C — do NOT read this on the client. It is still served on a live
+  // response (removing it from the API would change verified Phase 3
+  // behaviour), but every cached representation of this bundle has it forced
+  // to null, on both the SW side (src/app/sw.ts) and the IndexedDB side
+  // (src/sync/bundleCache.ts), because a cached copy cannot know the session
+  // has since been completed or discarded. Remote active-session state comes
+  // from src/sync/remoteActiveSession.ts, which is never cached.
   activeSession: ActiveSessionDto | null;
   // ISO timestamp set server-side at bundle-assembly time (HIGH-5/MEDIUM-5
   // in the Phase 3 review) — the client compares this against "now" (or

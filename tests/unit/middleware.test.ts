@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { sealData } from "iron-session";
 import { middleware } from "@/middleware";
 import { getSessionOptions } from "@/server/auth/sessionConfig";
+import { OFFLINE_SHELL_PATH } from "@/domain/pwa/offlineShell";
 
 async function sealedSessionCookie(userId: string): Promise<string> {
   const options = getSessionOptions();
@@ -58,6 +59,18 @@ describe("middleware", () => {
       expect(response.status).not.toBe(401);
       expect(response.headers.get("location")).toBeNull();
     }
+  });
+
+  // Finding A — the service worker fetches the offline app shell at install
+  // time, with whatever cookies the browser has (possibly none, e.g. a first
+  // install before login). A redirect here would precache the login page as
+  // the app shell, so the cold-offline launch would open /login instead of
+  // Today with no way to tell from the outside.
+  it("keeps the offline app shell reachable without a session", async () => {
+    const request = new NextRequest(new URL(`http://localhost${OFFLINE_SHELL_PATH}`));
+    const response = await middleware(request);
+    expect(response.status).not.toBe(401);
+    expect(response.headers.get("location")).toBeNull();
   });
 
   it("allows an authenticated protected API request through", async () => {

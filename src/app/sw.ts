@@ -8,7 +8,10 @@ import {
   Serwist,
   StaleWhileRevalidate,
 } from "serwist";
-import type { PrecacheEntry, RuntimeCaching, SerwistGlobalConfig } from "serwist";
+import type { PrecacheEntry, RuntimeCaching, SerwistGlobalConfig, SerwistPlugin } from "serwist";
+// Relative, not `@/…`: tsconfig.worker.json deliberately defines no `paths`
+// for this worker-only compilation unit.
+import { OFFLINE_SHELL_PATH } from "../domain/pwa/offlineShell";
 
 declare global {
   interface WorkerGlobalScope extends SerwistGlobalConfig {
@@ -27,6 +30,45 @@ declare const self: ServiceWorkerGlobalScope;
 // `@types/node` (which would also add `Buffer`, `require`, etc. to the
 // worker's global scope).
 declare const process: { env: { NODE_ENV: string } };
+
+// Finding C — a cached today bundle must never be able to authorize
+// Resume/Takeover. The bundle's `activeSession` is live server state whose
+// status can change (completed, discarded) while a cached copy still claims
+// `in_progress`; that is exactly how a completed session was offered for
+// resume on the device. The planning half of the bundle (`today`) is
+// genuinely useful offline, so the cached copy is kept — with
+// `activeSession` blanked out. Active-session state is obtained only from
+// `/api/active-session`, which is NetworkOnly (see below).
+//
+// This rewrites only the copy that goes INTO the cache: NetworkFirst hands
+// the caller the untouched network response and clones it for `cachePut`, so
+// a live fetch still sees the real value. `generatedAt` is preserved so the
+// client's staleness detection (HIGH-5) keeps working off the cached copy.
+//
+// Note: defining `cacheWillUpdate` suppresses the strategy's default
+// ok-and-opaque plugin, so the status check has to happen here.
+const sanitizeCachedTodayBundle: SerwistPlugin = {
+  cacheWillUpdate: async ({ response }) => {
+    if (!response.ok) return null;
+    let bundle: Record<string, unknown>;
+    try {
+      bundle = (await response.clone().json()) as Record<string, unknown>;
+    } catch {
+      // Not JSON we can sanitize — refuse to cache it rather than cache a
+      // representation that might still carry an active session.
+      return null;
+    }
+    if (bundle.activeSession === null) return response;
+    const headers = new Headers(response.headers);
+    // Stale after re-serialization.
+    headers.delete("Content-Length");
+    return new Response(JSON.stringify({ ...bundle, activeSession: null }), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  },
+};
 
 // Phase 3 (HIGH-5 remediation): `@serwist/next`'s `defaultCache` caches
 // *every* same-origin `/api/*` GET with NetworkFirst/10s, which silently
@@ -215,6 +257,7 @@ const runtimeCaching: RuntimeCaching[] =
           handler: new NetworkFirst({
             cacheName: "today-bundle",
             plugins: [
+              sanitizeCachedTodayBundle,
               new ExpirationPlugin({
                 maxEntries: 16,
                 maxAgeSeconds: 24 * 60 * 60,
@@ -229,6 +272,9 @@ const runtimeCaching: RuntimeCaching[] =
         // of other API GETs in MVP." `/api/auth/*` and `/api/today-bundle`
         // are excluded here too (belt-and-suspenders; they already match
         // earlier entries above, since routing is first-match-wins).
+        // Finding C depends on this entry: `/api/active-session` is the
+        // single source of remote active-session truth and must never be
+        // answerable from any cache — it matches here, so it isn't.
         {
           matcher: ({ sameOrigin, url: { pathname } }) =>
             sameOrigin &&
@@ -294,6 +340,27 @@ const serwist = new Serwist({
   clientsClaim: false,
   navigationPreload: true,
   runtimeCaching,
+  // Finding A — without this, a cold offline launch of `/today` fell through
+  // to the "others" NetworkFirst entry, missed the cache (a brand-new browser
+  // process has never requested that document, and runtime entries expire
+  // after 24h anyway) and threw `no-response` — the "Safari can't open the
+  // page" failure observed on the device. The precached app shell has no such
+  // dependency on what a previous process happened to visit.
+  //
+  // The `destination === "document"` guard is load-bearing: serwist attaches
+  // this fallback to EVERY runtimeCaching entry whose handler lacks a
+  // handlerDidError plugin, including the NetworkOnly API entries. Without
+  // the guard, an offline `/api/*` GET would resolve with the shell's HTML
+  // instead of rejecting — which is precisely how HIGH-5's offline detection
+  // (fetch must throw) would break.
+  fallbacks: {
+    entries: [
+      {
+        url: OFFLINE_SHELL_PATH,
+        matcher: ({ request }) => request.destination === "document",
+      },
+    ],
+  },
 });
 
 self.addEventListener("message", (event: ExtendableMessageEvent) => {

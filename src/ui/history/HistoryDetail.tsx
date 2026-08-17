@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { formatScheme } from "@/domain/schemes/setScheme";
+import { planSetDeletion } from "@/domain/sync/setNumbering";
 import {
   correctHistorySet,
   deleteHistorySet,
@@ -60,13 +61,18 @@ export function HistoryDetail({ id }: { id: string }) {
     });
   }
 
+  // Finding D — the optimistic local update applies the same renumbering the
+  // enqueued ops will apply server-side, so what the screen shows after a
+  // delete is what PostgreSQL will hold once the outbox drains.
   function removeLocalSet(sessionExerciseId: string, setId: string) {
     setSession((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
         exercises: prev.exercises.map((ex) =>
-          ex.id !== sessionExerciseId ? ex : { ...ex, sets: ex.sets.filter((s) => s.id !== setId) },
+          ex.id !== sessionExerciseId
+            ? ex
+            : { ...ex, sets: planSetDeletion(ex.sets, setId).remaining },
         ),
       };
     });
@@ -109,8 +115,10 @@ export function HistoryDetail({ id }: { id: string }) {
                       void correctHistorySet(set.id, exercise.id, patch);
                     }}
                     onDelete={() => {
+                      // `exercise.sets` here is the pre-deletion list, which
+                      // is what deleteHistorySet needs to plan renumbering.
+                      void deleteHistorySet(exercise.id, set.id, exercise.sets);
                       removeLocalSet(exercise.id, set.id);
-                      void deleteHistorySet(set.id);
                     }}
                   />
                 ))}
