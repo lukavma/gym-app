@@ -121,19 +121,34 @@ export async function waitForServiceWorkerControl(page: Page, timeoutMs = 20_000
   await expect.poll(controlled, { timeout: timeoutMs }).toBe(true);
 }
 
-// The only way to take a service-worker-backed page genuinely offline here.
+// What actually provides cold-launch offline isolation in these specs.
 //
-// `context.setOffline(true)` and `context.route("**/*", abort)` both act on the
-// PAGE's network stack. Requests issued by the SERVICE WORKER bypass both and
-// still reach the real server, so an "offline" page can be answered by live
-// HTTP — measured, not assumed: with either in force, `/api/today-bundle`
-// still came back fresh and `/today` was still served from the network. An
-// offline spec built on them proves nothing.
+// The `offline: true` LAUNCH OPTION on `chromium.launchPersistentContext` is
+// inert — measured with no CDP session in play, so nothing could have cleared
+// it: `navigator.onLine` stays true, the navigation is served live, a
+// service-worker-mediated `/api/history` GET resolves 200, and the `others`
+// runtime bucket is refilled. The specs still pass it, harmlessly, but it
+// contributes nothing and must not be relied on.
+//
+// `context.setOffline(true)` — the METHOD — does work, including on a
+// service-worker-controlled page: `/api/history` (NetworkOnly, so a controlled
+// page's fetch of it is issued BY the worker) resolves 200 online and rejects
+// immediately after the call. It is not used here only because it cannot be
+// applied before a process's first navigation, which is the whole point of a
+// cold-launch spec, and because CDP `Network.clearBrowserCache` (see
+// clearHttpDiskCache in offline-cold-launch.spec.ts) flips `navigator.onLine`
+// back to true and would partly undo it.
 //
 // The host resolver lives in the browser's shared network service, so breaking
-// name resolution there cuts page and worker alike. The ORIGIN is untouched
-// (`http://localhost:3000`), which is what keeps the SW registration, Cache
-// Storage, IndexedDB and the secure context service workers require. Being a
-// launch argument, it applies per browser PROCESS — which suits these specs,
-// since each offline phase is a fresh launch of a persisted profile anyway.
+// name resolution there cuts page and worker alike, from the process's very
+// first navigation onwards. The ORIGIN is untouched (`http://localhost:3000`),
+// which is what keeps the SW registration, Cache Storage, IndexedDB and the
+// secure context service workers require. Being a launch argument, it applies
+// per browser PROCESS — which suits these specs, since each offline phase is a
+// fresh launch of a persisted profile anyway.
+//
+// Re-verified independently: in a cold process under this rule, with only the
+// precache bucket in existence, `/today` is answered 200 from the precache
+// while `/api/history`, `/api/active-session`, `/api/today-bundle` and a
+// `POST /api/sync` all reject.
 export const OFFLINE_RESOLVER_ARG = "--host-resolver-rules=MAP localhost ~NOTFOUND";

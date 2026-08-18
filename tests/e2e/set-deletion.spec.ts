@@ -3,8 +3,7 @@ import { login, ensureNoActiveSession, waitForOutboxDrained } from "./helpers";
 
 // Finding D regression, at the UI/History layer — deleting a set left the
 // remaining sets numbered non-contiguously (delete set 2 of 4 → 1, 3, 4
-// forever, on the device and in PostgreSQL), which `uq_set_number` was made
-// DEFERRABLE expressly to allow fixing.
+// forever, on the device and in PostgreSQL).
 //
 // The numbering itself is asserted where it is visible: exhaustively over
 // first/middle/last in tests/unit/setDeletion.test.ts, and against real SQL

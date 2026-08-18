@@ -721,9 +721,16 @@ describe("set deletion renumbering (PGlite integration)", () => {
 
   it("rejects the renumbering if the ops are applied in descending order", async () => {
     // Proof that buildSetDeletionOps's ascending order is load-bearing and not
-    // cosmetic. The sync API runs one transaction per op, so the DEFERRABLE
-    // INITIALLY DEFERRED uq_set_number is checked at each op's own COMMIT:
-    // renumbering 4→3 before 3→2 commits two rows holding set_number 3.
+    // cosmetic. The sync API runs one transaction per op, so uq_set_number is
+    // checked at each op's own COMMIT: renumbering 4→3 before 3→2 commits two
+    // rows holding set_number 3.
+    //
+    // Note what this does NOT show: that the constraint needs to be DEFERRABLE
+    // INITIALLY DEFERRED. With one statement per transaction, the ascending
+    // order alone keeps every commit valid, and an INITIALLY IMMEDIATE
+    // constraint would reject this descending batch just the same. The
+    // deferral would only matter if several renumber statements shared a
+    // transaction.
     const { ops } = buildSetDeletionOps({
       sessionExerciseId,
       setId: clientSets[1]!.id,

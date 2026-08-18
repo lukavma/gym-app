@@ -38,9 +38,12 @@ export interface SetDeletionOps<T extends SetLogRowFields> {
   remaining: T[];
   // Delete first, then one full-row upsert per renumbered set in ascending
   // order of the new set number. The sync API applies one transaction per op,
-  // so `uq_set_number` (DEFERRABLE INITIALLY DEFERRED) is checked at every
-  // op's own COMMIT: this order is what guarantees each target number is
-  // already free when its update lands. Empty when `deleted` is null.
+  // so `uq_set_number` is checked at every op's own COMMIT: this order is what
+  // guarantees each target number is already free when its update lands.
+  // Empty when `deleted` is null.
+  //
+  // The ordering is load-bearing; the constraint being DEFERRABLE INITIALLY
+  // DEFERRED is not required for this path — see the note in setNumbering.ts.
   ops: SetLogOp[];
 }
 

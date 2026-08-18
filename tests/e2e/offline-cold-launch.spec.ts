@@ -31,8 +31,11 @@ import {
 //     each new process;
 //   * the route under test is navigated to DIRECTLY as the process's very
 //     first navigation — never warmed in the process that then reloads it;
-//   * "offline" is enforced at the host resolver (OFFLINE_RESOLVER_ARG), the
-//     one layer the service worker's own fetches cannot slip past.
+//   * "offline" is enforced at the host resolver (OFFLINE_RESOLVER_ARG),
+//     which applies from the process's first navigation onwards and cuts the
+//     service worker's own fetches as well as the page's. (The `offline: true`
+//     launch option passed alongside it is inert — see OFFLINE_RESOLVER_ARG's
+//     comment in helpers.ts.)
 //
 // What is left to answer is the precached app shell (`/~offline`) plus the
 // precached `_next/static` chunks, which is the fix.
@@ -78,11 +81,14 @@ async function deleteCacheBucketsExcept(page: Page, keep: string): Promise<strin
   }, keep);
 }
 
-// Playwright's `offline: true` blocks the network, but a fresh process would
-// still be allowed to answer a navigation out of the profile's HTTP disk
-// cache. Clearing it before the first navigation is what makes "cold" mean
-// cold. (Cache Storage and the SW registration are separate storage and are
-// deliberately left alone — they are the thing under test.)
+// A fresh process would still be allowed to answer a navigation out of the
+// profile's HTTP disk cache. Clearing it before the first navigation is what
+// makes "cold" mean cold. (Cache Storage and the SW registration are separate
+// storage and are deliberately left alone — they are the thing under test.)
+//
+// Note the side effect: `Network.clearBrowserCache` flips `navigator.onLine`
+// back to true. Harmless here because the host resolver, not any Playwright
+// offline emulation, is what severs this process's network.
 async function clearHttpDiskCache(context: BrowserContext, page: Page): Promise<void> {
   const cdp = await context.newCDPSession(page);
   try {
@@ -154,8 +160,12 @@ test("a cold browser process launched straight into /today works offline with no
     // HTTP cache cleared, /today never requested in this process.
     context = await chromium.launchPersistentContext(userDataDir, {
       baseURL: BASE_URL,
-      // `offline: true` for what the page can observe (`navigator.onLine`),
-      // the resolver arg for what actually severs the connection.
+      // The resolver arg is what severs the connection — see
+      // OFFLINE_RESOLVER_ARG. `offline: true` as a LAUNCH OPTION is inert
+      // (it does not even set `navigator.onLine`, which reads true
+      // throughout this spec); it is left in only as a declaration of
+      // intent. Do not rely on it, and do not read the absence of an
+      // `online` event as meaningful here.
       offline: true,
       args: [OFFLINE_RESOLVER_ARG],
     });

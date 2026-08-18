@@ -24,6 +24,20 @@ type RemoteActiveSessionPayload = Omit<ActiveSessionDto, "status"> & { status: s
 // for as long as the platform's default timeout — and Today waits for it
 // before it can rule out a remote session. Bounded here instead: a check that
 // hasn't answered by now is "unavailable", the same as being offline.
+//
+// SCOPE: this bounds RECEIPT OF THE RESPONSE HEADERS only. `clearTimeout`
+// runs in the `finally` below as soon as `fetch` resolves, which is before
+// `response.json()` reads the body — so a connection that returns headers and
+// then stalls its body is NOT bounded, and TodaySection's loading gate stays
+// on `remoteState: "checking"` ("Loading…") for as long as it stalls. Low
+// probability for a small same-origin JSON body, and deliberately not fixed
+// here (it would need the abort signal to stay armed across the body read),
+// but it is not the same thing as "Today cannot hang".
+//
+// Neither the timeout nor the abort path has direct unit coverage:
+// tests/unit/remoteActiveSession.test.ts covers a rejected fetch, which is a
+// different failure. See R3/R4 in
+// docs/reviews/phase-3-device-acceptance-remediation-verification.md.
 const REMOTE_CHECK_TIMEOUT_MS = 4000;
 
 export async function fetchRemoteActiveSession(): Promise<RemoteActiveSessionResult> {

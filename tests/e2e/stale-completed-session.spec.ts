@@ -160,6 +160,10 @@ test("a session completed elsewhere is never offered for resume from a cached bu
     // completed session.
     deviceB = await chromium.launchPersistentContext(profileB, {
       baseURL: BASE_URL,
+      // The resolver arg does the severing; the `offline: true` launch option
+      // is inert (see OFFLINE_RESOLVER_ARG in helpers.ts). The offline
+      // condition is asserted below via `/api/active-session` rather than
+      // assumed from either of them.
       offline: true,
       args: [OFFLINE_RESOLVER_ARG],
     });

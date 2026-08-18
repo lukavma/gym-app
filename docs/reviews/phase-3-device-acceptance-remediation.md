@@ -114,8 +114,13 @@ Five changes, each closing one step of that path:
    `GET /api/active-session` (`no-store`), routed `NetworkOnly` by the SW, read only
    through `src/sync/remoteActiveSession.ts`. Offline it returns `unavailable` — which is
    modelled as a *third* state, not as "nothing in progress". `!response.ok` (including a
-   401 from an expired cookie) is `unavailable` too, and the call is bounded by a 4s
-   timeout so Today cannot hang behind a `NetworkOnly` request on a flaky connection.
+   401 from an expired cookie) is `unavailable` too, and the call carries a 4s abort
+   timeout. **That timeout bounds receipt of the response headers only.** `clearTimeout`
+   runs in a `finally` as soon as `fetch` resolves, i.e. before `response.json()`, so a
+   connection that delivers headers and then stalls its body is *not* bounded — Today's
+   loading gate keeps `remoteState: "checking"` and renders "Loading…" indefinitely. Low
+   probability for a tiny same-origin JSON body, but it is not the "Today cannot hang"
+   guarantee an earlier draft of this document claimed. See the verification report's R3.
 3. **Revalidate immediately before adopting, and require `in_progress`.**
    `adoptRemote` now takes an **id, not a session object** — the caller is structurally
    unable to supply the state that gets written. It re-reads from the server and writes
@@ -155,8 +160,14 @@ context) and device B (a persisted profile, relaunched three times):
   letters** — pre-fix, everything after the stale adopt was rejected `session_locked`.
 
 Plus 13 unit tests over `fetchRemoteActiveSession` / `isAdoptableRemoteSession` (non-`ok`,
-401, non-JSON, timeout, wrong id, non-`in_progress` status) and a middleware test that the
-app shell stays reachable unauthenticated.
+401, 5xx, non-JSON, rejected fetch, `no-store`, completed/discarded/absent session, wrong
+id, non-`in_progress` status) and a middleware test that the app shell stays reachable
+unauthenticated.
+
+**Not covered:** none of those 13 exercises `REMOTE_CHECK_TIMEOUT_MS` or the
+`AbortController` path — the rejected-fetch case is a different failure. An earlier draft
+of this document listed "timeout" among them; that was wrong. See the verification
+report's R4.
 
 ---
 
@@ -169,10 +180,15 @@ app shell stays reachable unauthenticated.
   renumbered to a contiguous `1..n` and `renumbered` is **ascending by new number**.
 - `src/domain/sync/setDeletionOps.ts` — `buildSetDeletionOps` turns that plan into the
   outbox ops: **delete first, then one full-row upsert per renumbered set in ascending
-  order**. The sync API applies one DB transaction per op, so `uq_set_number` (made
-  `DEFERRABLE INITIALLY DEFERRED` by migration 0004 expressly for this) is checked at each
-  op's own COMMIT — ascending order is what guarantees every target number has already
-  been vacated. This ordering is not cosmetic and is tested as such.
+  order**. The sync API applies one DB transaction per op, so `uq_set_number` is checked at
+  each op's own COMMIT — ascending order is what guarantees every target number has already
+  been vacated. **The ordering is the load-bearing property, not the deferral.** Because
+  each op is a single statement in its own transaction, no intermediate state ever holds a
+  duplicate, so an `INITIALLY IMMEDIATE` constraint would behave identically on this path;
+  `uq_set_number` being `DEFERRABLE INITIALLY DEFERRED` (migration 0004) would only start
+  to matter if several renumber statements ever shared one transaction. An earlier draft of
+  this document credited the deferral with making the renumbering possible; it does not.
+  The ordering is not cosmetic and is tested as such. See the verification report's R9.
 - `src/sync/outbox.ts` — new `enqueueOps` writes a whole group in **one IndexedDB
   transaction**, so a process death mid-write cannot leave the queue holding a delete
   without its renumbering. In-session deletion commits the mutated aggregate and the ops
@@ -237,23 +253,47 @@ No migrations, no schema changes, no firewall changes, no production access, no 
 
 ## 6. A test-harness defect found and fixed along the way
 
+> **Corrected 2026-08-18** by the independent verification pass (§2.4 of
+> `phase-3-device-acceptance-remediation-verification.md`). The original text of this
+> section blamed the wrong mechanism. The harness is sound and no spec changed; the
+> explanation below is the measured one.
+
 Worth recording because it invalidates the naive way of writing any offline PWA test, and
-two of the specs here were initially wrong because of it:
+two of the specs here were initially wrong because of it.
 
-**`context.setOffline(true)` and `context.route("**/*", abort)` do not take a
-service-worker-backed page offline.** Both act on the *page's* network stack. Requests
-issued by the service worker bypass them and still reach the real server. This was
-measured, not assumed: with either in force, an "offline" launch still received a fresh
-`/api/today-bundle` and a live `/today` document. A spec built on them proves nothing —
-and the first version of `offline-cold-launch.spec.ts` was passing its navigation
-assertions against a *live* response.
+**What is actually ineffective is the `offline: true` *launch option* on
+`chromium.launchPersistentContext`.** Measured with no CDP session in play, so nothing
+could have cleared it: `navigator.onLine` stays `true`, the navigation is served live, a
+service-worker-mediated `/api/history` GET resolves 200, and the `others` runtime bucket is
+refilled. It is inert. All three offline specs pass it, so in them it contributes nothing.
 
-The fix is `OFFLINE_RESOLVER_ARG` in `tests/e2e/helpers.ts`:
-`--host-resolver-rules=MAP localhost ~NOTFOUND`. The host resolver lives in the browser's
-shared network service, so it cuts page and worker alike, while the **origin is unchanged**
-— which is what keeps the SW registration, Cache Storage, IndexedDB and the secure context
-service workers require. Verified directly before adopting it: with the rule, navigation
-fails `ERR_NAME_NOT_RESOLVED` and `fetch` rejects; without it, both succeed.
+**`context.setOffline(true)` — the *method* — does work, including on a
+service-worker-controlled page.** Measured on a real origin with
+`navigator.serviceWorker.controller` set, fetching `/api/history` (routed `NetworkOnly`, so
+a controlled page's fetch of it is performed *by the service worker*): `resolved:200`
+online, `rejected` immediately after `setOffline(true)`; and with the runtime buckets
+stripped, a `/today` navigation under it returns 200 carrying the `data-app-shell` marker,
+which can only happen if the worker's own `fetch` failed. An earlier draft of this document
+asserted the opposite; that claim was wrong.
+
+One further subtlety, and the likely origin of the original mistake: CDP
+`Network.clearBrowserCache` — which `clearHttpDiskCache()` calls on every offline launch —
+flips `navigator.onLine` back to `true`, so even a correctly applied `setOffline(true)`
+would be partly undone by the specs' own cache-clearing step.
+
+The mechanism the specs actually rely on is `OFFLINE_RESOLVER_ARG` in
+`tests/e2e/helpers.ts`: `--host-resolver-rules=MAP localhost ~NOTFOUND`. The host resolver
+lives in the browser's shared network service, so it cuts page and worker alike, while the
+**origin is unchanged** — which is what keeps the SW registration, Cache Storage, IndexedDB
+and the secure context service workers require. Independently re-verified: in a cold
+process under the rule, with only the precache bucket in existence, `/today` is answered
+200 from the precache while `/api/history`, `/api/active-session`, `/api/today-bundle` and
+a `POST /api/sync` all reject. It provides the real cold-launch isolation.
+
+A third point, unaffected by the correction: deleting every non-precache Cache Storage
+bucket before an offline launch is mandatory. An online launch refills `others` with the
+live `/today` document, which then answers the "offline" navigation — 200, and no shell
+marker. Any offline-shell spec that skips that strip is testing nothing.
 
 A second harness subtlety: `src/app/sw.ts` sets `clientsClaim: false` by design, so the
 page that *installs* the worker is never controlled by it — its requests never reach the

@@ -1,9 +1,8 @@
 // Finding D — set numbering must stay contiguous after a deletion.
 //
-// `set_number` is user-visible ordering ("set 3 of 4"), not an identity, and
-// migration 0004 made `uq_set_number` DEFERRABLE INITIALLY DEFERRED expressly
-// so a renumbering pass could exist. Deleting set 2 of 1..4 used to leave
-// 1,3,4 on the device and in PostgreSQL forever.
+// `set_number` is user-visible ordering ("set 3 of 4"), not an identity.
+// Deleting set 2 of 1..4 used to leave 1,3,4 on the device and in PostgreSQL
+// forever.
 //
 // Pure and structural (anything with an `id` and a `setNumber`) so it serves
 // both the in-progress aggregate (ActiveSessionSetDto) and the history screen
@@ -23,11 +22,20 @@ export interface SetDeletionPlan<T extends NumberedSet> {
   remaining: T[];
   // The subset of `remaining` whose number actually changed, in ASCENDING
   // order of the new number. That order is required, not cosmetic: the sync
-  // API applies one DB transaction per op, so the deferred unique constraint
-  // is checked at each op's own COMMIT. Emitting the delete first and then
-  // ascending updates means every target number has already been vacated by
-  // the preceding step (1,2,3,4 minus #2 → 3→2, then 4→3), so no single
-  // transaction ever commits with a duplicate.
+  // API applies one DB transaction per op, so `uq_set_number` is checked at
+  // each op's own COMMIT. Emitting the delete first and then ascending updates
+  // means every target number has already been vacated by the preceding step
+  // (1,2,3,4 minus #2 → 3→2, then 4→3), so no single transaction ever commits
+  // with a duplicate.
+  //
+  // The ORDERING is what makes this work — not the fact that `uq_set_number`
+  // is DEFERRABLE INITIALLY DEFERRED (migration 0004). Each op is one
+  // statement in its own transaction, so no intermediate state holds a
+  // duplicate and an INITIALLY IMMEDIATE constraint would behave identically
+  // here; the deferral would only start to matter if several renumber
+  // statements ever shared a transaction. Reorder these and the sync API
+  // rejects them with `set_number_conflict` — asserted in
+  // tests/integration/sync.integration.test.ts.
   renumbered: T[];
 }
 
