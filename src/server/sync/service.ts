@@ -1,16 +1,25 @@
 import { and, eq } from "drizzle-orm";
-import { sessionExercises, setLogs, workoutSessions } from "@/db/schema";
+import { recommendations, sessionExercises, setLogs, workoutSessions } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import {
+  recommendationDecisionUpsertPayloadSchema,
+  recommendationUpsertPayloadSchema,
   sessionExerciseUpsertPayloadSchema,
   setLogDeletePayloadSchema,
   setLogUpsertPayloadSchema,
   workoutSessionUpsertPayloadSchema,
   type SessionExerciseUpsertPayload,
+  type SetLogUpsertPayload,
   type SyncEntity,
   type SyncOpEnvelope,
   type WorkoutSessionUpsertPayload,
 } from "@/domain/sync/schema";
+import {
+  evaluateCompletedSession,
+  reevaluateForSourceSessionExercise,
+  supersedePending,
+} from "@/server/progression/service";
+import type { RecommendationTarget } from "@/domain/progression/engine";
 
 // pwa-offline-strategy.md §5/§6 — the server side of the single execution-
 // fact write path. Every op is a full-row upsert/delete keyed by its own
@@ -37,7 +46,9 @@ export type SyncRejectReason =
   | "set_number_conflict"
   | "invalid_reference"
   | "invalid_lifecycle_transition"
-  | "unsupported_operation";
+  | "unsupported_operation"
+  | "recommendation_conflict"
+  | "decision_conflict";
 
 interface SyncOpResult {
   opId: string;
@@ -109,6 +120,18 @@ function applyOne(db: AppDb, userId: string, op: SyncOpEnvelope): Promise<SyncOp
       return Promise.resolve(rejected(op.opId, op.entity, "unsupported_operation"));
     }
     return applySessionExerciseUpsert(db, userId, op.opId, op.payload);
+  }
+  if (op.entity === "recommendation") {
+    if (op.operation !== "upsert") {
+      return Promise.resolve(rejected(op.opId, op.entity, "unsupported_operation"));
+    }
+    return applyRecommendationUpsert(db, userId, op.opId, op.payload);
+  }
+  if (op.entity === "recommendationDecision") {
+    if (op.operation !== "upsert") {
+      return Promise.resolve(rejected(op.opId, op.entity, "unsupported_operation"));
+    }
+    return applyRecommendationDecisionUpsert(db, userId, op.opId, op.payload);
   }
   if (op.operation === "upsert") {
     return applySetLogUpsert(db, userId, op.opId, op.payload);
@@ -223,6 +246,23 @@ async function applyWorkoutSessionUpsert(
       if (payload.notes !== undefined) patch.notes = payload.notes;
 
       await tx.update(workoutSessions).set(patch).where(eq(workoutSessions.id, payload.id));
+
+      // progression-engine.md §5 — server evaluation on session completion,
+      // inside this same transaction: an evaluation failure rolls the
+      // completion back too, so the client's retried op re-runs both. Only
+      // an actual in_progress → completed transition evaluates — a replayed
+      // completion is a no-op above and never reaches this point, which is
+      // what keeps decided recommendations free of automatic recomputation.
+      if (payload.status === "completed") {
+        await evaluateCompletedSession(tx, userId, {
+          id: existing.id,
+          blockId: patch.blockId !== undefined ? patch.blockId : existing.blockId,
+          weekIndex: patch.weekIndex !== undefined ? patch.weekIndex : existing.weekIndex,
+          isDeload: patch.isDeload !== undefined ? patch.isDeload : existing.isDeload,
+          startedAt: patch.startedAt !== undefined ? patch.startedAt : existing.startedAt,
+          completedAt: patch.completedAt !== undefined ? patch.completedAt : existing.completedAt,
+        });
+      }
       return applied(opId, "workoutSession");
     });
   } catch (err) {
@@ -344,6 +384,24 @@ async function applySessionExerciseUpsert(
   }
 }
 
+// The supersede-on-relevant-edit trigger (progression-engine.md §5/§8) must
+// fire only when the update actually changes something evaluation consumes —
+// set number/warmup/weight/reps/RIR. A byte-identical replay of an earlier
+// op (or a notes/loggedAt-only touch-up) is not an edit: re-evaluating on it
+// would churn out a superseded+fresh pair and break replay idempotence
+// (same batch twice → identical DB, implementation-plan §1.5).
+function setLogUpdateChangesEvaluationInputs(
+  existing: typeof setLogs.$inferSelect,
+  payload: SetLogUpsertPayload,
+): boolean {
+  if (payload.setNumber !== undefined && payload.setNumber !== existing.setNumber) return true;
+  if (payload.isWarmup !== undefined && payload.isWarmup !== existing.isWarmup) return true;
+  if (payload.weightKg !== undefined && payload.weightKg !== existing.weightKg) return true;
+  if (payload.reps !== undefined && payload.reps !== existing.reps) return true;
+  if (payload.rir !== undefined && payload.rir !== existing.rir) return true;
+  return false;
+}
+
 // domain-model.md §7: SetLog values are user-editable "at any time,
 // including after completion" — creation is not, though ("corrections" of
 // an existing fact, not late additions), so create requires status ===
@@ -427,11 +485,23 @@ async function applySetLogUpsert(
       if (payload.isWarmup !== undefined) patch.isWarmup = payload.isWarmup;
       if (payload.weightKg !== undefined) patch.weightKg = payload.weightKg;
       if (payload.reps !== undefined) patch.reps = payload.reps;
+      // Evaluated BEFORE the patch lands, against the pre-update row.
+      const relevantEdit = setLogUpdateChangesEvaluationInputs(existingRow.setLog, payload);
+
       if (payload.rir !== undefined) patch.rir = payload.rir;
       if (payload.loggedAt !== undefined) patch.loggedAt = new Date(payload.loggedAt);
       if (payload.notes !== undefined) patch.notes = payload.notes;
 
       await tx.update(setLogs).set(patch).where(eq(setLogs.id, payload.id));
+
+      // progression-engine.md §8 — "Set edited while rec pending →
+      // re-evaluate + supersede". Only completed sessions can have sourced a
+      // recommendation; the helper itself no-ops unless a pending rec is
+      // sourced from this exact session exercise (decided recs are never
+      // recomputed).
+      if (relevantEdit && existingRow.sessionStatus === "completed") {
+        await reevaluateForSourceSessionExercise(tx, userId, existingRow.setLog.sessionExerciseId);
+      }
       return applied(opId, "setLog");
     });
   } catch (err) {
@@ -463,6 +533,7 @@ async function applySetLogDelete(
   return db.transaction(async (tx) => {
     const [existingRow] = await tx
       .select({
+        sessionExerciseId: setLogs.sessionExerciseId,
         sessionStatus: workoutSessions.status,
         sessionUserId: workoutSessions.userId,
       })
@@ -479,6 +550,156 @@ async function applySetLogDelete(
     }
 
     await tx.delete(setLogs).where(eq(setLogs.id, payload.id));
+
+    // Same supersede-on-relevant-edit rule as the upsert path — deleting a
+    // set from a completed source session changes the facts a pending
+    // recommendation was computed from.
+    if (existingRow.sessionStatus === "completed") {
+      await reevaluateForSourceSessionExercise(tx, userId, existingRow.sessionExerciseId);
+    }
     return applied(opId, "setLog");
+  });
+}
+
+// Client-computed recommendation (offline completion fallback,
+// progression-engine.md §5). The client enqueues these AHEAD of the
+// completion op, so the source session may legitimately still be
+// 'in_progress' here — ownership and referential consistency are what's
+// validated, not lifecycle. A row that already exists under this id is a
+// replayed op: recommendations are immutable after insert, so it converges
+// as a no-op without content comparison.
+async function applyRecommendationUpsert(
+  db: AppDb,
+  userId: string,
+  opId: string,
+  rawPayload: unknown,
+): Promise<SyncOpResult> {
+  const parsed = recommendationUpsertPayloadSchema.safeParse(rawPayload);
+  if (!parsed.success) return rejected(opId, "recommendation", "invalid_payload");
+  const payload = parsed.data;
+
+  try {
+    return await db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ id: recommendations.id, userId: recommendations.userId })
+        .from(recommendations)
+        .where(eq(recommendations.id, payload.id));
+      if (existing) {
+        if (existing.userId !== userId) return rejected(opId, "recommendation", "not_found");
+        return applied(opId, "recommendation");
+      }
+
+      const [source] = await tx
+        .select({
+          sessionId: sessionExercises.sessionId,
+          exerciseId: sessionExercises.exerciseId,
+          sessionUserId: workoutSessions.userId,
+        })
+        .from(sessionExercises)
+        .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+        .where(eq(sessionExercises.id, payload.sourceSessionExerciseId));
+      if (!source || source.sessionUserId !== userId) {
+        return rejected(opId, "recommendation", "not_found");
+      }
+      if (
+        source.sessionId !== payload.sourceSessionId ||
+        source.exerciseId !== payload.exerciseId
+      ) {
+        return rejected(opId, "recommendation", "invalid_payload");
+      }
+
+      // §5 supersede-before-insert — same rule as the server's own
+      // evaluation path, which is what makes uq_recs_one_pending hold.
+      await supersedePending(tx, userId, payload.exerciseId, payload.blockId);
+
+      await tx.insert(recommendations).values({
+        id: payload.id,
+        userId,
+        exerciseId: payload.exerciseId,
+        blockId: payload.blockId,
+        sourceSessionId: payload.sourceSessionId,
+        sourceSessionExerciseId: payload.sourceSessionExerciseId,
+        strategyId: payload.strategyId,
+        strategyVersion: payload.strategyVersion,
+        classification: payload.classification,
+        config: payload.config,
+        inputs: payload.inputs,
+        action: payload.action,
+        target: payload.target,
+        reasonCodes: [...payload.reasonCodes],
+        confidence: payload.confidence,
+        computedBy: "client",
+        // The record's creation moment is the client-side evaluation time —
+        // an event time the client clock owns, like started_at/logged_at
+        // (pwa-offline-strategy.md §5).
+        createdAt: new Date(payload.createdAt),
+      });
+      return applied(opId, "recommendation");
+    });
+  } catch (err) {
+    if (isPostgresErrorCode(err, UNIQUE_VIOLATION)) {
+      return rejected(opId, "recommendation", "recommendation_conflict");
+    }
+    if (isPostgresErrorCode(err, FOREIGN_KEY_VIOLATION)) {
+      return rejected(opId, "recommendation", "invalid_reference");
+    }
+    throw err;
+  }
+}
+
+function targetsEqual(a: RecommendationTarget | null, b: RecommendationTarget | null): boolean {
+  // Field-wise, never JSON.stringify: jsonb normalizes key order, so a
+  // round-tripped object need not serialize identically to the payload's.
+  if (a === null || b === null) return a === b;
+  return a.loadKg === b.loadKg && a.reps === b.reps;
+}
+
+// The one-time decision append (progression-engine.md §7, domain-model.md
+// §10 invariant 8: "decision written at most once"). Pending → write it;
+// an identical replay converges as a no-op; anything else — a different
+// decision, or a decision on a superseded record — is a conflict that
+// dead-letters rather than silently rewriting a user choice.
+async function applyRecommendationDecisionUpsert(
+  db: AppDb,
+  userId: string,
+  opId: string,
+  rawPayload: unknown,
+): Promise<SyncOpResult> {
+  const parsed = recommendationDecisionUpsertPayloadSchema.safeParse(rawPayload);
+  if (!parsed.success) return rejected(opId, "recommendationDecision", "invalid_payload");
+  const payload = parsed.data;
+
+  return db.transaction(async (tx) => {
+    const [rec] = await tx
+      .select()
+      .from(recommendations)
+      .where(eq(recommendations.id, payload.recommendationId));
+    if (!rec || rec.userId !== userId) {
+      return rejected(opId, "recommendationDecision", "not_found");
+    }
+
+    if (rec.decisionStatus === "pending") {
+      await tx
+        .update(recommendations)
+        .set({
+          decisionStatus: payload.status,
+          decisionChosen: payload.chosen,
+          decidedAt: new Date(payload.decidedAt),
+          decisionSource: payload.source,
+          updatedAt: new Date(),
+        })
+        .where(eq(recommendations.id, rec.id));
+      return applied(opId, "recommendationDecision");
+    }
+
+    const identicalReplay =
+      rec.decisionStatus === payload.status &&
+      rec.decisionSource === payload.source &&
+      rec.decidedAt !== null &&
+      rec.decidedAt.getTime() === new Date(payload.decidedAt).getTime() &&
+      targetsEqual(rec.decisionChosen as RecommendationTarget | null, payload.chosen);
+    if (identicalReplay) return applied(opId, "recommendationDecision");
+
+    return rejected(opId, "recommendationDecision", "decision_conflict");
   });
 }

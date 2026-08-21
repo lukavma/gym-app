@@ -3,10 +3,14 @@ import {
   sessionExerciseUpsertPayloadSchema,
   setLogUpsertPayloadSchema,
   setLogDeletePayloadSchema,
+  recommendationUpsertPayloadSchema,
+  recommendationDecisionUpsertPayloadSchema,
   type WorkoutSessionUpsertPayload,
   type SessionExerciseUpsertPayload,
   type SetLogUpsertPayload,
   type SetLogDeletePayload,
+  type RecommendationUpsertPayload,
+  type RecommendationDecisionUpsertPayload,
 } from "./schema";
 
 // BLOCKER-1 belt-and-suspenders: each builder's parameter type is the
@@ -37,4 +41,16 @@ export function buildSetLogUpsertPayload(input: SetLogUpsertPayload): SetLogUpse
 
 export function buildSetLogDeletePayload(input: SetLogDeletePayload): SetLogDeletePayload {
   return setLogDeletePayloadSchema.parse(input);
+}
+
+export function buildRecommendationUpsertPayload(
+  input: RecommendationUpsertPayload,
+): RecommendationUpsertPayload {
+  return recommendationUpsertPayloadSchema.parse(input);
+}
+
+export function buildRecommendationDecisionUpsertPayload(
+  input: RecommendationDecisionUpsertPayload,
+): RecommendationDecisionUpsertPayload {
+  return recommendationDecisionUpsertPayloadSchema.parse(input);
 }

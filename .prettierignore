@@ -6,3 +6,7 @@ drizzle/*.sql
 drizzle/meta/
 docs/
 .claude/
+gpt-memory.md
+gpt-handoff.md
+HANDOFF(depracted).md
+CLAUDE.md

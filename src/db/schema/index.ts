@@ -12,3 +12,4 @@ export * from "./blockScheduleEntries";
 export * from "./workoutSessions";
 export * from "./sessionExercises";
 export * from "./setLogs";
+export * from "./recommendations";

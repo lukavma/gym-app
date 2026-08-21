@@ -1,10 +1,13 @@
 import { getIdb, ACTIVE_SESSION_KEY, commitSessionMutation, type OutboxOpInput } from "./db";
 import { flushOutbox } from "./flush";
+import { getCachedBundle } from "./bundleCache";
 import { newId } from "@/domain/ids/uuidv7";
 import {
   buildWorkoutSessionUpsertPayload,
   buildSessionExerciseUpsertPayload,
   buildSetLogUpsertPayload,
+  buildRecommendationUpsertPayload,
+  buildRecommendationDecisionUpsertPayload,
 } from "@/domain/sync/payloadBuilders";
 import {
   wrapPrescriptionSnapshot,
@@ -12,6 +15,13 @@ import {
   type PrescriptionSnapshot,
 } from "@/domain/schemas/prescriptionSnapshot";
 import { buildSetDeletionOps } from "@/domain/sync/setDeletionOps";
+import { resolveImplicitDecision } from "@/domain/progression/implicitDecision";
+import { applyInSessionDecisionToPrefill } from "@/domain/progression/evaluationTarget";
+import {
+  evaluateSession,
+  type SessionExerciseEvaluationInput,
+} from "@/domain/progression/evaluateSession";
+import type { PerformedExercise, RecommendationTarget } from "@/domain/progression/engine";
 import type {
   ActiveSessionDto,
   ActiveSessionExerciseDto,
@@ -143,6 +153,28 @@ function sessionExerciseFullRowOp(sessionId: string, exercise: ActiveSessionExer
   };
 }
 
+interface DecisionFields {
+  status: "accepted" | "modified" | "rejected";
+  chosen: RecommendationTarget | null;
+  decidedAt: string;
+  source: "explicit" | "implicit_first_set";
+}
+
+function recommendationDecisionOp(recommendationId: string, decision: DecisionFields) {
+  return {
+    opId: newId(),
+    entity: "recommendationDecision" as const,
+    operation: "upsert" as const,
+    payload: buildRecommendationDecisionUpsertPayload({
+      recommendationId,
+      status: decision.status,
+      chosen: decision.chosen,
+      decidedAt: decision.decidedAt,
+      source: decision.source,
+    }),
+  };
+}
+
 function setLogFullRowOp(sessionExerciseId: string, set: ActiveSessionSetDto) {
   return {
     opId: newId(),
@@ -187,6 +219,11 @@ export async function startSession(input: StartSessionInput): Promise<ActiveSess
     prescription: buildSnapshotFromBundleEntry(entry),
     skipped: false,
     notes: null,
+    loadStepKg: entry.loadStepKg,
+    // The pending recommendation rides into the session verbatim — it is
+    // decided here (explicitly, or implicitly via the first work set), never
+    // re-frozen into the snapshot (progression-engine.md §7).
+    recommendation: entry.pendingRecommendation,
     sets: [],
   }));
 
@@ -230,6 +267,8 @@ export async function addAdhocExercise(
     prescription: null,
     skipped: false,
     notes: null,
+    loadStepKg: null,
+    recommendation: null,
     sets: [],
   };
   session.exercises.push(exercise);
@@ -300,9 +339,83 @@ export async function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
   };
   exercise.sets.push(set);
 
+  const ops: OutboxOpInput[] = [setLogFullRowOp(exercise.id, set)];
+
+  // progression-engine.md §7 — the implicit decision: the FIRST work set
+  // resolves a still-pending recommendation. Committed in the same IndexedDB
+  // transaction as the set itself, so the queue can never hold the set
+  // without the decision it implied.
+  const rec = exercise.recommendation;
+  if (!set.isWarmup && rec && rec.decision.status === "pending") {
+    const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
+    if (isFirstWorkSet) {
+      const implicit = resolveImplicitDecision(
+        { action: rec.action, target: rec.target },
+        { weightKg: set.weightKg },
+        // Engine targets are already rounded to loadStepKg; 0 degrades the
+        // comparison to exact-value equality, which is then still correct.
+        exercise.loadStepKg ?? 0,
+      );
+      if (implicit) {
+        const decision: DecisionFields = {
+          status: implicit.status,
+          chosen: implicit.chosen,
+          decidedAt: loggedAt,
+          source: implicit.source,
+        };
+        exercise.recommendation = {
+          ...rec,
+          decision: { ...decision },
+        };
+        ops.push(recommendationDecisionOp(rec.id, decision));
+      }
+    }
+  }
+
+  await commitSessionMutation({ session, ops });
+  void flushOutbox();
+  return session;
+}
+
+export type ExplicitDecisionInput =
+  | { status: "accepted" }
+  | { status: "modified"; chosen: RecommendationTarget }
+  | { status: "rejected" };
+
+// progression-engine.md §7 — explicit Accept / Keep previous (reject) /
+// Custom (modify) from the recommendation card. One-time: only a pending
+// recommendation can be decided; the local state flips immediately and the
+// decision op rides the same outbox path as every other execution fact.
+export async function decideRecommendation(
+  sessionExerciseId: string,
+  input: ExplicitDecisionInput,
+): Promise<ActiveSessionDto> {
+  const session = await requireLocalSession();
+  const exercise = findExercise(session, sessionExerciseId);
+  const rec = exercise.recommendation;
+  if (!rec || rec.decision.status !== "pending") {
+    throw new Error("No pending recommendation to decide");
+  }
+  const chosen: RecommendationTarget | null =
+    input.status === "accepted"
+      ? (rec.target ?? null)
+      : input.status === "modified"
+        ? input.chosen
+        : null;
+  if (input.status === "accepted" && chosen === null) {
+    throw new Error("Recommendation has no target to accept");
+  }
+  const decision: DecisionFields = {
+    status: input.status,
+    chosen,
+    decidedAt: new Date().toISOString(),
+    source: "explicit",
+  };
+  exercise.recommendation = { ...rec, decision: { ...decision } };
+
   await commitSessionMutation({
     session,
-    ops: [setLogFullRowOp(exercise.id, set)],
+    ops: [recommendationDecisionOp(rec.id, decision)],
   });
   void flushOutbox();
   return session;
@@ -376,13 +489,123 @@ export async function setSessionNotes(notes: string | null): Promise<ActiveSessi
   return session;
 }
 
+// pwa-offline-strategy.md §2/§10 — "(if completing offline) client-computed
+// recs queue in outbox": the identical pure domain code evaluates against
+// the cached bundle context and the results sync up as `computedBy:
+// 'client'` records. The recommendation ops are enqueued AHEAD of the
+// completion op, so FIFO delivers them first and the server's own
+// completion-time evaluation skips those exercises instead of duplicating
+// them (progression-engine.md §5 — determinism makes the paths equivalent).
+// When online, no client evaluation happens — the server evaluates as the
+// completion op lands; if the onLine heuristic is ever wrong, §5's
+// missing-evaluation fallback (carry-forward prefill, nothing fabricated)
+// covers the next workout.
+async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<OutboxOpInput[]> {
+  const cached = await getCachedBundle();
+  const bundleEntries = new Map<string, TodayBundleExerciseEntryDto>();
+  if (cached && cached.bundle.today.kind === "scheduled") {
+    for (const entry of cached.bundle.today.exercises) {
+      bundleEntries.set(entry.exerciseId, entry);
+    }
+  }
+
+  const inputs: SessionExerciseEvaluationInput[] = [];
+  for (const exercise of session.exercises) {
+    if (exercise.skipped || !exercise.prescription) continue;
+    const snapshot = exercise.prescription.snapshot;
+    if (snapshot.progression.strategyId === "manual") continue;
+    const entry = bundleEntries.get(exercise.exerciseId);
+    const loadStepKg = exercise.loadStepKg ?? entry?.loadStepKg;
+    if (loadStepKg === undefined) continue;
+
+    const history: PerformedExercise[] = (entry?.history ?? []).map((h) => ({
+      sessionId: h.sessionId,
+      performedAt: h.startedAt,
+      isDeload: h.isDeload,
+      prescribed: h.prescribed
+        ? {
+            scheme: h.prescribed.scheme,
+            ...(h.prescribed.targetRir ? { targetRir: h.prescribed.targetRir } : {}),
+          }
+        : null,
+      workSets: h.sets
+        .filter((s) => !s.isWarmup)
+        .map((s) => ({ weightKg: s.weightKg, reps: s.reps, rir: s.rir })),
+    }));
+
+    inputs.push({
+      sessionExerciseId: exercise.id,
+      exerciseId: exercise.exerciseId,
+      skipped: exercise.skipped,
+      prescription: applyInSessionDecisionToPrefill(
+        snapshot,
+        exercise.recommendation?.decision ?? null,
+      ),
+      workSets: exercise.sets
+        .filter((s) => !s.isWarmup)
+        .slice()
+        .sort((a, b) => a.setNumber - b.setNumber)
+        .map((s) => ({ weightKg: s.weightKg, reps: s.reps, rir: s.rir })),
+      history,
+      loadStepKg,
+    });
+  }
+  if (inputs.length === 0) return [];
+
+  const results = evaluateSession({
+    sessionId: session.id,
+    startedAt: session.startedAt,
+    isDeload: session.isDeload,
+    // Block goal isn't in the cached bundle; v1 strategies never read it, so
+    // client and server evaluations stay byte-equivalent without it.
+    block: session.blockId
+      ? {
+          ...(session.weekIndex !== null ? { weekIndex: session.weekIndex } : {}),
+          isDeload: session.isDeload,
+        }
+      : null,
+    exercises: inputs,
+  });
+
+  const createdAt = new Date().toISOString();
+  return results.map((result) => ({
+    opId: newId(),
+    entity: "recommendation" as const,
+    operation: "upsert" as const,
+    payload: buildRecommendationUpsertPayload({
+      id: newId(),
+      exerciseId: result.exerciseId,
+      blockId: session.blockId,
+      sourceSessionId: session.id,
+      sourceSessionExerciseId: result.sessionExerciseId,
+      strategyId: result.strategyId,
+      strategyVersion: result.strategyVersion,
+      classification: result.classification,
+      config: result.config,
+      inputs: result.draft.inputs,
+      action: result.draft.action,
+      target: result.draft.target ?? null,
+      reasonCodes: [...result.draft.reasonCodes],
+      confidence: result.draft.confidence,
+      computedBy: "client",
+      createdAt,
+    }),
+  }));
+}
+
 export async function completeSession(): Promise<void> {
   const session = await requireLocalSession();
   const completedAt = new Date().toISOString();
 
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const recommendationOps = offline ? await buildClientRecommendationOps(session) : [];
+
   await commitSessionMutation({
     session: null,
-    ops: [workoutSessionFullRowOp(session, { status: "completed", completedAt })],
+    ops: [
+      ...recommendationOps,
+      workoutSessionFullRowOp(session, { status: "completed", completedAt }),
+    ],
   });
   void flushOutbox();
 }

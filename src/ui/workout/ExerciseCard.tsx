@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { formatScheme } from "@/domain/schemes/setScheme";
 import { useActiveSessionStore } from "@/sync/activeSessionStore";
+import type { ExplicitDecisionInput } from "@/sync/activeSession";
 import type { ActiveSessionExerciseDto, ActiveSessionSetDto } from "@/sync/types";
+import { RecommendationCard } from "./RecommendationCard";
 
 interface ExerciseCardProps {
   exercise: ActiveSessionExerciseDto;
@@ -29,17 +31,33 @@ function validateSetInput(weightKg: number, reps: number, rir: number | null): s
   return null;
 }
 
-// Prefill priority: the last set logged this session for this exercise,
-// falling back to the snapshot's carry-forward prefill — so consecutive
-// sets of the same weight/reps need zero retyping, and a correct prefill
-// is a single tap on "Log set" (well under the ≤3-tap budget).
+// Prefill priority: the last set logged this session for this exercise →
+// the recommendation's target while it is pending or accepted
+// (progression-engine.md §7: "the recommendation shows as the prefilled
+// target" — the zero-extra-taps happy path that makes the implicit accept
+// work) → the chosen values after an explicit modify → the snapshot's
+// working-target prefill (also the fallback after an explicit reject).
 function derivePrefill(exercise: ActiveSessionExerciseDto): {
   loadKg: number | null;
   reps: number | null;
 } {
   const lastSet = exercise.sets.at(-1);
   if (lastSet) return { loadKg: lastSet.weightKg, reps: lastSet.reps };
-  return exercise.prescription?.snapshot.prefill ?? { loadKg: null, reps: null };
+  const base = exercise.prescription?.snapshot.prefill ?? { loadKg: null, reps: null };
+  const rec = exercise.recommendation;
+  if (rec) {
+    const status = rec.decision.status;
+    if ((status === "pending" || status === "accepted") && rec.target) {
+      return { loadKg: rec.target.loadKg ?? base.loadKg, reps: rec.target.reps ?? base.reps };
+    }
+    if (status === "modified" && rec.decision.chosen) {
+      return {
+        loadKg: rec.decision.chosen.loadKg ?? base.loadKg,
+        reps: rec.decision.chosen.reps ?? base.reps,
+      };
+    }
+  }
+  return base;
 }
 
 export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) {
@@ -48,6 +66,7 @@ export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) 
   const deleteSet = useActiveSessionStore((s) => s.deleteSet);
   const setSkipped = useActiveSessionStore((s) => s.setExerciseSkipped);
   const setNotes = useActiveSessionStore((s) => s.setExerciseNotes);
+  const decideRecommendation = useActiveSessionStore((s) => s.decideRecommendation);
 
   const prefill = derivePrefill(exercise);
   const [weight, setWeight] = useState(prefill.loadKg !== null ? String(prefill.loadKg) : "");
@@ -81,6 +100,26 @@ export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) 
     }
   }
 
+  // Explicit decision from the card. The input prefill follows the outcome
+  // (only while nothing is logged yet — a typed-in value with sets already
+  // logged is the athlete's, not ours to overwrite).
+  function handleDecide(decision: ExplicitDecisionInput) {
+    void decideRecommendation(exercise.id, decision);
+    if (exercise.sets.length > 0) return;
+    const base = exercise.prescription?.snapshot.prefill ?? { loadKg: null, reps: null };
+    if (decision.status === "rejected") {
+      setWeight(base.loadKg !== null ? String(base.loadKg) : "");
+      setReps(base.reps !== null ? String(base.reps) : "");
+    } else if (decision.status === "modified") {
+      if (decision.chosen.loadKg !== undefined) setWeight(String(decision.chosen.loadKg));
+      if (decision.chosen.reps !== undefined) setReps(String(decision.chosen.reps));
+    } else {
+      const target = exercise.recommendation?.target;
+      if (target?.loadKg !== undefined) setWeight(String(target.loadKg));
+      if (target?.reps !== undefined) setReps(String(target.reps));
+    }
+  }
+
   return (
     <li
       className={`flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900 px-3 py-3 ${exercise.skipped ? "opacity-50" : ""}`}
@@ -105,6 +144,14 @@ export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) 
           {exercise.skipped ? "Unskip" : "Skip"}
         </button>
       </div>
+
+      {exercise.recommendation && !exercise.skipped && (
+        <RecommendationCard
+          recommendation={exercise.recommendation}
+          disabled={disabled}
+          onDecide={handleDecide}
+        />
+      )}
 
       {exercise.sets.length > 0 && (
         <ul className="flex flex-col gap-1">

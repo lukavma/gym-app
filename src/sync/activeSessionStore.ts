@@ -2,7 +2,12 @@ import { create } from "zustand";
 import * as activeSession from "./activeSession";
 import { listDeadLetterOps } from "./outbox";
 import { fetchRemoteActiveSession, isAdoptableRemoteSession } from "./remoteActiveSession";
-import type { StartSessionInput, LogSetInput, EditSetPatch } from "./activeSession";
+import type {
+  StartSessionInput,
+  LogSetInput,
+  EditSetPatch,
+  ExplicitDecisionInput,
+} from "./activeSession";
 import type { ActiveSessionDto } from "./types";
 
 // Finding C — the outcome of trying to adopt a session the server reported as
@@ -27,6 +32,10 @@ interface ActiveSessionState {
   setExerciseSkipped: (sessionExerciseId: string, skipped: boolean) => Promise<void>;
   setExerciseNotes: (sessionExerciseId: string, notes: string | null) => Promise<void>;
   logSet: (input: LogSetInput) => Promise<void>;
+  decideRecommendation: (
+    sessionExerciseId: string,
+    decision: ExplicitDecisionInput,
+  ) => Promise<void>;
   editSet: (sessionExerciseId: string, setId: string, patch: EditSetPatch) => Promise<void>;
   deleteSet: (sessionExerciseId: string, setId: string) => Promise<void>;
   setSessionNotes: (notes: string | null) => Promise<void>;
@@ -82,6 +91,10 @@ export const useActiveSessionStore = create<ActiveSessionState>((set, get) => ({
   },
   logSet: async (input) => {
     const session = await activeSession.logSet(input);
+    set({ session });
+  },
+  decideRecommendation: async (sessionExerciseId, decision) => {
+    const session = await activeSession.decideRecommendation(sessionExerciseId, decision);
     set({ session });
   },
   editSet: async (sessionExerciseId, setId, patch) => {

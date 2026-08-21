@@ -1,6 +1,16 @@
 import { z } from "zod";
 import { isUuidv7 } from "../ids/uuidv7";
 import { prescriptionSnapshotSchema } from "../schemas/prescriptionSnapshot";
+import {
+  inputsSummarySchema,
+  reasonCodeSchema,
+  recommendationClassificationSchema,
+  recommendationTargetSchema,
+  CONFIDENCE_LEVELS,
+  RECOMMENDATION_ACTIONS,
+  DECISION_SOURCES,
+} from "../schemas/recommendation";
+import { strategyIdSchema } from "../progression/registry";
 
 // pwa-offline-strategy.md — the single write path for execution facts.
 // Every session/session-exercise/set-log mutation, online or offline, goes
@@ -10,7 +20,13 @@ import { prescriptionSnapshotSchema } from "../schemas/prescriptionSnapshot";
 // as before.
 const uuidv7Schema = z.string().refine(isUuidv7, { message: "must be a UUIDv7" });
 
-export const SYNC_ENTITIES = ["workoutSession", "sessionExercise", "setLog"] as const;
+export const SYNC_ENTITIES = [
+  "workoutSession",
+  "sessionExercise",
+  "setLog",
+  "recommendation",
+  "recommendationDecision",
+] as const;
 export type SyncEntity = (typeof SYNC_ENTITIES)[number];
 
 export const SYNC_OPERATIONS = ["upsert", "delete"] as const;
@@ -93,3 +109,50 @@ export type SetLogUpsertPayload = z.infer<typeof setLogUpsertPayloadSchema>;
 
 export const setLogDeletePayloadSchema = z.object({ id: uuidv7Schema }).strict();
 export type SetLogDeletePayload = z.infer<typeof setLogDeletePayloadSchema>;
+
+// Phase 4 — client-computed recommendation (offline completion fallback,
+// progression-engine.md §5). Unlike the session payloads, every field is
+// required: a recommendation is born whole (immutable output, one-time
+// decision append) — there is no partial-update path for its content, and
+// the decision fields are absent because a synced record is always born
+// `pending`. `computedBy` is pinned to 'client': the server's own
+// evaluations never travel through the sync contract.
+export const recommendationUpsertPayloadSchema = z
+  .object({
+    id: uuidv7Schema,
+    exerciseId: z.string().uuid(),
+    blockId: z.string().uuid().nullable(),
+    sourceSessionId: uuidv7Schema,
+    sourceSessionExerciseId: uuidv7Schema,
+    strategyId: strategyIdSchema,
+    strategyVersion: z.number().int().positive(),
+    classification: recommendationClassificationSchema,
+    config: z.record(z.string(), z.unknown()),
+    inputs: inputsSummarySchema,
+    action: z.enum(RECOMMENDATION_ACTIONS),
+    target: recommendationTargetSchema.nullable(),
+    reasonCodes: z.array(reasonCodeSchema),
+    confidence: z.enum(CONFIDENCE_LEVELS),
+    computedBy: z.literal("client"),
+    createdAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+export type RecommendationUpsertPayload = z.infer<typeof recommendationUpsertPayloadSchema>;
+
+// Phase 4 — the one-time decision append (progression-engine.md §7).
+// `recommendationId` is a plain uuid (not necessarily v7): the decided
+// recommendation may have been computed server-side. `decidedAt` is the
+// client clock, consistent with `logged_at`/`started_at` (event times are
+// trusted client data, pwa-offline-strategy.md §5).
+export const recommendationDecisionUpsertPayloadSchema = z
+  .object({
+    recommendationId: z.string().uuid(),
+    status: z.enum(["accepted", "modified", "rejected"]),
+    chosen: recommendationTargetSchema.nullable(),
+    decidedAt: z.string().datetime({ offset: true }),
+    source: z.enum(DECISION_SOURCES),
+  })
+  .strict();
+export type RecommendationDecisionUpsertPayload = z.infer<
+  typeof recommendationDecisionUpsertPayloadSchema
+>;

@@ -2,6 +2,11 @@ import type { PrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot
 import type { SetScheme } from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
 import type { ResolvedProgression } from "@/domain/progression/registry";
+import type {
+  InputsSummary,
+  RecommendationAction,
+  RecommendationTarget,
+} from "@/domain/progression/engine";
 
 // Mirrors src/server/today/service.ts's response shapes by contract — the
 // `sync` element cannot import `server` (eslint.config.mjs boundaries: only
@@ -20,7 +25,38 @@ export interface HistorySessionSummaryDto {
   sessionId: string;
   startedAt: string;
   isDeload: boolean;
+  // The session's own prescribed scheme/RIR band from its frozen snapshot —
+  // what the offline fallback evaluation needs to build engine history
+  // entries identical to the server's (progression-engine.md §2/§5).
+  prescribed: { scheme: SetScheme; targetRir: RirBand | null } | null;
   sets: HistorySetSummaryDto[];
+}
+
+// Mirror of src/server/progression/service.ts's RecommendationDto (same
+// contract-mirroring convention as the rest of this file).
+export interface RecommendationDecisionDto {
+  status: "pending" | "accepted" | "modified" | "rejected" | "superseded";
+  chosen: RecommendationTarget | null;
+  decidedAt: string | null;
+  source: "explicit" | "implicit_first_set" | null;
+}
+
+export interface RecommendationDto {
+  id: string;
+  exerciseId: string;
+  blockId: string | null;
+  sourceSessionId: string;
+  strategyId: string;
+  strategyVersion: number;
+  classification: "evidence_supported" | "heuristic" | "user_defined";
+  action: RecommendationAction;
+  target: RecommendationTarget | null;
+  reasonCodes: string[];
+  confidence: "low" | "medium" | "high";
+  inputs: InputsSummary;
+  computedBy: "server" | "client";
+  createdAt: string;
+  decision: RecommendationDecisionDto;
 }
 
 export interface TodayBundleExerciseEntryDto {
@@ -38,6 +74,10 @@ export interface TodayBundleExerciseEntryDto {
   // second round trip.
   loadStepKg: number;
   prefill: { loadKg: number | null; reps: number | null };
+  // pwa-offline-strategy.md §4 — the at-most-one pending recommendation for
+  // this exercise in the active block. Shown as the proposed target with
+  // accept/modify/reject; never folded into `prefill` (not a Decision yet).
+  pendingRecommendation: RecommendationDto | null;
   // pwa-offline-strategy.md §4 splits what the single `history` array used
   // to serve into two roles: `previousPerformance` (last 3 non-deload
   // sessions, for display) and `history` (last 5, for the future
@@ -69,6 +109,14 @@ export interface ActiveSessionExerciseDto {
   prescription: PrescriptionSnapshot | null;
   skipped: boolean;
   notes: string | null;
+  // The exercise's load increment, carried from the bundle entry (or the
+  // server's active-session DTO) so decision matching and steppers work
+  // offline. Null only for ad-hoc exercises added without metadata.
+  loadStepKg: number | null;
+  // The recommendation being decided at this workout — copied from the
+  // bundle's pendingRecommendation at session start, updated locally when a
+  // decision is made (progression-engine.md §7). Null when none exists.
+  recommendation: RecommendationDto | null;
   sets: ActiveSessionSetDto[];
 }
 

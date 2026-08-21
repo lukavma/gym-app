@@ -21,7 +21,16 @@ import type { CarryForwardCandidate } from "@/domain/progression/carryForward";
 import type { SetScheme, SetSchemeEnvelope } from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
 import type { ResolvedProgression } from "@/domain/progression/registry";
-import type { PrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot";
+import {
+  prescriptionSnapshotSchema,
+  type PrescriptionSnapshot,
+} from "@/domain/schemas/prescriptionSnapshot";
+import {
+  getLatestDecisionChosenByExercise,
+  getPendingRecommendationsByExercise,
+  getSessionRecommendationsByExercise,
+  type RecommendationDto,
+} from "@/server/progression/service";
 
 // Bounded lookback for "previous performance" / the future progression
 // engine's history window (progression-engine.md §2's `history` input —
@@ -46,6 +55,11 @@ export interface HistorySessionDto {
   sessionId: string;
   startedAt: string;
   isDeload: boolean;
+  // What that session was prescribed (from its frozen snapshot) — the
+  // offline client needs it to build PerformedExercise history entries for
+  // fallback evaluation with the same inputs the server uses
+  // (progression-engine.md §2/§5). Null for ad-hoc/unparseable snapshots.
+  prescribed: { scheme: SetScheme; targetRir: RirBand | null } | null;
   sets: HistorySetDto[];
 }
 
@@ -60,6 +74,11 @@ export interface TodayBundleExerciseEntry {
   baselineLoadKg: number | null;
   loadStepKg: number;
   prefill: { loadKg: number | null; reps: number | null };
+  // pwa-offline-strategy.md §4 — the at-most-one pending recommendation for
+  // this exercise in the active block. Never folded into `prefill` (a
+  // pending recommendation is not a Decision); the UI shows it as the
+  // proposed target with accept/modify/reject.
+  pendingRecommendation: RecommendationDto | null;
   previousPerformance: HistorySessionDto[];
   history: HistorySessionDto[];
 }
@@ -84,6 +103,13 @@ export interface ActiveSessionExerciseDto {
   prescription: PrescriptionSnapshot | null;
   skipped: boolean;
   notes: string | null;
+  // The exercise's load increment — carried so decision matching and
+  // steppers keep working after a cross-device adopt.
+  loadStepKg: number | null;
+  // The recommendation being decided at this workout (pending, or already
+  // decided during this session) — carried so a cross-device adopt/resume
+  // keeps the decision flow (progression-engine.md §7). Null when none.
+  recommendation: RecommendationDto | null;
   sets: ActiveSessionSetDto[];
 }
 
@@ -125,7 +151,17 @@ interface HistorySessionExerciseRow {
   sessionId: string;
   startedAt: Date;
   isDeload: boolean;
+  prescribed: { scheme: SetScheme; targetRir: RirBand | null } | null;
   sets: HistorySetDto[];
+}
+
+function parseHistoryPrescribed(
+  prescription: unknown,
+): { scheme: SetScheme; targetRir: RirBand | null } | null {
+  if (!prescription) return null;
+  const parsed = prescriptionSnapshotSchema.safeParse(prescription);
+  if (!parsed.success) return null;
+  return { scheme: parsed.data.snapshot.scheme, targetRir: parsed.data.snapshot.targetRir };
 }
 
 async function getExerciseHistory(
@@ -139,6 +175,7 @@ async function getExerciseHistory(
       sessionId: workoutSessions.id,
       startedAt: workoutSessions.startedAt,
       isDeload: workoutSessions.isDeload,
+      prescription: sessionExercises.prescription,
     })
     .from(sessionExercises)
     .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
@@ -183,6 +220,7 @@ async function getExerciseHistory(
     sessionId: r.sessionId,
     startedAt: r.startedAt,
     isDeload: r.isDeload,
+    prescribed: parseHistoryPrescribed(r.prescription),
     sets: setsBySessionExercise.get(r.sessionExerciseId) ?? [],
   }));
 }
@@ -202,6 +240,7 @@ function toHistoryDto(h: HistorySessionExerciseRow): HistorySessionDto {
     sessionId: h.sessionId,
     startedAt: h.startedAt.toISOString(),
     isDeload: h.isDeload,
+    prescribed: h.prescribed,
     sets: h.sets,
   };
 }
@@ -230,11 +269,19 @@ export async function getActiveSession(
   const exerciseIds = exerciseRows.map((e) => e.exerciseId);
   const exerciseNameRows = exerciseIds.length
     ? await db
-        .select({ id: exercises.id, name: exercises.name })
+        .select({ id: exercises.id, name: exercises.name, loadStepKg: exercises.loadStepKg })
         .from(exercises)
         .where(inArray(exercises.id, exerciseIds))
     : [];
   const nameById = new Map(exerciseNameRows.map((e) => [e.id, e.name]));
+  const loadStepById = new Map(exerciseNameRows.map((e) => [e.id, e.loadStepKg]));
+
+  const recommendationByExercise = await getSessionRecommendationsByExercise(
+    db,
+    userId,
+    { id: session.id, blockId: session.blockId },
+    exerciseIds,
+  );
 
   const sessionExerciseIds = exerciseRows.map((e) => e.id);
   const setRows = sessionExerciseIds.length
@@ -280,6 +327,8 @@ export async function getActiveSession(
       prescription: e.prescription as PrescriptionSnapshot | null,
       skipped: e.skipped,
       notes: e.notes,
+      loadStepKg: loadStepById.get(e.exerciseId) ?? null,
+      recommendation: recommendationByExercise.get(e.exerciseId) ?? null,
       sets: setsBySessionExercise.get(e.id) ?? [],
     })),
   };
@@ -354,6 +403,22 @@ export async function buildTodayBundle(
             : [];
           const exerciseById = new Map(exerciseRows.map((e) => [e.id, e]));
 
+          // Phase 4 — decisions head the working-target chain
+          // (prescription-model.md §4 step 1), and each exercise carries its
+          // pending recommendation into the bundle (pwa-offline-strategy §4).
+          const decisionChosenByExercise = await getLatestDecisionChosenByExercise(
+            db,
+            userId,
+            block.id,
+            exerciseIds,
+          );
+          const pendingByExercise = await getPendingRecommendationsByExercise(
+            db,
+            userId,
+            block.id,
+            exerciseIds,
+          );
+
           const entries: TodayBundleExerciseEntry[] = [];
           for (const p of prescriptionRows) {
             const exercise = exerciseById.get(p.exerciseId);
@@ -369,6 +434,7 @@ export async function buildTodayBundle(
                 baselineLoadKg: p.baselineLoadKg,
               },
               history.map(toCarryForwardCandidate),
+              decisionChosenByExercise.get(p.exerciseId) ?? null,
             );
             entries.push({
               prescriptionId: p.id,
@@ -381,6 +447,7 @@ export async function buildTodayBundle(
               baselineLoadKg: p.baselineLoadKg,
               loadStepKg: exercise.loadStepKg,
               prefill: snapshotData.prefill,
+              pendingRecommendation: pendingByExercise.get(p.exerciseId) ?? null,
               previousPerformance: history
                 .filter((h) => !h.isDeload)
                 .slice(0, PREVIOUS_PERFORMANCE_LIMIT)

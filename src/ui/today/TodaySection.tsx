@@ -7,6 +7,7 @@ import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import { getCachedBundle, setCachedBundle } from "@/sync/bundleCache";
 import { fetchRemoteActiveSession } from "@/sync/remoteActiveSession";
 import { formatScheme } from "@/domain/schemes/setScheme";
+import { ACTION_COPY, formatTarget, reasonCopy } from "@/ui/recommendations/copy";
 import type { ActiveSessionDto, TodayBundleDto } from "@/sync/types";
 
 type Status = "loading" | "ready" | "offline" | "error";
@@ -322,6 +323,20 @@ function TodayResolutionView({
               {formatScheme(entry.scheme)}
               {entry.targetRir ? ` @ RIR ${entry.targetRir.min}-${entry.targetRir.max}` : ""}
             </p>
+            {/* Informational preview only — the decision (accept/modify/
+                reject, or implicit via the first work set) happens in the
+                workout itself (progression-engine.md §7). */}
+            {entry.pendingRecommendation && (
+              <p className="mt-1 text-xs text-sky-300">
+                {ACTION_COPY[entry.pendingRecommendation.action]}
+                {formatTarget(entry.pendingRecommendation.target)
+                  ? `: ${formatTarget(entry.pendingRecommendation.target)}`
+                  : ""}
+                {entry.pendingRecommendation.reasonCodes[0]
+                  ? ` — ${reasonCopy(entry.pendingRecommendation.reasonCodes[0])}`
+                  : ""}
+              </p>
+            )}
           </li>
         ))}
       </ul>
