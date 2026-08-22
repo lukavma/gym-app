@@ -6,7 +6,8 @@ import { seedMuscleGroups } from "@/db/seed";
 import { createExercise } from "@/server/exercises/service";
 import { createProgram } from "@/server/programs/service";
 import { createTemplate } from "@/server/templates/service";
-import { createBlock, activateBlock } from "@/server/blocks/service";
+import { createBlock, activateBlock, createWeekOverride } from "@/server/blocks/service";
+import type { DeloadConfig } from "@/domain/blocks/schema";
 import { createPrescription } from "@/server/prescriptions/service";
 import { buildTodayBundle } from "@/server/today/service";
 import { newId } from "@/domain/ids/uuidv7";
@@ -213,5 +214,157 @@ describe("buildTodayBundle (PGlite integration)", () => {
     const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));
     expect(bundle.today).toEqual({ kind: "no_schedule" });
     expect(bundle.activeSession).toBeNull();
+  });
+
+  // implementation-plan.md Phase 5 — effective-modifier resolution.
+  describe("deload / week-override modifiers (Phase 5)", () => {
+    async function setUpBlock(user: { id: string }, deload?: DeloadConfig) {
+      const exercise = await createExercise(db, user.id, {
+        name: "Back Squat",
+        equipment: "barbell",
+        mechanics: "compound",
+        laterality: "bilateral",
+        loadStepKg: 2.5,
+        contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+      });
+      const program = await createProgram(db, user.id, { name: "Program A" });
+      const template = await createTemplate(db, user.id, program.id, { name: "Push Day" });
+      if (!template) throw new Error("expected template");
+      const prescription = await createPrescription(db, user.id, template.id, {
+        exerciseId: exercise.id,
+        scheme: { v: 1, scheme: { type: "fixed", sets: 5, reps: 5 } },
+        targetRir: { min: 0, max: 2 },
+        baselineLoadKg: 100,
+        progression: { strategyId: "manual" },
+      });
+      if (!prescription) throw new Error("expected prescription");
+      const block = await createBlock(db, user.id, program.id, {
+        name: "Block 1",
+        goal: "general",
+        startDate: "2026-01-01",
+        weeksPlanned: 8,
+        schedule: [{ templateId: template.id }],
+        ...(deload ? { deload } : {}),
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, user.id, block.id);
+      return { exercise, block };
+    }
+
+    // startDate 2026-01-01, week 3 spans days 14-20 (weekIndex = floor(d/7)+1).
+    const weekThreeDate = new Date("2026-01-18T10:00:00.000Z");
+
+    it("applies a scheduled deload's modifiers to the current week and marks isDeload", async () => {
+      const user = await insertTestUser(db);
+      await setUpBlock(user, {
+        mode: "scheduled",
+        weekIndex: 3,
+        modifiers: { setMultiplier: 0.5, loadMultiplier: 0.9, targetRirShift: 2 },
+      });
+
+      const bundle = await buildTodayBundle(db, user.id, weekThreeDate);
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(bundle.today.isDeload).toBe(true);
+      const entry = bundle.today.exercises[0]!;
+      expect(entry.scheme).toEqual({ type: "fixed", sets: 2, reps: 5 });
+      expect(entry.targetRir).toEqual({ min: 2, max: 4 });
+      expect(entry.prefill.loadKg).toBe(90); // 100 * 0.9, already a 2.5 multiple
+      expect(entry.appliedModifiers).toEqual({
+        setMultiplier: 0.5,
+        loadMultiplier: 0.9,
+        targetRirShift: 2,
+      });
+    });
+
+    // M-1 regression — weekModifiersSchema now rejects setMultiplier > 2 at
+    // the API boundary (createBlock/createWeekOverride), but createBlock's
+    // *service* function (called directly here, bypassing the route's
+    // zod parse — exactly what a config stored before this bound existed
+    // would look like) doesn't re-validate it. The clamp in
+    // applyWeekModifiers.ts is what must hold regardless: the resolved
+    // scheme still has to satisfy PrescriptionSnapshot's 1..20 sets range.
+    it("clamps an out-of-range stored setMultiplier to SETS_MAX instead of producing an invalid scheme", async () => {
+      const user = await insertTestUser(db);
+      await setUpBlock(user, {
+        mode: "scheduled",
+        weekIndex: 3,
+        modifiers: { setMultiplier: 5 },
+      });
+
+      const bundle = await buildTodayBundle(db, user.id, weekThreeDate);
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(bundle.today.isDeload).toBe(true);
+      expect(bundle.today.exercises[0]?.scheme).toEqual({ type: "fixed", sets: 20, reps: 5 });
+    });
+
+    it("does not apply deload modifiers on a week that doesn't match", async () => {
+      const user = await insertTestUser(db);
+      await setUpBlock(user, {
+        mode: "scheduled",
+        weekIndex: 3,
+        modifiers: { setMultiplier: 0.5 },
+      });
+
+      // Week 1 (the block's start date) — not the scheduled deload week.
+      const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-02T10:00:00.000Z"));
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(bundle.today.isDeload).toBe(false);
+      expect(bundle.today.exercises[0]?.appliedModifiers).toBeNull();
+      expect(bundle.today.exercises[0]?.scheme).toEqual({ type: "fixed", sets: 5, reps: 5 });
+    });
+
+    it("a manual week override for the same week takes precedence over the scheduled deload", async () => {
+      const user = await insertTestUser(db);
+      const { block } = await setUpBlock(user, {
+        mode: "scheduled",
+        weekIndex: 3,
+        modifiers: { setMultiplier: 0.5 },
+      });
+      await createWeekOverride(db, user.id, block.id, {
+        weekIndex: 3,
+        type: "custom",
+        modifiers: { loadMultiplier: 0.8 },
+      });
+
+      const bundle = await buildTodayBundle(db, user.id, weekThreeDate);
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      // type: 'custom' -> not a deload, even though it's the same week the
+      // block also scheduled a deload for.
+      expect(bundle.today.isDeload).toBe(false);
+      const entry = bundle.today.exercises[0]!;
+      expect(entry.scheme).toEqual({ type: "fixed", sets: 5, reps: 5 }); // no setMultiplier in the override
+      expect(entry.prefill.loadKg).toBe(80); // 100 * 0.8
+      expect(entry.appliedModifiers).toEqual({ loadMultiplier: 0.8 });
+    });
+
+    it("carries forward from the latest pre-deload non-deload session, skipping the deload session", async () => {
+      const user = await insertTestUser(db);
+      const { exercise, block } = await setUpBlock(user);
+
+      const dayMs = 24 * 60 * 60 * 1000;
+      const base = new Date("2026-01-02T09:00:00.000Z");
+      await insertCompletedHistorySession(db, {
+        userId: user.id,
+        blockId: block.id,
+        templateId: block.schedule[0]!.templateId,
+        exerciseId: exercise.id,
+        startedAt: base,
+        isDeload: false,
+        weightKg: 100,
+      });
+      await insertCompletedHistorySession(db, {
+        userId: user.id,
+        blockId: block.id,
+        templateId: block.schedule[0]!.templateId,
+        exerciseId: exercise.id,
+        startedAt: new Date(base.getTime() + dayMs),
+        isDeload: true,
+        weightKg: 50,
+      });
+
+      const bundle = await buildTodayBundle(db, user.id, weekThreeDate);
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(bundle.today.exercises[0]?.prefill.loadKg).toBe(100);
+    });
   });
 });

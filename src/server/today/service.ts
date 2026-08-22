@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   blocks,
   blockScheduleEntries,
+  blockWeekOverrides,
   exercisePrescriptions,
   exercises,
   programs,
@@ -16,11 +17,14 @@ import { userLocalDateString } from "@/server/time/userLocalDate";
 import { currentWeekIndex } from "@/domain/scheduling/weekIndex";
 import { isoWeekday } from "@/domain/scheduling/isoWeekday";
 import { resolveTodayTemplate } from "@/domain/scheduling/todayTemplate";
+import { resolveEffectiveWeekModifiers } from "@/domain/scheduling/effectiveModifiers";
 import { buildPrescriptionSnapshotData } from "@/domain/prescriptions/buildSnapshot";
+import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import type { CarryForwardCandidate } from "@/domain/progression/carryForward";
 import type { SetScheme, SetSchemeEnvelope } from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
 import type { ResolvedProgression } from "@/domain/progression/registry";
+import type { DeloadConfig, WeekModifiers } from "@/domain/blocks/schema";
 import {
   prescriptionSnapshotSchema,
   type PrescriptionSnapshot,
@@ -74,6 +78,12 @@ export interface TodayBundleExerciseEntry {
   baselineLoadKg: number | null;
   loadStepKg: number;
   prefill: { loadKg: number | null; reps: number | null };
+  // implementation-plan.md Phase 5 — the deload/WeekOverride modifiers
+  // (if any) resolved for the block's current week and already baked into
+  // `scheme`/`targetRir`/`prefill` above. Carried alongside so the client
+  // can freeze the identical value into the session snapshot at start
+  // (single authoritative resolution point — see buildTodayBundle).
+  appliedModifiers: WeekModifiers | null;
   // pwa-offline-strategy.md §4 — the at-most-one pending recommendation for
   // this exercise in the active block. Never folded into `prefill` (a
   // pending recommendation is not a Decision); the UI shows it as the
@@ -276,12 +286,17 @@ export async function getActiveSession(
   const nameById = new Map(exerciseNameRows.map((e) => [e.id, e.name]));
   const loadStepById = new Map(exerciseNameRows.map((e) => [e.id, e.loadStepKg]));
 
-  const recommendationByExercise = await getSessionRecommendationsByExercise(
-    db,
-    userId,
-    { id: session.id, blockId: session.blockId },
-    exerciseIds,
-  );
+  // H-1 remediation — a deload session must never surface a recommendation
+  // to decide, cross-device resume included; skip the query entirely rather
+  // than fetch-then-discard (see recommendationForDeload.ts).
+  const recommendationByExercise = session.isDeload
+    ? new Map<string, RecommendationDto>()
+    : await getSessionRecommendationsByExercise(
+        db,
+        userId,
+        { id: session.id, blockId: session.blockId },
+        exerciseIds,
+      );
 
   const sessionExerciseIds = exerciseRows.map((e) => e.id);
   const setRows = sessionExerciseIds.length
@@ -328,7 +343,10 @@ export async function getActiveSession(
       skipped: e.skipped,
       notes: e.notes,
       loadStepKg: loadStepById.get(e.exerciseId) ?? null,
-      recommendation: recommendationByExercise.get(e.exerciseId) ?? null,
+      recommendation: recommendationForDeload(
+        session.isDeload,
+        recommendationByExercise.get(e.exerciseId) ?? null,
+      ),
       sets: setsBySessionExercise.get(e.id) ?? [],
     })),
   };
@@ -391,6 +409,31 @@ export async function buildTodayBundle(
         if (template) {
           const weekIdx = currentWeekIndex("active", block.startDate, today, null);
 
+          // implementation-plan.md Phase 5 — the single point where
+          // scheduled-deload-vs-WeekOverride precedence is resolved
+          // (domain-model.md §5: a manual override for this week always
+          // wins over a scheduled deload for the same week).
+          const overrideRows =
+            weekIdx !== null
+              ? await db
+                  .select()
+                  .from(blockWeekOverrides)
+                  .where(eq(blockWeekOverrides.blockId, block.id))
+              : [];
+          const effective =
+            weekIdx !== null
+              ? resolveEffectiveWeekModifiers(
+                  weekIdx,
+                  block.weeksPlanned,
+                  block.deload as DeloadConfig | null,
+                  overrideRows.map((r) => ({
+                    weekIndex: r.weekIndex,
+                    type: r.type as "deload" | "custom",
+                    modifiers: r.modifiers as WeekModifiers,
+                  })),
+                )
+              : { isDeload: false, modifiers: null };
+
           const prescriptionRows = await db
             .select()
             .from(exercisePrescriptions)
@@ -412,12 +455,14 @@ export async function buildTodayBundle(
             block.id,
             exerciseIds,
           );
-          const pendingByExercise = await getPendingRecommendationsByExercise(
-            db,
-            userId,
-            block.id,
-            exerciseIds,
-          );
+          // H-1 remediation — a deload week must never surface a pending
+          // recommendation (it would let the athlete decide, implicitly or
+          // explicitly, an unmodified target inside a deload week — see
+          // docs/reviews/phase-5-review.md H-1). The record itself is
+          // untouched; it simply isn't fetched for a deload week's bundle.
+          const pendingByExercise = effective.isDeload
+            ? new Map<string, RecommendationDto>()
+            : await getPendingRecommendationsByExercise(db, userId, block.id, exerciseIds);
 
           const entries: TodayBundleExerciseEntry[] = [];
           for (const p of prescriptionRows) {
@@ -435,6 +480,8 @@ export async function buildTodayBundle(
               },
               history.map(toCarryForwardCandidate),
               decisionChosenByExercise.get(p.exerciseId) ?? null,
+              effective.modifiers,
+              exercise.loadStepKg,
             );
             entries.push({
               prescriptionId: p.id,
@@ -447,7 +494,11 @@ export async function buildTodayBundle(
               baselineLoadKg: p.baselineLoadKg,
               loadStepKg: exercise.loadStepKg,
               prefill: snapshotData.prefill,
-              pendingRecommendation: pendingByExercise.get(p.exerciseId) ?? null,
+              appliedModifiers: snapshotData.appliedModifiers,
+              pendingRecommendation: recommendationForDeload(
+                effective.isDeload,
+                pendingByExercise.get(p.exerciseId) ?? null,
+              ),
               previousPerformance: history
                 .filter((h) => !h.isDeload)
                 .slice(0, PREVIOUS_PERFORMANCE_LIMIT)
@@ -462,10 +513,7 @@ export async function buildTodayBundle(
             templateId: template.id,
             templateName: template.name,
             weekIndex: weekIdx,
-            // Phase 3 never applies deload logic (implementation-plan.md
-            // Phase 3 "Not yet: deload behavior") — always false until
-            // Phase 5 starts reading the block's DeloadConfig here.
-            isDeload: false,
+            isDeload: effective.isDeload,
             exercises: entries,
           };
         }

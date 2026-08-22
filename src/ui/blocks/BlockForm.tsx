@@ -6,6 +6,8 @@ import { Button } from "@/ui/Button";
 import { blockGoalSchema, type BlockGoal } from "@/domain/blocks/schema";
 import type { TemplateDto } from "@/ui/templates/types";
 import type { BlockDto } from "./types";
+import { WeekOverrides } from "./WeekOverrides";
+import { BlockSummary } from "./BlockSummary";
 
 type Status = "loading" | "ready" | "submitting" | "not_found";
 
@@ -13,6 +15,11 @@ interface BlockFormProps {
   mode: "create" | "edit";
   programId?: string;
   blockId?: string;
+  // Judgment call #2 (phase-5 plan) — "start next block": pre-fills
+  // goal/schedule/weeksPlanned from a just-finished block. Every other
+  // field (name, startDate, deload, notes) starts fresh; week overrides are
+  // never referenced (a new block via createBlock never copies anything).
+  fromBlockId?: string;
 }
 
 interface ScheduleRow {
@@ -28,7 +35,7 @@ function todayDateString(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
+export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormProps) {
   const router = useRouter();
   const [status, setStatus] = useState<Status>(mode === "edit" ? "loading" : "ready");
   const [resolvedProgramId, setResolvedProgramId] = useState<string | undefined>(programId);
@@ -43,6 +50,11 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
   const [schedule, setSchedule] = useState<ScheduleRow[]>([]);
   const [deloadEnabled, setDeloadEnabled] = useState(false);
   const [deloadWeekIndex, setDeloadWeekIndex] = useState("last");
+  // domain-model.md §5 — WeekModifiers heuristic examples (0.5 sets / 0.9
+  // load / +2 RIR), editable per block; blank = that axis isn't applied.
+  const [setMultiplier, setSetMultiplier] = useState("0.5");
+  const [loadMultiplier, setLoadMultiplier] = useState("0.9");
+  const [targetRirShift, setTargetRirShift] = useState("2");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
@@ -78,7 +90,24 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
           b.schedule.map((e) => ({ templateId: e.templateId, weekdays: e.weekdays ?? [] })),
         );
         setDeloadEnabled(b.deload !== null);
-        if (b.deload) setDeloadWeekIndex(String(b.deload.weekIndex));
+        if (b.deload) {
+          setDeloadWeekIndex(String(b.deload.weekIndex));
+          setSetMultiplier(
+            b.deload.modifiers.setMultiplier !== undefined
+              ? String(b.deload.modifiers.setMultiplier)
+              : "",
+          );
+          setLoadMultiplier(
+            b.deload.modifiers.loadMultiplier !== undefined
+              ? String(b.deload.modifiers.loadMultiplier)
+              : "",
+          );
+          setTargetRirShift(
+            b.deload.modifiers.targetRirShift !== undefined
+              ? String(b.deload.modifiers.targetRirShift)
+              : "",
+          );
+        }
         setNotes(b.notes ?? "");
         setBlockStatus(b.status);
         setCurrentWeekIndex(b.currentWeekIndex);
@@ -91,6 +120,26 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
       cancelled = true;
     };
   }, [mode, blockId]);
+
+  useEffect(() => {
+    if (mode !== "create" || !fromBlockId) return;
+    let cancelled = false;
+    fetch(`/api/blocks/${fromBlockId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { block: BlockDto } | null) => {
+        if (cancelled || !data) return;
+        const b = data.block;
+        setGoal(b.goal);
+        setWeeksPlanned(String(b.weeksPlanned));
+        setSchedule(
+          b.schedule.map((e) => ({ templateId: e.templateId, weekdays: e.weekdays ?? [] })),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, fromBlockId]);
 
   function addScheduleRow() {
     const first = templates[0];
@@ -144,7 +193,11 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
         ? {
             mode: "scheduled",
             weekIndex: deloadWeekIndex === "last" ? "last" : Number(deloadWeekIndex),
-            modifiers: {},
+            modifiers: {
+              ...(setMultiplier.trim() !== "" ? { setMultiplier: Number(setMultiplier) } : {}),
+              ...(loadMultiplier.trim() !== "" ? { loadMultiplier: Number(loadMultiplier) } : {}),
+              ...(targetRirShift.trim() !== "" ? { targetRirShift: Number(targetRirShift) } : {}),
+            },
           }
         : mode === "create"
           ? undefined
@@ -176,6 +229,10 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
         setError("One of the scheduled templates is archived.");
       } else if (body?.error === "schedule_locked") {
         setError("Schedule and deload can only be edited while the block is planned.");
+      } else if (body?.error === "invalid_input") {
+        setError(
+          "Check the values entered — deload multipliers must be greater than 0 and at most 2×, RIR shift between -10 and +10.",
+        );
       } else {
         setError("Something went wrong. Please try again.");
       }
@@ -237,6 +294,19 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
             )}
         </div>
       )}
+
+      {mode === "edit" && blockId && <WeekOverrides blockId={blockId} />}
+
+      {mode === "edit" &&
+        blockId &&
+        resolvedProgramId &&
+        (blockStatus === "completed" || blockStatus === "abandoned") && (
+          <BlockSummary
+            blockId={blockId}
+            programId={resolvedProgramId}
+            showSummary={blockStatus === "completed"}
+          />
+        )}
 
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Name
@@ -376,21 +446,72 @@ export function BlockForm({ mode, programId, blockId }: BlockFormProps) {
             Schedule a deload week
           </label>
           {deloadEnabled && (
-            <label className="flex flex-col gap-1 text-sm text-slate-300">
-              Deload week
-              <select
-                value={deloadWeekIndex}
-                onChange={(e) => setDeloadWeekIndex(e.target.value)}
-                className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
-              >
-                <option value="last">Last week</option>
-                {Array.from({ length: Number(weeksPlanned) || 0 }, (_, i) => i + 1).map((w) => (
-                  <option key={w} value={w}>
-                    Week {w}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <>
+              <label className="flex flex-col gap-1 text-sm text-slate-300">
+                Deload week
+                <select
+                  value={deloadWeekIndex}
+                  onChange={(e) => setDeloadWeekIndex(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+                >
+                  <option value="last">Last week</option>
+                  {Array.from({ length: Number(weeksPlanned) || 0 }, (_, i) => i + 1).map((w) => (
+                    <option key={w} value={w}>
+                      Week {w}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="flex flex-col gap-1 text-xs text-slate-400">
+                  Sets ×
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.05"
+                    min="0.05"
+                    max="2"
+                    value={setMultiplier}
+                    onChange={(e) => setSetMultiplier(e.target.value)}
+                    placeholder="none"
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-slate-400">
+                  Load ×
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.05"
+                    min="0.05"
+                    max="2"
+                    value={loadMultiplier}
+                    onChange={(e) => setLoadMultiplier(e.target.value)}
+                    placeholder="none"
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-slate-400">
+                  RIR shift
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    step="1"
+                    min="-10"
+                    max="10"
+                    value={targetRirShift}
+                    onChange={(e) => setTargetRirShift(e.target.value)}
+                    placeholder="none"
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
+                  />
+                </label>
+              </div>
+              <p className="text-xs text-slate-500">
+                Heuristic defaults (0.5× sets, 0.9× load, +2 RIR) — editable, not required. Blank
+                means that axis isn&apos;t modified. Multipliers must be greater than 0 and at most
+                2×; RIR shift between -10 and +10.
+              </p>
+            </>
           )}
         </div>
       )}

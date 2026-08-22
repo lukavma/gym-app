@@ -76,7 +76,10 @@ export function WorkoutExecution({ navigate }: WorkoutExecutionProps) {
       <header>
         <h1 className="text-xl font-semibold text-slate-50">{session.templateName ?? "Workout"}</h1>
         {session.weekIndex !== null && (
-          <p className="text-xs text-slate-400">Week {session.weekIndex}</p>
+          <p className="text-xs text-slate-400">
+            Week {session.weekIndex}
+            {session.isDeload ? " · deload" : ""}
+          </p>
         )}
       </header>
 
@@ -97,7 +100,12 @@ export function WorkoutExecution({ navigate }: WorkoutExecutionProps) {
 
       <ul className="flex flex-col gap-3">
         {exercises.map((exercise) => (
-          <ExerciseCard key={exercise.id} exercise={exercise} disabled={sessionBlocked} />
+          <ExerciseCard
+            key={exercise.id}
+            exercise={exercise}
+            isDeload={session.isDeload}
+            disabled={sessionBlocked}
+          />
         ))}
       </ul>
 

@@ -32,11 +32,10 @@ export const prescriptionSnapshotDataSchema = z.object({
   targetRir: rirBandSchema.nullable(),
   restSeconds: z.number().int().positive().nullable(),
   progression: snapshotProgressionSchema,
-  // Phase 3 never applies deload/week modifiers to targets (that's Phase 5
-  // — implementation-plan.md Phase 3 "Not yet: deload behavior"), so this
-  // is always null today. The field exists now because domain-model.md §6
-  // places it in the snapshot shape and later phases must not need a shape
-  // migration to start populating it.
+  // implementation-plan.md Phase 5 — the resolved deload/WeekOverride
+  // modifiers (if any) already baked into `scheme`/`targetRir`/`prefill`
+  // above, carried alongside so history stays self-explaining
+  // (prescription-model.md §5). Null when no modifiers applied.
   appliedModifiers: weekModifiersSchema.nullable(),
   prefill: prefillSchema,
 });

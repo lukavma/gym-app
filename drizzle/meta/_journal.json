@@ -43,6 +43,13 @@
       "when": 1787329912612,
       "tag": "0005_sloppy_tigra",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787395291236,
+      "tag": "0006_abandoned_giant_man",
+      "breakpoints": true
     }
   ]
 }

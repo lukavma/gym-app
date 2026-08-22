@@ -7,7 +7,10 @@ export const SCHEME_TYPES = ["fixed", "repRange"] as const;
 export type SchemeType = (typeof SCHEME_TYPES)[number];
 
 const SETS_MIN = 1;
-const SETS_MAX = 20;
+// Exported so callers that must produce a PrescriptionSnapshot-valid scheme
+// outside this file (applyWeekModifiers.ts's setMultiplier clamp) share the
+// exact same ceiling instead of duplicating the literal.
+export const SETS_MAX = 20;
 const REPS_MIN = 1;
 const REPS_MAX = 100;
 const REP_RANGE_MAX_SPAN = 30;

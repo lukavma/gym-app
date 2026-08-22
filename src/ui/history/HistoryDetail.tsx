@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { formatScheme } from "@/domain/schemes/setScheme";
 import { planSetDeletion } from "@/domain/sync/setNumbering";
+import type { WeekModifiers } from "@/domain/blocks/schema";
 import {
   correctHistorySet,
   deleteHistorySet,
@@ -11,6 +12,19 @@ import {
 import type { HistorySessionDetail, HistorySetDetail } from "./types";
 
 type Status = "loading" | "ready" | "error" | "not_found";
+
+// prescription-model.md §5 — "history is self-explaining": renders which of
+// the three modifier axes were applied to this exercise's frozen snapshot.
+function formatAppliedModifiers(modifiers: WeekModifiers): string {
+  const parts: string[] = [];
+  if (modifiers.setMultiplier !== undefined) parts.push(`${modifiers.setMultiplier}× sets`);
+  if (modifiers.loadMultiplier !== undefined) parts.push(`${modifiers.loadMultiplier}× load`);
+  if (modifiers.targetRirShift !== undefined) {
+    const sign = modifiers.targetRirShift >= 0 ? "+" : "";
+    parts.push(`RIR ${sign}${modifiers.targetRirShift}`);
+  }
+  return parts.length > 0 ? `Modified: ${parts.join(", ")}` : "Modified";
+}
 
 export function HistoryDetail({ id }: { id: string }) {
   const [status, setStatus] = useState<Status>("loading");
@@ -102,6 +116,11 @@ export function HistoryDetail({ id }: { id: string }) {
               {exercise.prescription && (
                 <p className="text-xs text-slate-400">
                   {formatScheme(exercise.prescription.snapshot.scheme)}
+                </p>
+              )}
+              {exercise.prescription?.snapshot.appliedModifiers && (
+                <p className="text-xs text-amber-400">
+                  {formatAppliedModifiers(exercise.prescription.snapshot.appliedModifiers)}
                 </p>
               )}
               {exercise.skipped && <p className="text-xs text-amber-400">Skipped</p>}

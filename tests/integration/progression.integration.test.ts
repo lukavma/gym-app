@@ -7,9 +7,14 @@ import { seedMuscleGroups } from "@/db/seed";
 import { createExercise } from "@/server/exercises/service";
 import { createProgram } from "@/server/programs/service";
 import { createTemplate } from "@/server/templates/service";
-import { createBlock, activateBlock } from "@/server/blocks/service";
+import {
+  createBlock,
+  activateBlock,
+  createWeekOverride,
+  getBlockSummary,
+} from "@/server/blocks/service";
 import { createPrescription } from "@/server/prescriptions/service";
-import { buildTodayBundle } from "@/server/today/service";
+import { buildTodayBundle, getActiveSession } from "@/server/today/service";
 import { applySyncBatch } from "@/server/sync/service";
 import { newId } from "@/domain/ids/uuidv7";
 import { loadProgressionConfigSchema } from "@/domain/progression/registry";
@@ -89,6 +94,7 @@ interface SessionOpsInput {
   reps?: number[];
   finalRir?: number | null;
   startedAt?: string;
+  isDeload?: boolean;
 }
 
 // The full op sequence one completed workout produces on the wire: create
@@ -115,6 +121,7 @@ function buildSessionOps(input: SessionOpsInput) {
         templateId: input.templateId,
         templateName: "Push Day",
         weekIndex: 1,
+        isDeload: input.isDeload ?? false,
         startedAt,
       },
     },
@@ -244,6 +251,16 @@ describe("progression engine server orchestration (PGlite integration)", () => {
       derived: { setsCompleted: 3, prescribedSets: 3, finalSetRir: 2, workingLoadKg: 100 },
       historyDepthUsed: 0,
     });
+  });
+
+  // implementation-plan.md Phase 5 / progression-engine.md §5 case 10 —
+  // "Deload session -> no evaluation." Phase 4 built evaluateSession() to
+  // skip on `isDeload`, but nothing could ever set it true until Phase 5.
+  it("produces zero recommendations for a completed session frozen as a deload", async () => {
+    await runCompletedSession({ isDeload: true });
+
+    const rows = await db.select().from(recommendations);
+    expect(rows).toEqual([]);
   });
 
   it("replaying the identical batch does not re-evaluate or duplicate recommendations", async () => {
@@ -614,5 +631,185 @@ describe("progression engine server orchestration (PGlite integration)", () => {
     // 2 of 3 prescribed sets remain — not completed, so hold.
     expect(fresh.action).toBe("hold");
     expect(fresh.reasonCodes).toContain("PRESCRIBED_REPS_NOT_COMPLETED");
+  });
+
+  // H-1 regression (docs/reviews/phase-5-review.md) — a pending
+  // recommendation must never override the deload-modified target, and its
+  // decision must never leak the deload load into post-deload carry-forward
+  // or the block summary. `block` (weeksPlanned: 6, startDate 2026-08-01)
+  // and the load-progression prescription come from the outer beforeEach;
+  // week 3 spans days 14-20 (2026-08-18), week 4 spans days 21-27
+  // (2026-08-22).
+  describe("H-1 — deload recommendation isolation", () => {
+    const week3Date = "2026-08-18T10:00:00.000Z";
+    const week4Date = "2026-08-22T10:00:00.000Z";
+
+    // Builds the wire ops for a deload session shaped exactly like the
+    // client would freeze it: the frozen snapshot carries the *already
+    // deload-modified* prefill/appliedModifiers (buildSnapshotFromBundleEntry
+    // freezes buildTodayBundle's resolution verbatim — no second modifier
+    // computation on the client). Crucially, no recommendationDecision op is
+    // built here: the fixed client has nothing to decide because
+    // buildTodayBundle never attached a pendingRecommendation to this
+    // session's exercise in the first place.
+    function buildDeloadSessionOps(input: {
+      weekIndex: number;
+      prefillLoadKg: number;
+      weightKg: number;
+      startedAt: string;
+    }) {
+      const sessionId = newId();
+      const sessionExerciseId = newId();
+      const setId = newId();
+      const completedAt = new Date(
+        new Date(input.startedAt).getTime() + 60 * 60 * 1000,
+      ).toISOString();
+      const snapshot = wrapPrescriptionSnapshot({
+        exerciseId,
+        exerciseName,
+        scheme: { type: "fixed", sets: 3, reps: 5 },
+        targetRir: { min: 0, max: 2 },
+        restSeconds: 120,
+        progression: {
+          strategyId: "load-progression",
+          strategyVersion: 1,
+          config: loadProgressionConfig as Record<string, unknown>,
+          classification: "heuristic",
+        },
+        appliedModifiers: { loadMultiplier: 0.9 },
+        prefill: { loadKg: input.prefillLoadKg, reps: 5 },
+      });
+      const ops: SyncOpEnvelope[] = [
+        {
+          opId: newId(),
+          entity: "workoutSession",
+          operation: "upsert",
+          payload: {
+            id: sessionId,
+            blockId,
+            templateId,
+            templateName: "Push Day",
+            weekIndex: input.weekIndex,
+            isDeload: true,
+            startedAt: input.startedAt,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: sessionExerciseId,
+            sessionId,
+            exerciseId,
+            position: 0,
+            source: "template",
+            prescription: snapshot,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            weightKg: input.weightKg,
+            reps: 5,
+            rir: 2,
+            loggedAt: input.startedAt,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "workoutSession",
+          operation: "upsert",
+          payload: { id: sessionId, status: "completed", completedAt },
+        },
+      ];
+      return { ops, sessionId };
+    }
+
+    it("suppresses the pending rec on the deload bundle and in the in-progress session, records no decision, and leaves post-deload carry-forward/summary on the pre-deload load", async () => {
+      // 1+2 — a completed non-deload performance at 100 kg (real
+      // load-progression evaluation), which produces the pending 102.5 kg
+      // recommendation.
+      await runCompletedSession({ startedAt: "2026-08-10T10:00:00.000Z" });
+      const seeded = await db.select().from(recommendations);
+      expect(seeded).toHaveLength(1);
+      expect(seeded[0]!.target).toEqual({ loadKg: 102.5 });
+      expect(seeded[0]!.decisionStatus).toBe("pending");
+
+      // 3 — resolve a deload for week 3 with a 0.9 load multiplier.
+      await createWeekOverride(db, userId, blockId, {
+        weekIndex: 3,
+        type: "deload",
+        modifiers: { loadMultiplier: 0.9 },
+      });
+
+      // 4 — Today's deload bundle shows the 90 kg deload target (100 * 0.9)
+      // with no pending recommendation to decide.
+      const deloadBundle = await buildTodayBundle(db, userId, new Date(week3Date));
+      if (deloadBundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(deloadBundle.today.isDeload).toBe(true);
+      const deloadEntry = deloadBundle.today.exercises[0]!;
+      expect(deloadEntry.prefill.loadKg).toBe(90);
+      expect(deloadEntry.pendingRecommendation).toBeNull();
+
+      // Start + log the deload session's first work set at 90 kg through the
+      // real sync write path, without completing yet — proves the
+      // server-hydrated/cross-device resume shape (getActiveSession) also
+      // omits the recommendation despite it existing, pending, for this
+      // (exercise, block).
+      const { ops, sessionId } = buildDeloadSessionOps({
+        weekIndex: 3,
+        prefillLoadKg: 90,
+        weightKg: 90,
+        startedAt: week3Date,
+      });
+      const started = await applySyncBatch(db, userId, ops.slice(0, 3));
+      expect(started.rejected).toEqual([]);
+
+      const active = await getActiveSession(db, userId);
+      expect(active?.id).toBe(sessionId);
+      expect(active?.isDeload).toBe(true);
+      expect(active?.exercises[0]?.recommendation).toBeNull();
+
+      // 5+6 — completing the deload session (no recommendationDecision op
+      // was ever built, and completion's own evaluation skips isDeload
+      // sessions) must not touch the pending rec or create a new one.
+      const completed = await applySyncBatch(db, userId, [ops[3]!]);
+      expect(completed.rejected).toEqual([]);
+
+      const afterDeload = await db.select().from(recommendations);
+      expect(afterDeload).toHaveLength(1);
+      expect(afterDeload[0]!.decisionStatus).toBe("pending");
+      expect(afterDeload[0]!.decisionChosen).toBeNull();
+      expect(afterDeload[0]!.target).toEqual({ loadKg: 102.5 });
+
+      // 7 — the next non-deload week's bundle carries forward from the
+      // pre-deload 100 kg, not the deload's 90 kg, and the original rec is
+      // still there, still pending.
+      const postDeloadBundle = await buildTodayBundle(db, userId, new Date(week4Date));
+      if (postDeloadBundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(postDeloadBundle.today.isDeload).toBe(false);
+      const postDeloadEntry = postDeloadBundle.today.exercises[0]!;
+      expect(postDeloadEntry.prefill.loadKg).toBe(100);
+      expect(postDeloadEntry.pendingRecommendation).toMatchObject({
+        target: { loadKg: 102.5 },
+        decision: { status: "pending" },
+      });
+
+      // 7 (block summary) — "after" must not be the deload's 90 kg either.
+      const summary = await getBlockSummary(db, userId, blockId);
+      if (!summary) throw new Error("expected summary");
+      expect(summary.hadDeloadSession).toBe(true);
+      expect(summary.exercises[0]).toMatchObject({
+        exerciseId,
+        beforeLoadKg: 100,
+        afterLoadKg: 100,
+      });
+    });
   });
 });

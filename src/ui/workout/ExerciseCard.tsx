@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatScheme } from "@/domain/schemes/setScheme";
+import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import type { ExplicitDecisionInput } from "@/sync/activeSession";
 import type { ActiveSessionExerciseDto, ActiveSessionSetDto } from "@/sync/types";
@@ -9,6 +10,11 @@ import { RecommendationCard } from "./RecommendationCard";
 
 interface ExerciseCardProps {
   exercise: ActiveSessionExerciseDto;
+  // H-1 remediation — the session's own isDeload, not derived from
+  // `exercise`: gates the prefill and the recommendation card so a deload
+  // workout never shows or acts on a recommendation, even a stale pre-fix
+  // session that still carries one on `exercise.recommendation`.
+  isDeload: boolean;
   disabled?: boolean;
 }
 
@@ -37,14 +43,17 @@ function validateSetInput(weightKg: number, reps: number, rir: number | null): s
 // target" — the zero-extra-taps happy path that makes the implicit accept
 // work) → the chosen values after an explicit modify → the snapshot's
 // working-target prefill (also the fallback after an explicit reject).
-function derivePrefill(exercise: ActiveSessionExerciseDto): {
+function derivePrefill(
+  exercise: ActiveSessionExerciseDto,
+  isDeload: boolean,
+): {
   loadKg: number | null;
   reps: number | null;
 } {
   const lastSet = exercise.sets.at(-1);
   if (lastSet) return { loadKg: lastSet.weightKg, reps: lastSet.reps };
   const base = exercise.prescription?.snapshot.prefill ?? { loadKg: null, reps: null };
-  const rec = exercise.recommendation;
+  const rec = recommendationForDeload(isDeload, exercise.recommendation);
   if (rec) {
     const status = rec.decision.status;
     if ((status === "pending" || status === "accepted") && rec.target) {
@@ -60,7 +69,7 @@ function derivePrefill(exercise: ActiveSessionExerciseDto): {
   return base;
 }
 
-export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) {
+export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseCardProps) {
   const logSet = useActiveSessionStore((s) => s.logSet);
   const editSet = useActiveSessionStore((s) => s.editSet);
   const deleteSet = useActiveSessionStore((s) => s.deleteSet);
@@ -68,7 +77,8 @@ export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) 
   const setNotes = useActiveSessionStore((s) => s.setExerciseNotes);
   const decideRecommendation = useActiveSessionStore((s) => s.decideRecommendation);
 
-  const prefill = derivePrefill(exercise);
+  const recommendation = recommendationForDeload(isDeload, exercise.recommendation);
+  const prefill = derivePrefill(exercise, isDeload);
   const [weight, setWeight] = useState(prefill.loadKg !== null ? String(prefill.loadKg) : "");
   const [reps, setReps] = useState(prefill.reps !== null ? String(prefill.reps) : "");
   const [rir, setRir] = useState("");
@@ -114,7 +124,7 @@ export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) 
       if (decision.chosen.loadKg !== undefined) setWeight(String(decision.chosen.loadKg));
       if (decision.chosen.reps !== undefined) setReps(String(decision.chosen.reps));
     } else {
-      const target = exercise.recommendation?.target;
+      const target = recommendation?.target;
       if (target?.loadKg !== undefined) setWeight(String(target.loadKg));
       if (target?.reps !== undefined) setReps(String(target.reps));
     }
@@ -145,9 +155,9 @@ export function ExerciseCard({ exercise, disabled = false }: ExerciseCardProps) 
         </button>
       </div>
 
-      {exercise.recommendation && !exercise.skipped && (
+      {recommendation && !exercise.skipped && (
         <RecommendationCard
-          recommendation={exercise.recommendation}
+          recommendation={recommendation}
           disabled={disabled}
           onDecide={handleDecide}
         />

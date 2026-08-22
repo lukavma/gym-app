@@ -1,4 +1,9 @@
-import type { BlockGoal, DeloadConfig } from "@/domain/blocks/schema";
+import type {
+  BlockGoal,
+  DeloadConfig,
+  WeekModifiers,
+  WeekOverrideType,
+} from "@/domain/blocks/schema";
 
 export interface ScheduleEntryDto {
   id: string;
@@ -26,4 +31,28 @@ export interface BlockDto {
   updatedAt: string;
   schedule: ScheduleEntryDto[];
   currentWeekIndex: number | null;
+}
+
+export interface WeekOverrideDto {
+  id: string;
+  blockId: string;
+  weekIndex: number;
+  type: WeekOverrideType;
+  modifiers: WeekModifiers;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BlockSummaryExerciseDto {
+  exerciseId: string;
+  exerciseName: string;
+  beforeLoadKg: number;
+  afterLoadKg: number;
+}
+
+export interface BlockSummaryDto {
+  sessionsCompleted: number;
+  hadDeloadSession: boolean;
+  exercises: BlockSummaryExerciseDto[];
 }

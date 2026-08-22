@@ -16,6 +16,7 @@ import {
 } from "@/domain/schemas/prescriptionSnapshot";
 import { buildSetDeletionOps } from "@/domain/sync/setDeletionOps";
 import { resolveImplicitDecision } from "@/domain/progression/implicitDecision";
+import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { applyInSessionDecisionToPrefill } from "@/domain/progression/evaluationTarget";
 import {
   evaluateSession,
@@ -88,6 +89,10 @@ function nextSetNumber(exercise: ActiveSessionExerciseDto): number {
   return exercise.sets.reduce((max, s) => Math.max(max, s.setNumber), 0) + 1;
 }
 
+// implementation-plan.md Phase 5 — `entry` already carries the effective
+// prescription exactly as the server resolved it (scheme/targetRir/prefill
+// modified, appliedModifiers set); this freezes it verbatim, online or from
+// the cached bundle offline. No second modifier computation exists here.
 function buildSnapshotFromBundleEntry(entry: TodayBundleExerciseEntryDto): PrescriptionSnapshot {
   return wrapPrescriptionSnapshot({
     exerciseId: entry.exerciseId,
@@ -101,7 +106,7 @@ function buildSnapshotFromBundleEntry(entry: TodayBundleExerciseEntryDto): Presc
       config: entry.progression.config,
       classification: entry.progression.classification,
     },
-    appliedModifiers: null,
+    appliedModifiers: entry.appliedModifiers,
     prefill: entry.prefill,
   });
 }
@@ -223,7 +228,13 @@ export async function startSession(input: StartSessionInput): Promise<ActiveSess
     // The pending recommendation rides into the session verbatim — it is
     // decided here (explicitly, or implicitly via the first work set), never
     // re-frozen into the snapshot (progression-engine.md §7).
-    recommendation: entry.pendingRecommendation,
+    //
+    // H-1 remediation — buildTodayBundle already omits pendingRecommendation
+    // for a deload week, but a bundle served from the offline cache
+    // (bundleCache.ts) can be a stale pre-fix copy that still carries one;
+    // recommendationForDeload is the defensive backstop that keeps a deload
+    // session decision-free regardless of what the bundle entry claims.
+    recommendation: recommendationForDeload(input.isDeload, entry.pendingRecommendation),
     sets: [],
   }));
 
@@ -345,7 +356,11 @@ export async function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
   // resolves a still-pending recommendation. Committed in the same IndexedDB
   // transaction as the set itself, so the queue can never hold the set
   // without the decision it implied.
-  const rec = exercise.recommendation;
+  //
+  // H-1 remediation — gated through recommendationForDeload so a deload
+  // session can never enqueue an implicit decision, even a resumed session
+  // hydrated before this fix that still carries `exercise.recommendation`.
+  const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
   if (!set.isWarmup && rec && rec.decision.status === "pending") {
     const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
     if (isFirstWorkSet) {
@@ -392,7 +407,11 @@ export async function decideRecommendation(
 ): Promise<ActiveSessionDto> {
   const session = await requireLocalSession();
   const exercise = findExercise(session, sessionExerciseId);
-  const rec = exercise.recommendation;
+  // H-1 remediation — a deload session has nothing to decide, even if a
+  // stale pre-fix local session still carries `exercise.recommendation`
+  // (the RecommendationCard is never rendered for one either — see
+  // ExerciseCard.tsx — so this is a defensive backstop, not the primary gate).
+  const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
   if (!rec || rec.decision.status !== "pending") {
     throw new Error("No pending recommendation to decide");
   }

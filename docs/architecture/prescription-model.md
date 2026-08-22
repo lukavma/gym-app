@@ -137,7 +137,7 @@ PrescriptionSnapshot (frozen into SessionExercise.prescription)
 
 Rules:
 - `setMultiplier` rounds **down**, minimum 1 set (0.5 × 5 sets → 2 sets). Heuristic default, editable per block.
-- Snapshot contains the *modified* scheme plus `appliedModifiers` so history is self-explaining ("3×5 because deload 0.5× applied to 5×5" — wait, floor(5×0.5)=2; example: 5 sets → 2 sets).
+- Snapshot contains the *modified* scheme plus `appliedModifiers` so history is self-explaining (e.g. "5 sets → 2 sets because 0.5× deload applied").
 - Ad-hoc exercises added mid-session get either `prescription: null` (free logging) or a minimal inline scheme chosen in one tap (e.g. `3 × 8–12` quick presets).
 
 ---

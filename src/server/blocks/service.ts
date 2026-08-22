@@ -1,15 +1,32 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { blocks, blockScheduleEntries, programs, users, workoutTemplates } from "@/db/schema";
+import {
+  blocks,
+  blockScheduleEntries,
+  blockWeekOverrides,
+  exercisePrescriptions,
+  exercises,
+  programs,
+  sessionExercises,
+  setLogs,
+  users,
+  workoutSessions,
+  workoutTemplates,
+} from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import { newId } from "@/domain/ids/uuidv7";
 import { currentWeekIndex as deriveCurrentWeekIndex } from "@/domain/scheduling/weekIndex";
 import { userLocalDateString } from "@/server/time/userLocalDate";
+import { getLatestDecisionChosenByExercise } from "@/server/progression/service";
 import type {
   BlockGoal,
   CreateBlockInput,
+  CreateWeekOverrideInput,
   DeloadConfig,
   ScheduleEntryInput,
   UpdateBlockInput,
+  UpdateWeekOverrideInput,
+  WeekModifiers,
+  WeekOverrideType,
 } from "@/domain/blocks/schema";
 
 export class BlockNotFoundError extends Error {
@@ -60,6 +77,22 @@ export class BlockScheduleTemplateArchivedError extends Error {
   }
 }
 
+// data-model.md §2.11 — uq_week_override: at most one override per
+// (block, week).
+export class BlockWeekOverrideDuplicateError extends Error {
+  constructor() {
+    super("A week override already exists for this block and week");
+    this.name = "BlockWeekOverrideDuplicateError";
+  }
+}
+
+export class BlockWeekOverrideNotFoundError extends Error {
+  constructor() {
+    super("Week override not found");
+    this.name = "BlockWeekOverrideNotFoundError";
+  }
+}
+
 export type BlockStatus = "planned" | "active" | "completed" | "abandoned";
 
 export interface ScheduleEntryRecord {
@@ -67,6 +100,17 @@ export interface ScheduleEntryRecord {
   templateId: string;
   position: number;
   weekdays: number[] | null;
+}
+
+export interface WeekOverrideRecord {
+  id: string;
+  blockId: string;
+  weekIndex: number;
+  type: WeekOverrideType;
+  modifiers: WeekModifiers;
+  note: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface BlockRecord {
@@ -422,4 +466,254 @@ export async function completeBlock(db: AppDb, userId: string, id: string): Prom
 
 export async function abandonBlock(db: AppDb, userId: string, id: string): Promise<BlockRecord> {
   return transitionBlock(db, userId, id, ["planned", "active"], "abandoned", true);
+}
+
+// --- Week overrides (data-model.md §2.11) -----------------------------
+//
+// Unlike schedule/deload (locked to status === 'planned'), overrides can be
+// inserted "at any time" (domain-model.md §5) — no status gate on any of
+// these. Ownership is verified the same way as everywhere else: block ->
+// program -> user.
+
+type WeekOverrideRow = typeof blockWeekOverrides.$inferSelect;
+
+function toWeekOverrideRecord(row: WeekOverrideRow): WeekOverrideRecord {
+  return {
+    id: row.id,
+    blockId: row.blockId,
+    weekIndex: row.weekIndex,
+    type: row.type as WeekOverrideType,
+    modifiers: row.modifiers as WeekModifiers,
+    note: row.note,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function assertOwnedBlock(db: AppDb, userId: string, blockId: string): Promise<void> {
+  const [row] = await db
+    .select({ id: blocks.id })
+    .from(blocks)
+    .innerJoin(programs, eq(blocks.programId, programs.id))
+    .where(and(eq(blocks.id, blockId), eq(programs.userId, userId)));
+  if (!row) throw new BlockNotFoundError();
+}
+
+export async function listWeekOverrides(
+  db: AppDb,
+  userId: string,
+  blockId: string,
+): Promise<WeekOverrideRecord[]> {
+  await assertOwnedBlock(db, userId, blockId);
+  const rows = await db
+    .select()
+    .from(blockWeekOverrides)
+    .where(eq(blockWeekOverrides.blockId, blockId))
+    .orderBy(asc(blockWeekOverrides.weekIndex));
+  return rows.map(toWeekOverrideRecord);
+}
+
+export async function createWeekOverride(
+  db: AppDb,
+  userId: string,
+  blockId: string,
+  input: CreateWeekOverrideInput,
+): Promise<WeekOverrideRecord> {
+  await assertOwnedBlock(db, userId, blockId);
+  try {
+    const [row] = await db
+      .insert(blockWeekOverrides)
+      .values({
+        id: newId(),
+        blockId,
+        weekIndex: input.weekIndex,
+        type: input.type,
+        modifiers: input.modifiers,
+        note: input.note ?? null,
+      })
+      .returning();
+    if (!row) throw new Error("Failed to create week override");
+    return toWeekOverrideRecord(row);
+  } catch (err) {
+    if (isPostgresErrorCode(err, UNIQUE_VIOLATION)) throw new BlockWeekOverrideDuplicateError();
+    throw err;
+  }
+}
+
+export async function updateWeekOverride(
+  db: AppDb,
+  userId: string,
+  blockId: string,
+  overrideId: string,
+  input: UpdateWeekOverrideInput,
+): Promise<WeekOverrideRecord> {
+  await assertOwnedBlock(db, userId, blockId);
+  const [existing] = await db
+    .select()
+    .from(blockWeekOverrides)
+    .where(and(eq(blockWeekOverrides.id, overrideId), eq(blockWeekOverrides.blockId, blockId)));
+  if (!existing) throw new BlockWeekOverrideNotFoundError();
+
+  const patch: Partial<typeof blockWeekOverrides.$inferInsert> = { updatedAt: new Date() };
+  if (input.type !== undefined) patch.type = input.type;
+  if (input.modifiers !== undefined) patch.modifiers = input.modifiers;
+  if (input.note !== undefined) patch.note = input.note;
+
+  const [row] = await db
+    .update(blockWeekOverrides)
+    .set(patch)
+    .where(eq(blockWeekOverrides.id, overrideId))
+    .returning();
+  if (!row) throw new Error("Failed to update week override");
+  return toWeekOverrideRecord(row);
+}
+
+export async function deleteWeekOverride(
+  db: AppDb,
+  userId: string,
+  blockId: string,
+  overrideId: string,
+): Promise<void> {
+  await assertOwnedBlock(db, userId, blockId);
+  const [existing] = await db
+    .select({ id: blockWeekOverrides.id })
+    .from(blockWeekOverrides)
+    .where(and(eq(blockWeekOverrides.id, overrideId), eq(blockWeekOverrides.blockId, blockId)));
+  if (!existing) throw new BlockWeekOverrideNotFoundError();
+  await db.delete(blockWeekOverrides).where(eq(blockWeekOverrides.id, overrideId));
+}
+
+// --- Block completion summary (implementation-plan.md Phase 5) --------
+//
+// "Derives sessions completed and per-exercise before->after targets on
+// read; do not add persisted aggregates" — every number here is computed
+// fresh from workout_sessions/session_exercises/set_logs/recommendations,
+// nothing is stored. Before = the block's earliest completed, non-deload
+// session's first work-set load for that exercise; after = the same
+// precedence chain Today uses (latest accepted/modified Decision for
+// (exercise, block), else the latest completed non-deload session's first
+// work-set load), both scoped to this block. Exercises never performed
+// (non-deload) in this block are omitted — there is nothing to report.
+
+export interface BlockSummaryExercise {
+  exerciseId: string;
+  exerciseName: string;
+  beforeLoadKg: number;
+  afterLoadKg: number;
+}
+
+export interface BlockSummary {
+  sessionsCompleted: number;
+  hadDeloadSession: boolean;
+  exercises: BlockSummaryExercise[];
+}
+
+export async function getBlockSummary(
+  db: AppDb,
+  userId: string,
+  blockId: string,
+): Promise<BlockSummary | null> {
+  const [owned] = await db
+    .select({ id: blocks.id })
+    .from(blocks)
+    .innerJoin(programs, eq(blocks.programId, programs.id))
+    .where(and(eq(blocks.id, blockId), eq(programs.userId, userId)));
+  if (!owned) return null;
+
+  const completedSessionRows = await db
+    .select({ id: workoutSessions.id, isDeload: workoutSessions.isDeload })
+    .from(workoutSessions)
+    .where(and(eq(workoutSessions.blockId, blockId), eq(workoutSessions.status, "completed")));
+  const sessionsCompleted = completedSessionRows.length;
+  const hadDeloadSession = completedSessionRows.some((s) => s.isDeload);
+
+  const scheduleRows = await db
+    .select({ templateId: blockScheduleEntries.templateId })
+    .from(blockScheduleEntries)
+    .where(eq(blockScheduleEntries.blockId, blockId));
+  const templateIds = [...new Set(scheduleRows.map((r) => r.templateId))];
+
+  const prescriptionRows = templateIds.length
+    ? await db
+        .select({ exerciseId: exercisePrescriptions.exerciseId })
+        .from(exercisePrescriptions)
+        .where(inArray(exercisePrescriptions.templateId, templateIds))
+    : [];
+  const exerciseIds = [...new Set(prescriptionRows.map((r) => r.exerciseId))];
+  if (exerciseIds.length === 0) return { sessionsCompleted, hadDeloadSession, exercises: [] };
+
+  const exerciseRows = await db
+    .select({ id: exercises.id, name: exercises.name })
+    .from(exercises)
+    .where(inArray(exercises.id, exerciseIds));
+  const nameById = new Map(exerciseRows.map((e) => [e.id, e.name]));
+
+  const decisionChosenByExercise = await getLatestDecisionChosenByExercise(
+    db,
+    userId,
+    blockId,
+    exerciseIds,
+  );
+
+  const result: BlockSummaryExercise[] = [];
+  for (const exerciseId of exerciseIds) {
+    const sessionExerciseRows = await db
+      .select({
+        sessionExerciseId: sessionExercises.id,
+        startedAt: workoutSessions.startedAt,
+        isDeload: workoutSessions.isDeload,
+      })
+      .from(sessionExercises)
+      .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+      .where(
+        and(
+          eq(sessionExercises.exerciseId, exerciseId),
+          eq(workoutSessions.blockId, blockId),
+          eq(workoutSessions.status, "completed"),
+          eq(workoutSessions.isDeload, false),
+        ),
+      )
+      .orderBy(asc(workoutSessions.startedAt));
+    if (sessionExerciseRows.length === 0) continue;
+
+    const setRows = await db
+      .select()
+      .from(setLogs)
+      .where(
+        and(
+          inArray(
+            setLogs.sessionExerciseId,
+            sessionExerciseRows.map((r) => r.sessionExerciseId),
+          ),
+          eq(setLogs.isWarmup, false),
+        ),
+      )
+      .orderBy(asc(setLogs.setNumber));
+    const firstWorkSetBySessionExercise = new Map<string, number>();
+    for (const s of setRows) {
+      if (!firstWorkSetBySessionExercise.has(s.sessionExerciseId)) {
+        firstWorkSetBySessionExercise.set(s.sessionExerciseId, s.weightKg);
+      }
+    }
+
+    const loadsInOrder: number[] = [];
+    for (const r of sessionExerciseRows) {
+      const loadKg = firstWorkSetBySessionExercise.get(r.sessionExerciseId);
+      if (loadKg !== undefined) loadsInOrder.push(loadKg);
+    }
+    if (loadsInOrder.length === 0) continue;
+
+    const before = loadsInOrder[0]!;
+    const decisionAfter = decisionChosenByExercise.get(exerciseId)?.loadKg;
+    const after = decisionAfter ?? loadsInOrder[loadsInOrder.length - 1]!;
+
+    result.push({
+      exerciseId,
+      exerciseName: nameById.get(exerciseId) ?? "",
+      beforeLoadKg: before,
+      afterLoadKg: after,
+    });
+  }
+
+  return { sessionsCompleted, hadDeloadSession, exercises: result };
 }

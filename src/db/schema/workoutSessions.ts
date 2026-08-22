@@ -23,11 +23,10 @@ import { workoutTemplates } from "./workoutTemplates";
 // still resolving — `template_name`/`week_index`/`is_deload` and each
 // session_exercise's `prescription` snapshot carry the full meaning.
 //
-// `is_deload` is always `false` in Phase 3: deload *application* (reading a
-// block's DeloadConfig/WeekOverride and modifying targets/snapshots
-// accordingly) is Phase 5 scope (implementation-plan.md Phase 3 "Not yet:
-// deload behavior"). The column exists now because data-model.md places it
-// on this table, but nothing writes `true` to it until Phase 5.
+// `is_deload` is frozen at session start from the block's resolved
+// DeloadConfig/WeekOverride for the current week (implementation-plan.md
+// Phase 5 — src/domain/scheduling/effectiveModifiers.ts). It gates
+// progression evaluation and carry-forward (progression-engine.md §5/§8).
 export const workoutSessions = pgTable(
   "workout_sessions",
   {

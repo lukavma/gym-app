@@ -7,6 +7,7 @@ import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import { getCachedBundle, setCachedBundle } from "@/sync/bundleCache";
 import { fetchRemoteActiveSession } from "@/sync/remoteActiveSession";
 import { formatScheme } from "@/domain/schemes/setScheme";
+import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { ACTION_COPY, formatTarget, reasonCopy } from "@/ui/recommendations/copy";
 import type { ActiveSessionDto, TodayBundleDto } from "@/sync/types";
 
@@ -69,6 +70,11 @@ export function TodaySection({ navigate }: TodaySectionProps) {
   const [busy, setBusy] = useState(false);
   const [remoteState, setRemoteState] = useState<RemoteActiveSessionState>({ kind: "checking" });
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  // M-1 remediation — startSession freezes the bundle's PrescriptionSnapshot
+  // client-side (wrapPrescriptionSnapshot / buildSessionExerciseUpsertPayload
+  // both validate); a scheme that still fails that validation throws instead
+  // of leaving "Start workout" to silently re-enable with no feedback.
+  const [startError, setStartError] = useState<string | null>(null);
 
   useEffect(() => {
     void hydrate();
@@ -160,6 +166,7 @@ export function TodaySection({ navigate }: TodaySectionProps) {
   async function handleStart() {
     if (!bundle || bundle.today.kind !== "scheduled") return;
     setBusy(true);
+    setStartError(null);
     try {
       await start({
         blockId: bundle.today.blockId,
@@ -170,6 +177,10 @@ export function TodaySection({ navigate }: TodaySectionProps) {
         exercises: bundle.today.exercises,
       });
       go("/today/workout");
+    } catch {
+      setStartError(
+        "Couldn't start the workout — one of today's prescriptions is invalid. Try reloading Today, or check the block's deload/override settings.",
+      );
     } finally {
       setBusy(false);
     }
@@ -239,6 +250,11 @@ export function TodaySection({ navigate }: TodaySectionProps) {
       )}
 
       {remoteError && <p className="text-xs text-amber-300">{remoteError}</p>}
+      {startError && (
+        <p role="alert" className="text-xs text-red-400">
+          {startError}
+        </p>
+      )}
 
       {hasForeignActive && remote && (
         <div className="flex flex-col gap-3 rounded-lg border border-amber-800 bg-amber-950 px-4 py-4">
@@ -309,36 +325,49 @@ function TodayResolutionView({
       <div>
         <h2 className="text-base font-semibold text-slate-50">{today.templateName}</h2>
         {today.weekIndex !== null && (
-          <p className="text-xs text-slate-400">Week {today.weekIndex}</p>
+          <p className="text-xs text-slate-400">
+            Week {today.weekIndex}
+            {today.isDeload ? " · deload" : ""}
+          </p>
         )}
       </div>
       <ul className="flex flex-col gap-2">
-        {today.exercises.map((entry) => (
-          <li
-            key={entry.prescriptionId}
-            className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-3"
-          >
-            <p className="text-base font-medium text-slate-50">{entry.exerciseName}</p>
-            <p className="text-xs text-slate-400">
-              {formatScheme(entry.scheme)}
-              {entry.targetRir ? ` @ RIR ${entry.targetRir.min}-${entry.targetRir.max}` : ""}
-            </p>
-            {/* Informational preview only — the decision (accept/modify/
-                reject, or implicit via the first work set) happens in the
-                workout itself (progression-engine.md §7). */}
-            {entry.pendingRecommendation && (
-              <p className="mt-1 text-xs text-sky-300">
-                {ACTION_COPY[entry.pendingRecommendation.action]}
-                {formatTarget(entry.pendingRecommendation.target)
-                  ? `: ${formatTarget(entry.pendingRecommendation.target)}`
-                  : ""}
-                {entry.pendingRecommendation.reasonCodes[0]
-                  ? ` — ${reasonCopy(entry.pendingRecommendation.reasonCodes[0])}`
-                  : ""}
+        {today.exercises.map((entry) => {
+          // H-1 remediation — buildTodayBundle already omits
+          // pendingRecommendation for a deload week; this is the defensive
+          // backstop against a stale cached bundle that still carries one
+          // (see recommendationForDeload.ts).
+          const pendingRecommendation = recommendationForDeload(
+            today.isDeload,
+            entry.pendingRecommendation,
+          );
+          return (
+            <li
+              key={entry.prescriptionId}
+              className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-3"
+            >
+              <p className="text-base font-medium text-slate-50">{entry.exerciseName}</p>
+              <p className="text-xs text-slate-400">
+                {formatScheme(entry.scheme)}
+                {entry.targetRir ? ` @ RIR ${entry.targetRir.min}-${entry.targetRir.max}` : ""}
               </p>
-            )}
-          </li>
-        ))}
+              {/* Informational preview only — the decision (accept/modify/
+                  reject, or implicit via the first work set) happens in the
+                  workout itself (progression-engine.md §7). */}
+              {pendingRecommendation && (
+                <p className="mt-1 text-xs text-sky-300">
+                  {ACTION_COPY[pendingRecommendation.action]}
+                  {formatTarget(pendingRecommendation.target)
+                    ? `: ${formatTarget(pendingRecommendation.target)}`
+                    : ""}
+                  {pendingRecommendation.reasonCodes[0]
+                    ? ` — ${reasonCopy(pendingRecommendation.reasonCodes[0])}`
+                    : ""}
+                </p>
+              )}
+            </li>
+          );
+        })}
       </ul>
       <button
         type="button"

@@ -3,6 +3,7 @@ import {
   createBlockSchema,
   scheduleEntryInputSchema,
   updateBlockSchema,
+  weekModifiersSchema,
 } from "@/domain/blocks/schema";
 
 const templateId = "00000000-0000-0000-0000-000000000001";
@@ -92,6 +93,54 @@ describe("updateBlockSchema", () => {
   it("rejects weeksPlanned above 16 on update", () => {
     const result = updateBlockSchema.safeParse({ weeksPlanned: 20 });
     expect(result.success).toBe(false);
+  });
+});
+
+// M-1 regression — docs/reviews/phase-5-review.md: entering `5` where the
+// pre-filled default reads `0.5` (a plausible typo, both UIs pre-fill 0.5)
+// must be rejected here, at the API boundary, rather than only surfacing
+// later as a silent "Start workout" failure downstream.
+describe("weekModifiersSchema", () => {
+  it("accepts the documented heuristic defaults", () => {
+    const result = weekModifiersSchema.safeParse({
+      setMultiplier: 0.5,
+      loadMultiplier: 0.9,
+      targetRirShift: 2,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an empty object (no axis modified)", () => {
+    expect(weekModifiersSchema.safeParse({}).success).toBe(true);
+  });
+
+  it("rejects setMultiplier above 2 (the '5 instead of 0.5' typo)", () => {
+    expect(weekModifiersSchema.safeParse({ setMultiplier: 5 }).success).toBe(false);
+  });
+
+  it("rejects loadMultiplier above 2", () => {
+    expect(weekModifiersSchema.safeParse({ loadMultiplier: 5 }).success).toBe(false);
+  });
+
+  it("rejects a zero or negative multiplier", () => {
+    expect(weekModifiersSchema.safeParse({ setMultiplier: 0 }).success).toBe(false);
+    expect(weekModifiersSchema.safeParse({ loadMultiplier: -1 }).success).toBe(false);
+  });
+
+  it("accepts multipliers at the (0, 2] boundaries", () => {
+    expect(weekModifiersSchema.safeParse({ setMultiplier: 0.01 }).success).toBe(true);
+    expect(weekModifiersSchema.safeParse({ setMultiplier: 2 }).success).toBe(true);
+    expect(weekModifiersSchema.safeParse({ loadMultiplier: 2 }).success).toBe(true);
+  });
+
+  it("rejects a targetRirShift outside [-10, 10]", () => {
+    expect(weekModifiersSchema.safeParse({ targetRirShift: 11 }).success).toBe(false);
+    expect(weekModifiersSchema.safeParse({ targetRirShift: -11 }).success).toBe(false);
+  });
+
+  it("accepts a targetRirShift at the [-10, 10] boundaries", () => {
+    expect(weekModifiersSchema.safeParse({ targetRirShift: 10 }).success).toBe(true);
+    expect(weekModifiersSchema.safeParse({ targetRirShift: -10 }).success).toBe(true);
   });
 });
 

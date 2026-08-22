@@ -2,6 +2,7 @@ import type { PrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot
 import type { SetScheme } from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
 import type { ResolvedProgression } from "@/domain/progression/registry";
+import type { WeekModifiers } from "@/domain/blocks/schema";
 import type {
   InputsSummary,
   RecommendationAction,
@@ -74,6 +75,12 @@ export interface TodayBundleExerciseEntryDto {
   // second round trip.
   loadStepKg: number;
   prefill: { loadKg: number | null; reps: number | null };
+  // implementation-plan.md Phase 5 — the resolved deload/WeekOverride
+  // modifiers already baked into `scheme`/`targetRir`/`prefill` above. The
+  // client never recomputes modifiers itself — it freezes exactly this
+  // value into the session snapshot at start, online or from the cached
+  // bundle offline (single authoritative resolution point, server-side).
+  appliedModifiers: WeekModifiers | null;
   // pwa-offline-strategy.md §4 — the at-most-one pending recommendation for
   // this exercise in the active block. Shown as the proposed target with
   // accept/modify/reject; never folded into `prefill` (not a Decision yet).
