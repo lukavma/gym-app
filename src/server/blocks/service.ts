@@ -3,7 +3,6 @@ import {
   blocks,
   blockScheduleEntries,
   blockWeekOverrides,
-  exercisePrescriptions,
   exercises,
   programs,
   sessionExercises,
@@ -17,6 +16,7 @@ import { newId } from "@/domain/ids/uuidv7";
 import { currentWeekIndex as deriveCurrentWeekIndex } from "@/domain/scheduling/weekIndex";
 import { userLocalDateString } from "@/server/time/userLocalDate";
 import { getLatestDecisionChosenByExercise } from "@/server/progression/service";
+import { prescriptionSnapshotSchema } from "@/domain/schemas/prescriptionSnapshot";
 import type {
   BlockGoal,
   CreateBlockInput,
@@ -53,13 +53,19 @@ export class BlockInvalidTransitionError extends Error {
   }
 }
 
-// Schedule/deload are only editable while the block hasn't started
-// (status === 'planned') — domain-model.md §9 treats schedule/deload as
-// snapshotted into sessions once a block is running.
-export class BlockScheduleLockedError extends Error {
+// Active-schedule remediation — domain-model.md §9: "Block config, schedule,
+// deload | yes (future weeks)" is mutable for as long as the block is still
+// running (`planned` or `active`); only a *finished* block (`completed` /
+// `abandoned`) freezes its schedule and deload, because there are no more
+// future weeks left for an edit to apply to. Editing an active block's
+// schedule/deload changes future workout resolution only — already-started
+// and completed sessions keep their frozen snapshots regardless (ADR-007),
+// so this is not the "activation locks it" rule an earlier version of this
+// service enforced.
+export class BlockScheduleImmutableError extends Error {
   constructor() {
-    super("Schedule and deload can only be edited while the block is planned");
-    this.name = "BlockScheduleLockedError";
+    super("Schedule and deload can only be edited while the block is planned or active");
+    this.name = "BlockScheduleImmutableError";
   }
 }
 
@@ -366,8 +372,9 @@ export async function updateBlock(
   const existing = existingRow.block;
 
   const touchesSchedule = input.schedule !== undefined || input.deload !== undefined;
-  if (touchesSchedule && existing.status !== "planned") {
-    throw new BlockScheduleLockedError();
+  const scheduleImmutable = existing.status === "completed" || existing.status === "abandoned";
+  if (touchesSchedule && scheduleImmutable) {
+    throw new BlockScheduleImmutableError();
   }
   if (input.schedule !== undefined) {
     await assertScheduleTemplatesValid(db, existing.programId, input.schedule);
@@ -594,6 +601,17 @@ export async function deleteWeekOverride(
 // (exercise, block), else the latest completed non-deload session's first
 // work-set load), both scoped to this block. Exercises never performed
 // (non-deload) in this block are omitted — there is nothing to report.
+//
+// L-3 remediation (docs/reviews/phase-5-review.md) — the set of exercises
+// is enumerated from what was actually *performed* (session_exercises for
+// the block's completed, non-deload sessions), never from the block's
+// current mutable schedule/template prescriptions. That mutable source
+// made a completed block's summary lose exercises the moment the schedule
+// or a template was edited afterwards, even though the sessions and their
+// snapshots were untouched (domain-model.md §9: schedule edits change
+// future resolution only). Deriving from session_exercises also picks up
+// ad-hoc exercises (source: 'adhoc') for free — they never had a
+// prescription to enumerate from in the old query.
 
 export interface BlockSummaryExercise {
   exerciseId: string;
@@ -606,6 +624,16 @@ export interface BlockSummary {
   sessionsCompleted: number;
   hadDeloadSession: boolean;
   exercises: BlockSummaryExercise[];
+}
+
+// The frozen PrescriptionSnapshot carries the exercise's name as of when it
+// was actually performed (ADR-007 snapshot-on-use); prefer it over the
+// exercise's current (possibly since-renamed) name, falling back to the
+// current name only for ad-hoc entries with no snapshot to read from.
+function extractSnapshotExerciseName(prescription: unknown): string | null {
+  if (prescription === null || prescription === undefined) return null;
+  const parsed = prescriptionSnapshotSchema.safeParse(prescription);
+  return parsed.success ? parsed.data.snapshot.exerciseName : null;
 }
 
 export async function getBlockSummary(
@@ -627,26 +655,44 @@ export async function getBlockSummary(
   const sessionsCompleted = completedSessionRows.length;
   const hadDeloadSession = completedSessionRows.some((s) => s.isDeload);
 
-  const scheduleRows = await db
-    .select({ templateId: blockScheduleEntries.templateId })
-    .from(blockScheduleEntries)
-    .where(eq(blockScheduleEntries.blockId, blockId));
-  const templateIds = [...new Set(scheduleRows.map((r) => r.templateId))];
+  const performedRows = await db
+    .select({
+      sessionExerciseId: sessionExercises.id,
+      exerciseId: sessionExercises.exerciseId,
+      prescription: sessionExercises.prescription,
+      startedAt: workoutSessions.startedAt,
+    })
+    .from(sessionExercises)
+    .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+    .where(
+      and(
+        eq(workoutSessions.blockId, blockId),
+        eq(workoutSessions.status, "completed"),
+        eq(workoutSessions.isDeload, false),
+      ),
+    )
+    .orderBy(asc(workoutSessions.startedAt));
+  if (performedRows.length === 0) return { sessionsCompleted, hadDeloadSession, exercises: [] };
 
-  const prescriptionRows = templateIds.length
-    ? await db
-        .select({ exerciseId: exercisePrescriptions.exerciseId })
-        .from(exercisePrescriptions)
-        .where(inArray(exercisePrescriptions.templateId, templateIds))
-    : [];
-  const exerciseIds = [...new Set(prescriptionRows.map((r) => r.exerciseId))];
-  if (exerciseIds.length === 0) return { sessionsCompleted, hadDeloadSession, exercises: [] };
+  const exerciseIds = [...new Set(performedRows.map((r) => r.exerciseId))];
+
+  const rowsByExercise = new Map<string, typeof performedRows>();
+  const snapshotNameByExercise = new Map<string, string>();
+  for (const row of performedRows) {
+    const list = rowsByExercise.get(row.exerciseId) ?? [];
+    list.push(row);
+    rowsByExercise.set(row.exerciseId, list);
+    if (!snapshotNameByExercise.has(row.exerciseId)) {
+      const name = extractSnapshotExerciseName(row.prescription);
+      if (name) snapshotNameByExercise.set(row.exerciseId, name);
+    }
+  }
 
   const exerciseRows = await db
     .select({ id: exercises.id, name: exercises.name })
     .from(exercises)
     .where(inArray(exercises.id, exerciseIds));
-  const nameById = new Map(exerciseRows.map((e) => [e.id, e.name]));
+  const currentNameById = new Map(exerciseRows.map((e) => [e.id, e.name]));
 
   const decisionChosenByExercise = await getLatestDecisionChosenByExercise(
     db,
@@ -657,24 +703,7 @@ export async function getBlockSummary(
 
   const result: BlockSummaryExercise[] = [];
   for (const exerciseId of exerciseIds) {
-    const sessionExerciseRows = await db
-      .select({
-        sessionExerciseId: sessionExercises.id,
-        startedAt: workoutSessions.startedAt,
-        isDeload: workoutSessions.isDeload,
-      })
-      .from(sessionExercises)
-      .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
-      .where(
-        and(
-          eq(sessionExercises.exerciseId, exerciseId),
-          eq(workoutSessions.blockId, blockId),
-          eq(workoutSessions.status, "completed"),
-          eq(workoutSessions.isDeload, false),
-        ),
-      )
-      .orderBy(asc(workoutSessions.startedAt));
-    if (sessionExerciseRows.length === 0) continue;
+    const rows = rowsByExercise.get(exerciseId) ?? [];
 
     const setRows = await db
       .select()
@@ -683,7 +712,7 @@ export async function getBlockSummary(
         and(
           inArray(
             setLogs.sessionExerciseId,
-            sessionExerciseRows.map((r) => r.sessionExerciseId),
+            rows.map((r) => r.sessionExerciseId),
           ),
           eq(setLogs.isWarmup, false),
         ),
@@ -697,7 +726,7 @@ export async function getBlockSummary(
     }
 
     const loadsInOrder: number[] = [];
-    for (const r of sessionExerciseRows) {
+    for (const r of rows) {
       const loadKg = firstWorkSetBySessionExercise.get(r.sessionExerciseId);
       if (loadKg !== undefined) loadsInOrder.push(loadKg);
     }
@@ -709,7 +738,7 @@ export async function getBlockSummary(
 
     result.push({
       exerciseId,
-      exerciseName: nameById.get(exerciseId) ?? "",
+      exerciseName: snapshotNameByExercise.get(exerciseId) ?? currentNameById.get(exerciseId) ?? "",
       beforeLoadKg: before,
       afterLoadKg: after,
     });

@@ -7,16 +7,28 @@
 //  - Weekday mode (any entry has weekdays set): today's template is the
 //    entry whose weekdays include today's ISO weekday. If none match,
 //    today is a rest day — deliberately not an error, no session starts.
-//  - Rotation mode (no entry has weekdays): the next entry in position
-//    order after however many sessions already completed for this block,
-//    cyclically — session 1 -> entry 0, session 2 -> entry 1, wrapping
-//    around. An in-progress (not yet completed) session doesn't advance
-//    the rotation until it's completed.
+//    Overlapping weekday assignments across entries are rejected at the
+//    write boundary (domain/blocks/schema.ts's `scheduleInputSchema`), so
+//    this resolver never has to choose between two matches.
+//  - Rotation mode (no entry has weekdays): today's template is the entry
+//    *after* whichever entry the athlete's most recently completed session
+//    in this block was for, cyclically by current `position` order. If that
+//    template is no longer in the schedule (removed, or the entry's
+//    template was changed to something else) — or no session has been
+//    completed yet — today resolves to the first entry. This is
+//    deliberately not `completedSessionCount % scheduleLength`: once an
+//    active block's schedule can be edited (active-schedule remediation),
+//    counting completed sessions against the *current* array length makes
+//    "next workout" jump unpredictably whenever an entry is added or
+//    removed. Anchoring on the last-performed template keeps the sequence
+//    explainable regardless of when the schedule changed.
 //
-// A block mixing weekday-mode and rotation-mode entries is not a supported
-// shape (block_schedule_entries doesn't enforce this at the DB level, but
-// nothing in the UI creates a mixed schedule) — if it ever happens, this
-// resolves as weekday mode (any entry with weekdays wins).
+// Active-schedule remediation — a schedule mixing weekday-mode and
+// rotation-mode entries can no longer be written (rejected by
+// `scheduleInputSchema`); any pre-existing mixed schedule row is still
+// resolved defensively as weekday mode (any entry with weekdays wins) so a
+// legacy row never causes a request to fail — the block editor surfaces it
+// for correction instead of this resolver trying to fix it silently.
 export interface ScheduleEntryForResolution {
   templateId: string;
   position: number;
@@ -28,7 +40,7 @@ export type TodayResolution =
 
 export function resolveTodayTemplate(
   schedule: readonly ScheduleEntryForResolution[],
-  completedSessionCountForBlock: number,
+  latestCompletedTemplateId: string | null,
   todayIsoWeekday: number,
 ): TodayResolution {
   if (schedule.length === 0) return { kind: "no_schedule" };
@@ -43,7 +55,10 @@ export function resolveTodayTemplate(
     return match ? { kind: "scheduled", templateId: match.templateId } : { kind: "rest" };
   }
 
-  const index = completedSessionCountForBlock % sorted.length;
-  const entry = sorted[index];
+  const latestIndex = latestCompletedTemplateId
+    ? sorted.findIndex((entry) => entry.templateId === latestCompletedTemplateId)
+    : -1;
+  const nextIndex = latestIndex === -1 ? 0 : (latestIndex + 1) % sorted.length;
+  const entry = sorted[nextIndex];
   return entry ? { kind: "scheduled", templateId: entry.templateId } : { kind: "no_schedule" };
 }

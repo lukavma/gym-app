@@ -6,7 +6,12 @@ import { seedMuscleGroups } from "@/db/seed";
 import { createExercise } from "@/server/exercises/service";
 import { createProgram } from "@/server/programs/service";
 import { createTemplate } from "@/server/templates/service";
-import { createBlock, activateBlock, createWeekOverride } from "@/server/blocks/service";
+import {
+  createBlock,
+  activateBlock,
+  createWeekOverride,
+  updateBlock,
+} from "@/server/blocks/service";
 import type { DeloadConfig } from "@/domain/blocks/schema";
 import { createPrescription } from "@/server/prescriptions/service";
 import { buildTodayBundle } from "@/server/today/service";
@@ -365,6 +370,126 @@ describe("buildTodayBundle (PGlite integration)", () => {
       const bundle = await buildTodayBundle(db, user.id, weekThreeDate);
       if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
       expect(bundle.today.exercises[0]?.prefill.loadKg).toBe(100);
+    });
+  });
+
+  // Active-schedule remediation — Today must resolve from the block's
+  // *current* schedule immediately after an active-block edit, both in
+  // fixed-weekday mode (domain/scheduling/todayTemplate.ts's weekday match)
+  // and rotation mode (its latest-completed-template continuation rule).
+  describe("Today resolution after active-schedule edits", () => {
+    async function setUpThreeTemplateProgram(user: { id: string }) {
+      const exercise = await createExercise(db, user.id, {
+        name: "Overhead Press",
+        equipment: "barbell",
+        mechanics: "compound",
+        laterality: "bilateral",
+        loadStepKg: 2.5,
+        contributions: [{ muscleGroupId: "front_delts", role: "primary", weight: 1 }],
+      });
+      const program = await createProgram(db, user.id, { name: "Program A" });
+      const templateA = await createTemplate(db, user.id, program.id, { name: "Upper A" });
+      const templateB = await createTemplate(db, user.id, program.id, { name: "Lower A" });
+      const templateC = await createTemplate(db, user.id, program.id, { name: "Upper B" });
+      if (!templateA || !templateB || !templateC) throw new Error("expected templates");
+      for (const template of [templateA, templateB, templateC]) {
+        const prescription = await createPrescription(db, user.id, template.id, {
+          exerciseId: exercise.id,
+          scheme: { v: 1, scheme: { type: "fixed", sets: 3, reps: 5 } },
+          progression: { strategyId: "manual" },
+        });
+        if (!prescription) throw new Error("expected prescription");
+      }
+      return { exercise, program, templateA, templateB, templateC };
+    }
+
+    it("resolves the newly assigned weekday immediately after a fixed schedule is edited on an active block", async () => {
+      const user = await insertTestUser(db);
+      const { program, templateA, templateB } = await setUpThreeTemplateProgram(user);
+      const block = await createBlock(db, user.id, program.id, {
+        name: "Block 1",
+        goal: "general",
+        startDate: "2026-01-01",
+        weeksPlanned: 8,
+        schedule: [
+          { templateId: templateA.id, weekdays: [1] },
+          { templateId: templateB.id, weekdays: [2] },
+        ],
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, user.id, block.id);
+
+      // 2026-01-05 is a Monday (ISO weekday 1).
+      const monday = new Date("2026-01-05T09:00:00.000Z");
+      const before = await buildTodayBundle(db, user.id, monday);
+      if (before.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(before.today.templateId).toBe(templateA.id);
+
+      // Swap which template owns Monday.
+      await updateBlock(db, user.id, block.id, {
+        schedule: [
+          { templateId: templateA.id, weekdays: [2] },
+          { templateId: templateB.id, weekdays: [1] },
+        ],
+      });
+
+      const after = await buildTodayBundle(db, user.id, monday);
+      if (after.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(after.today.templateId).toBe(templateB.id);
+    });
+
+    // V-4 (verification) — this case adds and removes schedule entries; it
+    // does not reorder any. Reorder resolution is covered at the resolver
+    // level by tests/unit/todayTemplate.test.ts ("reorders explainably:
+    // moving the latest-completed entry to the end still advances to its
+    // old neighbor"). The title used to claim reordering it never performed.
+    it("advances rotation from the latest completed template, and falls back to the first entry once that template is removed from the schedule", async () => {
+      const user = await insertTestUser(db);
+      const { exercise, program, templateA, templateB, templateC } =
+        await setUpThreeTemplateProgram(user);
+      const block = await createBlock(db, user.id, program.id, {
+        name: "Block 1",
+        goal: "general",
+        startDate: "2026-01-01",
+        weeksPlanned: 8,
+        schedule: [{ templateId: templateA.id }, { templateId: templateB.id }],
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, user.id, block.id);
+
+      const start = await buildTodayBundle(db, user.id, new Date("2026-01-01T09:00:00.000Z"));
+      if (start.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(start.today.templateId).toBe(templateA.id);
+
+      await insertCompletedHistorySession(db, {
+        userId: user.id,
+        blockId: block.id,
+        templateId: templateA.id,
+        exerciseId: exercise.id,
+        startedAt: new Date("2026-01-01T09:00:00.000Z"),
+        isDeload: false,
+        weightKg: 40,
+      });
+
+      const next = await buildTodayBundle(db, user.id, new Date("2026-01-02T09:00:00.000Z"));
+      if (next.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(next.today.templateId).toBe(templateB.id);
+
+      // Add a third entry and remove templateA (the latest-completed
+      // template) from the schedule entirely.
+      await updateBlock(db, user.id, block.id, {
+        schedule: [{ templateId: templateB.id }, { templateId: templateC.id }],
+      });
+
+      const afterRemoval = await buildTodayBundle(
+        db,
+        user.id,
+        new Date("2026-01-03T09:00:00.000Z"),
+      );
+      if (afterRemoval.today.kind !== "scheduled") throw new Error("expected scheduled");
+      // templateA no longer exists in the schedule -> falls back to the
+      // first entry (templateB), not a modulo jump against the new length.
+      expect(afterRemoval.today.templateId).toBe(templateB.id);
     });
   });
 });

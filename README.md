@@ -43,25 +43,66 @@ pnpm dev
 
 ## Commands
 
-| Command                             | What it does                                                                         |
-| ----------------------------------- | ------------------------------------------------------------------------------------ |
-| `pnpm dev`                          | Start the dev server                                                                 |
-| `pnpm build`                        | Production build (standalone output)                                                 |
-| `pnpm start:standalone`             | Run the built standalone server (`.next/standalone/server.js`)                       |
-| `pnpm lint`                         | ESLint, including the architecture import-boundary rules                             |
-| `pnpm format:check` / `pnpm format` | Prettier check / write                                                               |
-| `pnpm typecheck`                    | `tsc --noEmit` for the app                                                           |
-| `pnpm typecheck:sw`                 | `tsc --noEmit` for the service worker (separate `webworker` lib — see below)         |
-| `pnpm test:unit`                    | Vitest unit tests                                                                    |
-| `pnpm test:integration`             | Vitest integration tests against PGlite (in-memory WASM Postgres — no Docker needed) |
-| `pnpm test`                         | Unit + integration                                                                   |
-| `pnpm test:e2e`                     | Playwright smoke test — **local only, never runs in CI** (needs a real Postgres)     |
-| `pnpm db:generate`                  | Generate a Drizzle migration from schema changes                                     |
-| `pnpm db:migrate`                   | Apply pending migrations                                                             |
+| Command                             | What it does                                                                           |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `pnpm dev`                          | Start the dev server                                                                   |
+| `pnpm build`                        | Production build (standalone output)                                                   |
+| `pnpm start:standalone`             | Run the built standalone server (`.next/standalone/server.js`)                         |
+| `pnpm lint`                         | ESLint, including the architecture import-boundary rules                               |
+| `pnpm format:check` / `pnpm format` | Prettier check / write                                                                 |
+| `pnpm typecheck`                    | `tsc --noEmit` for the app                                                             |
+| `pnpm typecheck:sw`                 | `tsc --noEmit` for the service worker (separate `webworker` lib — see below)           |
+| `pnpm test:unit`                    | Vitest unit tests                                                                      |
+| `pnpm test:integration`             | Vitest integration tests against PGlite (in-memory WASM Postgres — no Docker needed)   |
+| `pnpm test`                         | Unit + integration                                                                     |
+| `pnpm test:e2e`                     | Playwright Chromium E2E suite — **local only, not part of CI** (needs a real Postgres) |
+| `pnpm db:generate`                  | Generate a Drizzle migration from schema changes                                       |
+| `pnpm db:migrate`                   | Apply pending migrations                                                               |
 
-Playwright needs a running local Postgres with migrations applied
-(`docker compose up -d db && pnpm db:migrate`); it starts its own dev
-server automatically (see `playwright.config.ts`).
+### Running the E2E suite
+
+`@playwright/test` is a project dependency (`devDependencies`), so `pnpm
+install` already provides the runner. The **browser binary** is not
+installed by `pnpm install` — do this once per machine:
+
+```bash
+pnpm exec playwright install chromium
+```
+
+The suite needs the **local Docker Postgres with migrations applied**, and a
+seeded account for the specs that log in:
+
+```powershell
+docker compose up -d db
+pnpm db:migrate
+$env:DATABASE_URL="postgres://gymapp:gymapp@localhost:5432/gymapp"; pnpm tsx tests/e2e/seed.ts
+pnpm test:e2e
+```
+
+`pnpm test:e2e` **builds and starts the production server** — its
+`webServer` command is `pnpm build && pnpm start`, not `pnpm dev` (see
+`playwright.config.ts`). This is deliberate: `next.config.ts` disables the
+service worker when `NODE_ENV === "development"`, and the offline specs
+depend on a real SW-served offline reload, which `pnpm dev` can never
+satisfy. `reuseExistingServer: true` means an already-running `pnpm build &&
+pnpm start` is reused, so you can iterate without rebuilding each time.
+
+Notes on what this suite does and does not cover:
+
+- The project currently runs **Chromium only**, locally, at desktop viewport
+  unless a spec overrides it. `workers: 1` (serial) — several specs reshape
+  shared seed data and restore it in `finally`.
+- **Chromium E2E does not replace manual iPhone/Safari acceptance.** Real
+  iOS Safari differs on PWA install, service-worker lifecycle, IndexedDB
+  eviction, viewport/keyboard behaviour and touch targets — every phase's
+  device-acceptance pass is still done by hand on the actual phone. The
+  Phase 5 active-schedule defect was found that way, not by this suite.
+- **No production database is ever used.** The suite points at the local
+  Docker Postgres via `DATABASE_URL`; specs create, mutate and restore their
+  own fixtures there.
+- **Playwright is currently not part of CI** — `.github/workflows/ci.yml`
+  runs lint, boundaries, typecheck, unit + integration tests and the
+  production build. CI has no Postgres service and no browser binaries.
 
 ### Deferrable unique constraints need a manual migration patch
 
@@ -138,8 +179,13 @@ workout in later phases).
 - **Integration** (`tests/integration/`): the auth service against a real
   (PGlite, in-memory) Postgres — schema, `citext` email uniqueness, and the
   advisory-lock-guarded first-run setup race are all exercised for real.
-- **E2E smoke** (`tests/e2e/`): one Playwright spec driving a browser
-  through setup-or-login to the authenticated Today shell. Local only.
+- **E2E** (`tests/e2e/`): Playwright specs driving a real Chromium browser
+  against the production build and the local Docker Postgres — setup-or-login,
+  Today resume/takeover, offline logging and cold-launch, deloads,
+  progression, set deletion, and active-block schedule editing. Local only,
+  serial, and **not** a substitute for manual iPhone/Safari acceptance. See
+  [Running the E2E suite](#running-the-e2e-suite) for the one-time
+  `pnpm exec playwright install chromium` step and the prerequisites.
 
 ## Deployment
 

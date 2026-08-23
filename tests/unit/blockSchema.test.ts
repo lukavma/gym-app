@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   createBlockSchema,
   scheduleEntryInputSchema,
+  scheduleInputSchema,
   updateBlockSchema,
   weekModifiersSchema,
 } from "@/domain/blocks/schema";
 
 const templateId = "00000000-0000-0000-0000-000000000001";
+const templateId2 = "00000000-0000-0000-0000-000000000002";
+const templateId3 = "00000000-0000-0000-0000-000000000003";
+const templateId4 = "00000000-0000-0000-0000-000000000004";
 
 function baseInput(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -173,6 +177,80 @@ describe("scheduleEntryInputSchema", () => {
       templateId,
       weekdays: [1, 2, 3, 4, 5, 6, 7, 1],
     });
+    expect(result.success).toBe(false);
+  });
+});
+
+// Active-schedule remediation — the two explicit schedule modes
+// (docs/architecture/domain-model.md §5, resolved by
+// domain/scheduling/todayTemplate.ts): every entry has weekdays (fixed), or
+// none do (rotation). A schedule mixing the two, overlapping weekdays across
+// entries, or the same template scheduled twice must all be rejected here,
+// at the write boundary, with a phone-readable message — not left for
+// Today's resolver to silently pick a winner.
+describe("scheduleInputSchema", () => {
+  it("accepts a pure fixed-weekday schedule (four distinct templates, one weekday entry each)", () => {
+    const result = scheduleInputSchema.safeParse([
+      { templateId, weekdays: [1] },
+      { templateId: templateId2, weekdays: [2] },
+      { templateId: templateId3, weekdays: [4] },
+      { templateId: templateId4, weekdays: [5] },
+    ]);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts one template owning multiple distinct weekdays in a single entry", () => {
+    const result = scheduleInputSchema.safeParse([
+      { templateId, weekdays: [1, 4] },
+      { templateId: templateId2, weekdays: [2, 5] },
+    ]);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a pure rotation schedule (no entry has weekdays)", () => {
+    const result = scheduleInputSchema.safeParse([
+      { templateId },
+      { templateId: templateId2 },
+      { templateId: templateId3 },
+    ]);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a schedule mixing fixed-weekday and rotation entries", () => {
+    const result = scheduleInputSchema.safeParse([
+      { templateId, weekdays: [1] },
+      { templateId: templateId2 },
+    ]);
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error.issues[0]?.message).toMatch(
+      /one schedule mode/i,
+    );
+  });
+
+  it("rejects overlapping weekdays across different entries", () => {
+    const result = scheduleInputSchema.safeParse([
+      { templateId, weekdays: [1, 2] },
+      { templateId: templateId2, weekdays: [2, 3] },
+    ]);
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error.issues[0]?.message).toMatch(
+      /more than one workout/i,
+    );
+  });
+
+  it("rejects the same template scheduled in two different entries", () => {
+    const result = scheduleInputSchema.safeParse([
+      { templateId, weekdays: [1] },
+      { templateId, weekdays: [4] },
+    ]);
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.error.issues[0]?.message).toMatch(
+      /scheduled more than once/i,
+    );
+  });
+
+  it("rejects the same template scheduled twice in rotation mode", () => {
+    const result = scheduleInputSchema.safeParse([{ templateId }, { templateId }]);
     expect(result.success).toBe(false);
   });
 });

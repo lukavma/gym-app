@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AppDb } from "@/db/client";
 import { createTestDb } from "./testDb";
-import { users } from "@/db/schema";
+import { sessionExercises, setLogs, users, workoutSessions } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { seedMuscleGroups } from "@/db/seed";
+import { createExercise } from "@/server/exercises/service";
 import { createProgram, setProgramArchived } from "@/server/programs/service";
 import { createTemplate, setTemplateArchived } from "@/server/templates/service";
+import { createPrescription } from "@/server/prescriptions/service";
+import { newId } from "@/domain/ids/uuidv7";
 import {
   abandonBlock,
   activateBlock,
   BlockActiveConflictError,
   BlockInvalidTransitionError,
   BlockNotFoundError,
-  BlockScheduleLockedError,
+  BlockScheduleImmutableError,
   BlockScheduleTemplateArchivedError,
   BlockScheduleTemplateNotFoundError,
   completeBlock,
@@ -209,20 +214,44 @@ describe("blocks service (PGlite integration)", () => {
     expect(abandonedFromActive.status).toBe("abandoned");
   });
 
-  it("throws BlockScheduleLockedError when editing schedule or deload on a non-planned block", async () => {
-    const block = await createBlock(db, userId, programId, {
+  // Active-schedule remediation (docs/architecture/domain-model.md §9) —
+  // schedule and deload stay mutable for as long as the block is still
+  // running; only a finished block locks them. This replaces the earlier,
+  // stricter rule that treated activation itself as the lock point.
+  it("throws BlockScheduleImmutableError when editing schedule or deload on a completed or abandoned block", async () => {
+    const completed = await createBlock(db, userId, programId, {
       name: "Block 1",
       goal: "hypertrophy",
       startDate: "2026-01-01",
       weeksPlanned: 4,
       schedule: [{ templateId }],
     });
-    if (!block) throw new Error("expected block");
-    await activateBlock(db, userId, block.id);
+    if (!completed) throw new Error("expected block");
+    await activateBlock(db, userId, completed.id);
+    await completeBlock(db, userId, completed.id);
 
-    await expect(updateBlock(db, userId, block.id, { schedule: [{ templateId }] })).rejects.toThrow(
-      BlockScheduleLockedError,
-    );
+    await expect(
+      updateBlock(db, userId, completed.id, { schedule: [{ templateId }] }),
+    ).rejects.toThrow(BlockScheduleImmutableError);
+    await expect(
+      updateBlock(db, userId, completed.id, {
+        deload: { mode: "scheduled", weekIndex: "last", modifiers: {} },
+      }),
+    ).rejects.toThrow(BlockScheduleImmutableError);
+
+    const abandoned = await createBlock(db, userId, programId, {
+      name: "Block 2",
+      goal: "hypertrophy",
+      startDate: "2026-02-01",
+      weeksPlanned: 4,
+      schedule: [{ templateId }],
+    });
+    if (!abandoned) throw new Error("expected block");
+    await abandonBlock(db, userId, abandoned.id);
+
+    await expect(
+      updateBlock(db, userId, abandoned.id, { schedule: [{ templateId }] }),
+    ).rejects.toThrow(BlockScheduleImmutableError);
   });
 
   it("allows editing schedule while the block is still planned", async () => {
@@ -241,6 +270,138 @@ describe("blocks service (PGlite integration)", () => {
       schedule: [{ templateId: other.id }],
     });
     expect(updated.schedule.map((e) => e.templateId)).toEqual([other.id]);
+  });
+
+  // Active-schedule remediation acceptance — the full active-block schedule
+  // editor: add another entry, remove an entry, change an entry's template,
+  // add/remove weekdays, reorder, and switch fixed<->rotation mode, all on
+  // an already-*active* block.
+  it("allows the full schedule editor on an active block: add, remove, change template, edit weekdays, reorder, switch modes", async () => {
+    const upperA = templateId;
+    const lowerA = (await createTemplate(db, userId, programId, { name: "Lower A" }))!.id;
+    const upperB = (await createTemplate(db, userId, programId, { name: "Upper B" }))!.id;
+    const lowerB = (await createTemplate(db, userId, programId, { name: "Lower B" }))!.id;
+
+    const block = await createBlock(db, userId, programId, {
+      name: "Block 1",
+      goal: "hypertrophy",
+      startDate: "2026-01-01",
+      weeksPlanned: 8,
+      schedule: [{ templateId: upperA, weekdays: [1] }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, userId, block.id);
+
+    // Add three more entries (a four-day Upper A / Lower A / Upper B /
+    // Lower B fixed-weekday schedule) — the entry count grows while active.
+    const withFourDays = await updateBlock(db, userId, block.id, {
+      schedule: [
+        { templateId: upperA, weekdays: [1] },
+        { templateId: lowerA, weekdays: [2] },
+        { templateId: upperB, weekdays: [4] },
+        { templateId: lowerB, weekdays: [5] },
+      ],
+    });
+    expect(withFourDays.schedule.map((e) => e.templateId)).toEqual([
+      upperA,
+      lowerA,
+      upperB,
+      lowerB,
+    ]);
+
+    // Move weekdays (Upper A now also covers Thursday, replacing Upper B's
+    // slot) and reorder — Lower B moves ahead of Upper B in position order.
+    const movedAndReordered = await updateBlock(db, userId, block.id, {
+      schedule: [
+        { templateId: upperA, weekdays: [1, 4] },
+        { templateId: lowerA, weekdays: [2] },
+        { templateId: lowerB, weekdays: [5] },
+        { templateId: upperB, weekdays: [6] },
+      ],
+    });
+    expect(
+      movedAndReordered.schedule.map((e) => ({ templateId: e.templateId, weekdays: e.weekdays })),
+    ).toEqual([
+      { templateId: upperA, weekdays: [1, 4] },
+      { templateId: lowerA, weekdays: [2] },
+      { templateId: lowerB, weekdays: [5] },
+      { templateId: upperB, weekdays: [6] },
+    ]);
+
+    // Remove an entry, then switch the whole schedule explicitly to
+    // rotation mode (no entry has weekdays).
+    const removed = await updateBlock(db, userId, block.id, {
+      schedule: [
+        { templateId: upperA, weekdays: [1, 4] },
+        { templateId: lowerA, weekdays: [2] },
+        { templateId: lowerB, weekdays: [5] },
+      ],
+    });
+    expect(removed.schedule.map((e) => e.templateId)).toEqual([upperA, lowerA, lowerB]);
+
+    const rotation = await updateBlock(db, userId, block.id, {
+      schedule: [{ templateId: upperA }, { templateId: lowerA }, { templateId: lowerB }],
+    });
+    expect(rotation.schedule.every((e) => e.weekdays === null)).toBe(true);
+  });
+
+  it("allows editing scheduled-deload configuration on an active block", async () => {
+    const block = await createBlock(db, userId, programId, {
+      name: "Block 1",
+      goal: "hypertrophy",
+      startDate: "2026-01-01",
+      weeksPlanned: 8,
+      schedule: [{ templateId }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, userId, block.id);
+
+    const withDeload = await updateBlock(db, userId, block.id, {
+      deload: { mode: "scheduled", weekIndex: 4, modifiers: { setMultiplier: 0.5 } },
+    });
+    expect(withDeload.deload).toEqual({
+      mode: "scheduled",
+      weekIndex: 4,
+      modifiers: { setMultiplier: 0.5 },
+    });
+
+    const cleared = await updateBlock(db, userId, block.id, { deload: null });
+    expect(cleared.deload).toBeNull();
+  });
+
+  it("still rejects a cross-program or archived template when editing an active block's schedule", async () => {
+    const unscheduled = await createTemplate(db, userId, programId, { name: "Bench Day" });
+    if (!unscheduled) throw new Error("expected template");
+
+    const block = await createBlock(db, userId, programId, {
+      name: "Block 1",
+      goal: "hypertrophy",
+      startDate: "2026-01-01",
+      weeksPlanned: 4,
+      schedule: [{ templateId }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, userId, block.id);
+
+    // Archiving is only blocked for a template still referenced by an
+    // active block's schedule (domain-model.md §4) — `unscheduled` isn't,
+    // so it can be archived, then rejected when the active block tries to
+    // schedule it.
+    await setTemplateArchived(db, userId, unscheduled.id, "archive");
+    await expect(
+      updateBlock(db, userId, block.id, { schedule: [{ templateId: unscheduled.id }] }),
+    ).rejects.toThrow(BlockScheduleTemplateArchivedError);
+
+    // Only one *active* program is allowed at a time (domain-model.md §4);
+    // archiving programId to make room for a second doesn't touch this
+    // block's own active status or ownership check.
+    await setProgramArchived(db, userId, programId, "archive");
+    const otherProgram = await createProgram(db, userId, { name: "Program B" });
+    const otherTemplate = await createTemplate(db, userId, otherProgram.id, { name: "Legs Day" });
+    if (!otherTemplate) throw new Error("expected template");
+    await expect(
+      updateBlock(db, userId, block.id, { schedule: [{ templateId: otherTemplate.id }] }),
+    ).rejects.toThrow(BlockScheduleTemplateNotFoundError);
   });
 
   it("allows non-schedule fields (e.g. weeksPlanned) to be edited on an active block", async () => {
@@ -324,5 +485,153 @@ describe("blocks service (PGlite integration)", () => {
 
     const muchLater = await getBlock(db, userId, block.id, new Date("2030-01-01T00:00:00Z"));
     expect(muchLater?.currentWeekIndex).toBe(atCompletion);
+  });
+
+  it("throws BlockNotFoundError when editing schedule on another user's block", async () => {
+    const otherUserId = (await insertTestUser(db, "other3@example.com")).id;
+    const block = await createBlock(db, userId, programId, {
+      name: "Block 1",
+      goal: "hypertrophy",
+      startDate: "2026-01-01",
+      weeksPlanned: 4,
+      schedule: [{ templateId }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, userId, block.id);
+
+    await expect(
+      updateBlock(db, otherUserId, block.id, { schedule: [{ templateId }] }),
+    ).rejects.toThrow(BlockNotFoundError);
+  });
+
+  // Active-schedule remediation acceptance — editing an active block's
+  // schedule/deload must never touch an in-progress or already-completed
+  // session's frozen snapshot (ADR-007 snapshot-on-use; domain-model.md §9:
+  // schedule edits change future workout resolution only).
+  describe("session snapshot immutability across schedule/deload edits", () => {
+    async function setUpBlockWithSession(status: "in_progress" | "completed") {
+      await seedMuscleGroups(db);
+      const exercise = await createExercise(db, userId, {
+        name: "Back Squat",
+        equipment: "barbell",
+        mechanics: "compound",
+        laterality: "bilateral",
+        loadStepKg: 2.5,
+        contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+      });
+      const prescription = await createPrescription(db, userId, templateId, {
+        exerciseId: exercise.id,
+        scheme: { v: 1, scheme: { type: "fixed", sets: 3, reps: 5 } },
+        progression: { strategyId: "manual" },
+      });
+      if (!prescription) throw new Error("expected prescription");
+      const other = await createTemplate(db, userId, programId, { name: "Pull Day" });
+      if (!other) throw new Error("expected template");
+
+      const block = await createBlock(db, userId, programId, {
+        name: "Block 1",
+        goal: "hypertrophy",
+        startDate: "2026-01-01",
+        weeksPlanned: 8,
+        schedule: [{ templateId, weekdays: [1] }],
+        deload: { mode: "scheduled", weekIndex: 4, modifiers: { setMultiplier: 0.5 } },
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, userId, block.id);
+
+      const startedAt = new Date("2026-01-05T09:00:00.000Z");
+      const sessionId = newId();
+      const sessionExerciseId = newId();
+      const snapshot = {
+        v: 1,
+        snapshot: {
+          exerciseId: exercise.id,
+          exerciseName: exercise.name,
+          scheme: { type: "fixed", sets: 3, reps: 5 },
+          targetRir: null,
+          restSeconds: null,
+          progression: {
+            strategyId: "manual",
+            strategyVersion: 1,
+            config: {},
+            classification: "heuristic",
+          },
+          appliedModifiers: null,
+          prefill: { loadKg: null, reps: null },
+        },
+      };
+      await db.insert(workoutSessions).values({
+        id: sessionId,
+        userId,
+        blockId: block.id,
+        templateId,
+        templateName: "Push Day",
+        weekIndex: 1,
+        isDeload: false,
+        status,
+        startedAt,
+        completedAt: status === "completed" ? startedAt : null,
+      });
+      await db.insert(sessionExercises).values({
+        id: sessionExerciseId,
+        sessionId,
+        exerciseId: exercise.id,
+        position: 0,
+        source: "template",
+        prescription: snapshot,
+      });
+      await db.insert(setLogs).values({
+        id: newId(),
+        sessionExerciseId,
+        setNumber: 1,
+        isWarmup: false,
+        weightKg: 100,
+        reps: 5,
+        rir: null,
+        loggedAt: startedAt,
+      });
+
+      return { block, other, sessionId, sessionExerciseId };
+    }
+
+    async function readSessionRows(sessionId: string, sessionExerciseId: string) {
+      const [session] = await db
+        .select()
+        .from(workoutSessions)
+        .where(eq(workoutSessions.id, sessionId));
+      const [sessionExercise] = await db
+        .select()
+        .from(sessionExercises)
+        .where(eq(sessionExercises.id, sessionExerciseId));
+      return { session, sessionExercise };
+    }
+
+    it("leaves an in-progress session's frozen snapshot byte-identical after the block's schedule and deload are edited", async () => {
+      const { block, other, sessionId, sessionExerciseId } =
+        await setUpBlockWithSession("in_progress");
+      const before = await readSessionRows(sessionId, sessionExerciseId);
+
+      await updateBlock(db, userId, block.id, {
+        schedule: [{ templateId: other.id, weekdays: [2] }],
+        deload: { mode: "scheduled", weekIndex: "last", modifiers: { loadMultiplier: 0.8 } },
+      });
+
+      const after = await readSessionRows(sessionId, sessionExerciseId);
+      expect(after).toEqual(before);
+    });
+
+    it("leaves an earlier completed session byte-identical after later schedule and deload edits", async () => {
+      const { block, other, sessionId, sessionExerciseId } =
+        await setUpBlockWithSession("completed");
+      const before = await readSessionRows(sessionId, sessionExerciseId);
+
+      await updateBlock(db, userId, block.id, {
+        schedule: [{ templateId: other.id }],
+        deload: null,
+      });
+
+      const after = await readSessionRows(sessionId, sessionExerciseId);
+      expect(after).toEqual(before);
+    });
   });
 });

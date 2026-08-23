@@ -27,6 +27,74 @@ export const scheduleEntryInputSchema = z
   });
 export type ScheduleEntryInput = z.infer<typeof scheduleEntryInputSchema>;
 
+const ISO_WEEKDAY_NAMES = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+// Active-schedule remediation — two explicit, mutually exclusive schedule
+// modes (no DB mode column; the mode is inferred from shape, same as
+// domain/scheduling/todayTemplate.ts always has):
+//   - Fixed weekdays: every entry has >=1 weekday.
+//   - Rotation: no entry has weekdays; position order is the sequence.
+// A schedule mixing the two is rejected here rather than silently resolved
+// as "weekday mode wins" (the old todayTemplate.ts behavior) — Today
+// resolution must never have to guess which mode was intended. Errors are
+// phone-readable: they name the day or the conflicting template, not a
+// generic "invalid schedule".
+function validateScheduleShape(entries: ScheduleEntryInput[], ctx: z.RefinementCtx): void {
+  const withWeekdays = entries.filter((e) => (e.weekdays?.length ?? 0) > 0);
+  const withoutWeekdays = entries.filter((e) => (e.weekdays?.length ?? 0) === 0);
+  if (withWeekdays.length > 0 && withoutWeekdays.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Choose one schedule mode: give every workout fixed weekdays, or leave them all as rotation entries — not a mix of both.",
+      path: ["schedule"],
+    });
+  }
+
+  const templateFirstSeenAt = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    if (templateFirstSeenAt.has(entry.templateId)) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "This workout is scheduled more than once — combine its weekdays into a single entry instead of adding it twice.",
+        path: ["schedule", index, "templateId"],
+      });
+    } else {
+      templateFirstSeenAt.set(entry.templateId, index);
+    }
+  });
+
+  const dayOwnerAt = new Map<number, number>();
+  entries.forEach((entry, index) => {
+    for (const day of entry.weekdays ?? []) {
+      const ownerIndex = dayOwnerAt.get(day);
+      if (ownerIndex !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: `${ISO_WEEKDAY_NAMES[day - 1]} is assigned to more than one workout — each day can only belong to one entry.`,
+          path: ["schedule", index, "weekdays"],
+        });
+      } else {
+        dayOwnerAt.set(day, index);
+      }
+    }
+  });
+}
+
+export const scheduleInputSchema = z
+  .array(scheduleEntryInputSchema)
+  .min(1)
+  .superRefine(validateScheduleShape);
+
 // domain-model.md §5 — WeekModifiers / DeloadConfig VOs.
 //
 // M-1 remediation — sets/load multipliers are bounded to (0, 2] and the RIR
@@ -62,7 +130,7 @@ export const createBlockSchema = z.object({
   goal: blockGoalSchema.default("hypertrophy"),
   startDate: z.string().regex(DATE_ONLY_REGEX, "must be YYYY-MM-DD"),
   weeksPlanned: z.number().int().min(1).max(16),
-  schedule: z.array(scheduleEntryInputSchema).min(1),
+  schedule: scheduleInputSchema,
   deload: deloadConfigSchema.optional(),
   notes: z.string().trim().max(2000).optional(),
 });
@@ -77,7 +145,7 @@ export const updateBlockSchema = z
     name: z.string().trim().min(1).max(200).optional(),
     goal: blockGoalSchema.optional(),
     weeksPlanned: z.number().int().min(1).max(16).optional(),
-    schedule: z.array(scheduleEntryInputSchema).min(1).optional(),
+    schedule: scheduleInputSchema.optional(),
     deload: deloadConfigSchema.nullable().optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
   })

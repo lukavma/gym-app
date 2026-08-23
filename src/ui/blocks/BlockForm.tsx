@@ -27,6 +27,21 @@ interface ScheduleRow {
   weekdays: number[];
 }
 
+// Active-schedule remediation — two explicit, mutually exclusive schedule
+// modes (domain/blocks/schema.ts's `scheduleInputSchema` rejects a mix at
+// save time). "mixed" only occurs right after loading a pre-existing block
+// whose stored schedule already mixes the two shapes — it is surfaced for
+// the user to correct, never auto-picked or silently normalized.
+type ScheduleMode = "fixed" | "rotation" | "mixed";
+
+function deriveScheduleMode(rows: ScheduleRow[]): ScheduleMode {
+  if (rows.length === 0) return "rotation";
+  const withDays = rows.filter((r) => r.weekdays.length > 0).length;
+  if (withDays === 0) return "rotation";
+  if (withDays === rows.length) return "fixed";
+  return "mixed";
+}
+
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const GOALS = blockGoalSchema.options;
 
@@ -48,6 +63,7 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
   const [startDate, setStartDate] = useState(todayDateString());
   const [weeksPlanned, setWeeksPlanned] = useState("4");
   const [schedule, setSchedule] = useState<ScheduleRow[]>([]);
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("rotation");
   const [deloadEnabled, setDeloadEnabled] = useState(false);
   const [deloadWeekIndex, setDeloadWeekIndex] = useState("last");
   // domain-model.md §5 — WeekModifiers heuristic examples (0.5 sets / 0.9
@@ -59,7 +75,12 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
   const [error, setError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
 
-  const locked = mode === "edit" && blockStatus !== "planned";
+  // Active-schedule remediation — schedule/deload stay editable through
+  // 'planned' and 'active'; only a finished block ('completed'/'abandoned')
+  // locks them (domain-model.md §9 — there are no more future weeks left to
+  // apply an edit to). This replaced an earlier, stricter rule that treated
+  // activation itself as the lock point.
+  const locked = mode === "edit" && (blockStatus === "completed" || blockStatus === "abandoned");
 
   useEffect(() => {
     if (!resolvedProgramId) return;
@@ -86,9 +107,12 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
         setGoal(b.goal);
         setStartDate(b.startDate);
         setWeeksPlanned(String(b.weeksPlanned));
-        setSchedule(
-          b.schedule.map((e) => ({ templateId: e.templateId, weekdays: e.weekdays ?? [] })),
-        );
+        const loadedSchedule = b.schedule.map((e) => ({
+          templateId: e.templateId,
+          weekdays: e.weekdays ?? [],
+        }));
+        setSchedule(loadedSchedule);
+        setScheduleMode(deriveScheduleMode(loadedSchedule));
         setDeloadEnabled(b.deload !== null);
         if (b.deload) {
           setDeloadWeekIndex(String(b.deload.weekIndex));
@@ -131,9 +155,12 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
         const b = data.block;
         setGoal(b.goal);
         setWeeksPlanned(String(b.weeksPlanned));
-        setSchedule(
-          b.schedule.map((e) => ({ templateId: e.templateId, weekdays: e.weekdays ?? [] })),
-        );
+        const prefilledSchedule = b.schedule.map((e) => ({
+          templateId: e.templateId,
+          weekdays: e.weekdays ?? [],
+        }));
+        setSchedule(prefilledSchedule);
+        setScheduleMode(deriveScheduleMode(prefilledSchedule));
       })
       .catch(() => undefined);
     return () => {
@@ -149,6 +176,21 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
 
   function removeScheduleRow(index: number) {
     setSchedule((rows) => rows.filter((_, i) => i !== index));
+  }
+
+  // Reordering matters for rotation mode (position order is the sequence,
+  // domain-model.md §5) but is offered regardless of mode — it's harmless in
+  // fixed-weekday mode since resolution there keys on weekdays, not order.
+  function moveScheduleRow(index: number, direction: -1 | 1) {
+    setSchedule((rows) => {
+      const target = index + direction;
+      if (target < 0 || target >= rows.length) return rows;
+      const next = rows.slice();
+      const moved = next[index]!;
+      next[index] = next[target]!;
+      next[target] = moved;
+      return next;
+    });
   }
 
   function updateScheduleTemplate(index: number, templateId: string) {
@@ -185,9 +227,15 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
     };
     if (mode === "create") payload.startDate = startDate;
     if (!locked) {
+      // Rotation mode is a deliberate, explicit choice (the mode toggle
+      // below) — submitting it is the moment weekday assignments actually
+      // stop applying, not a side effect of quietly clearing them earlier.
+      // Anything still held in `schedule[].weekdays` survives in local
+      // state if the user flips back to fixed mode before saving.
       payload.schedule = schedule.map((row) => ({
         templateId: row.templateId,
-        weekdays: row.weekdays.length > 0 ? row.weekdays : undefined,
+        weekdays:
+          scheduleMode === "rotation" || row.weekdays.length === 0 ? undefined : row.weekdays,
       }));
       payload.deload = deloadEnabled
         ? {
@@ -222,16 +270,26 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
         return;
       }
 
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+        issues?: { message: string }[];
+      } | null;
       if (body?.error === "schedule_template_not_found") {
         setError("One of the scheduled templates doesn't belong to this program.");
       } else if (body?.error === "schedule_template_archived") {
         setError("One of the scheduled templates is archived.");
-      } else if (body?.error === "schedule_locked") {
-        setError("Schedule and deload can only be edited while the block is planned.");
+      } else if (body?.error === "schedule_immutable") {
+        setError("Schedule and deload can only be edited while the block is planned or active.");
       } else if (body?.error === "invalid_input") {
+        // The schema issues (schedule-mode conflicts, weekday overlaps,
+        // duplicate templates, modifier bounds) already carry precise,
+        // phone-readable text — surface them directly instead of a generic
+        // message.
+        const messages = [...new Set((body.issues ?? []).map((i) => i.message).filter(Boolean))];
         setError(
-          "Check the values entered — deload multipliers must be greater than 0 and at most 2×, RIR shift between -10 and +10.",
+          messages.length > 0
+            ? messages.join(" ")
+            : "Check the values entered — deload multipliers must be greater than 0 and at most 2×, RIR shift between -10 and +10.",
         );
       } else {
         setError("Something went wrong. Please try again.");
@@ -363,9 +421,17 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
 
       <div className="flex flex-col gap-2">
         <span className="text-sm text-slate-300">Schedule</span>
+
+        {!locked && mode === "edit" && blockStatus === "active" && (
+          <p className="rounded-lg bg-slate-900 px-3 py-2 text-xs text-slate-400">
+            Changes apply to workouts from today onward. A workout already in progress keeps its
+            original plan.
+          </p>
+        )}
+
         {locked ? (
           <p className="rounded-lg bg-slate-900 px-3 py-2 text-xs text-slate-400">
-            Schedule can only be edited while the block is planned.
+            Schedule can only be edited while the block is planned or active.
           </p>
         ) : (
           <>
@@ -374,15 +440,59 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
                 This program has no templates to schedule yet.
               </p>
             )}
+
+            <div className="flex gap-2" role="group" aria-label="Schedule mode">
+              <button
+                type="button"
+                onClick={() => setScheduleMode("fixed")}
+                aria-pressed={scheduleMode === "fixed"}
+                data-testid="schedule-mode-fixed"
+                className={`flex-1 rounded-lg px-3 py-2 text-sm ${
+                  scheduleMode === "fixed"
+                    ? "bg-slate-100 text-slate-900"
+                    : "border border-slate-700 text-slate-300"
+                }`}
+              >
+                Fixed weekdays
+              </button>
+              <button
+                type="button"
+                onClick={() => setScheduleMode("rotation")}
+                aria-pressed={scheduleMode === "rotation"}
+                data-testid="schedule-mode-rotation"
+                className={`flex-1 rounded-lg px-3 py-2 text-sm ${
+                  scheduleMode === "rotation"
+                    ? "bg-slate-100 text-slate-900"
+                    : "border border-slate-700 text-slate-300"
+                }`}
+              >
+                Rotation order
+              </button>
+            </div>
+
+            {scheduleMode === "mixed" && (
+              <p role="alert" className="rounded-lg bg-amber-950 px-3 py-2 text-xs text-amber-300">
+                This schedule mixes fixed weekdays and rotation entries — choose Fixed weekdays or
+                Rotation order above, then fix each entry below before saving.
+              </p>
+            )}
+            {scheduleMode === "rotation" && (
+              <p className="text-xs text-slate-500">
+                Workouts run in the order below, one per session — no fixed days.
+              </p>
+            )}
+
             {schedule.map((row, index) => (
               <div
                 key={index}
+                data-testid={`schedule-row-${index}`}
                 className="flex flex-col gap-2 rounded-lg border border-slate-800 p-3"
               >
                 <div className="flex items-center gap-2">
                   <select
                     value={row.templateId}
                     onChange={(e) => updateScheduleTemplate(index, e.target.value)}
+                    data-testid={`schedule-row-${index}-template`}
                     className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
                   >
                     {templates.map((t) => (
@@ -393,39 +503,60 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
                   </select>
                   <button
                     type="button"
+                    onClick={() => moveScheduleRow(index, -1)}
+                    disabled={index === 0}
+                    aria-label="Move up"
+                    data-testid={`schedule-row-${index}-move-up`}
+                    className="rounded border border-slate-700 px-2 py-2 text-xs text-slate-300 disabled:opacity-30"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveScheduleRow(index, 1)}
+                    disabled={index === schedule.length - 1}
+                    aria-label="Move down"
+                    data-testid={`schedule-row-${index}-move-down`}
+                    className="rounded border border-slate-700 px-2 py-2 text-xs text-slate-300 disabled:opacity-30"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => removeScheduleRow(index)}
+                    data-testid={`schedule-row-${index}-remove`}
                     className="rounded border border-red-900 px-2 py-2 text-xs text-red-400"
                   >
                     Remove
                   </button>
                 </div>
-                <div className="flex flex-wrap gap-1">
-                  {WEEKDAY_LABELS.map((label, i) => {
-                    const day = i + 1;
-                    const active = row.weekdays.includes(day);
-                    return (
-                      <button
-                        key={day}
-                        type="button"
-                        onClick={() => toggleWeekday(index, day)}
-                        className={`rounded px-2 py-1 text-xs ${active ? "bg-slate-100 text-slate-900" : "border border-slate-700 text-slate-300"}`}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <span className="text-xs text-slate-500">
-                  {row.weekdays.length === 0
-                    ? "No fixed days — rotates through the schedule order."
-                    : ""}
-                </span>
+                {(scheduleMode === "fixed" || scheduleMode === "mixed") && (
+                  <div className="flex flex-wrap gap-1">
+                    {WEEKDAY_LABELS.map((label, i) => {
+                      const day = i + 1;
+                      const active = row.weekdays.includes(day);
+                      return (
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => toggleWeekday(index, day)}
+                          data-testid={`schedule-row-${index}-day-${day}`}
+                          aria-pressed={active}
+                          className={`rounded px-2 py-1 text-xs ${active ? "bg-slate-100 text-slate-900" : "border border-slate-700 text-slate-300"}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ))}
             {templates.length > 0 && (
               <button
                 type="button"
                 onClick={addScheduleRow}
+                data-testid="schedule-add-row"
                 className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300"
               >
                 + Add workout to schedule

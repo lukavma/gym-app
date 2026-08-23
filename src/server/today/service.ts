@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   blocks,
   blockScheduleEntries,
@@ -384,11 +384,18 @@ export async function buildTodayBundle(
         .from(blockScheduleEntries)
         .where(eq(blockScheduleEntries.blockId, block.id));
 
-      const [completedCountRow] = await db
-        .select({ count: sql<number>`count(*)::int` })
+      // Active-schedule remediation — rotation resolution anchors on the
+      // *template* of the most recently completed session, not a count
+      // against the current schedule length (todayTemplate.ts's header
+      // comment explains why counting breaks once the schedule can change
+      // under an active block).
+      const [latestCompletedSession] = await db
+        .select({ templateId: workoutSessions.templateId })
         .from(workoutSessions)
-        .where(and(eq(workoutSessions.blockId, block.id), eq(workoutSessions.status, "completed")));
-      const completedCount = completedCountRow?.count ?? 0;
+        .where(and(eq(workoutSessions.blockId, block.id), eq(workoutSessions.status, "completed")))
+        .orderBy(desc(workoutSessions.startedAt))
+        .limit(1);
+      const latestCompletedTemplateId = latestCompletedSession?.templateId ?? null;
 
       const resolution = resolveTodayTemplate(
         scheduleRows.map((r) => ({
@@ -396,7 +403,7 @@ export async function buildTodayBundle(
           position: r.position,
           weekdays: r.weekdays,
         })),
-        completedCount,
+        latestCompletedTemplateId,
         weekday,
       );
 

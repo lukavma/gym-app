@@ -6,7 +6,7 @@ import {
   getBlock,
   updateBlock,
   BlockNotFoundError,
-  BlockScheduleLockedError,
+  BlockScheduleImmutableError,
   BlockScheduleTemplateArchivedError,
   BlockScheduleTemplateNotFoundError,
 } from "@/server/blocks/service";
@@ -54,8 +54,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     if (err instanceof BlockNotFoundError) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    if (err instanceof BlockScheduleLockedError) {
-      return NextResponse.json({ error: "schedule_locked" }, { status: 409 });
+    if (err instanceof BlockScheduleImmutableError) {
+      return NextResponse.json({ error: "schedule_immutable" }, { status: 409 });
     }
     if (err instanceof BlockScheduleTemplateNotFoundError) {
       return NextResponse.json({ error: "schedule_template_not_found" }, { status: 400 });
