@@ -52,7 +52,11 @@ const contributionInputSchema = z.object({
   muscleGroupId: muscleGroupSlugSchema,
   role: contributionRoleSchema,
   // Editable, but defaults by role when omitted (domain-model.md §3).
-  weight: z.number().gt(0).lte(1).optional(),
+  // M-1(new) (phase-5.5-light-remediation-verification.md) —
+  // exercise_muscle_contributions.weight is `numeric(3,2)`; without
+  // `.multipleOf(0.01)` (same guard as loadStepKg's L-7 fix) the column
+  // silently rounds e.g. 0.555 to 0.56 instead of rejecting it.
+  weight: z.number().gt(0).lte(1).multipleOf(0.01).optional(),
 });
 
 export type ContributionInput = z.infer<typeof contributionInputSchema>;
@@ -94,7 +98,10 @@ export const createExerciseSchema = z
     movementPattern: z.string().trim().min(1).max(100).optional(),
     mechanics: mechanicsSchema,
     laterality: lateralitySchema.default("bilateral"),
-    loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).optional(),
+    // L-7 (phase-5.5-light-review.md) — `numeric(4,2)` stores at most 2
+    // decimal places; without this the column silently truncates e.g. 1.234
+    // to 1.23 instead of rejecting it.
+    loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).multipleOf(0.01).optional(),
     notes: z.string().trim().max(2000).optional(),
     contributions: contributionsListSchema,
   })
@@ -118,7 +125,7 @@ export const updateExerciseSchema = z
     movementPattern: z.string().trim().min(1).max(100).nullable().optional(),
     mechanics: mechanicsSchema.optional(),
     laterality: lateralitySchema.optional(),
-    loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).optional(),
+    loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).multipleOf(0.01).optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
     contributions: contributionsListSchema
       .transform((contributions) => contributions.map(withDefaultWeight))

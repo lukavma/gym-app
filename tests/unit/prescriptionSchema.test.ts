@@ -38,6 +38,26 @@ describe("createPrescriptionSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  // LOW-2 (phase-5.5-light-remediation-verification.md) — the previous
+  // `Math.round(v * 100) % 25 === 0` refine had a float-precision hole:
+  // these four all passed it and were then silently rounded by the
+  // numeric(6,2) column. `.multipleOf(0.25)` must reject all four.
+  it.each([1.005, 82.501, 0.249, 1.001])(
+    "rejects a baselineLoadKg of %s (float-noise near the 0.25 grid)",
+    (baselineLoadKg) => {
+      const result = createPrescriptionSchema.safeParse(baseInput({ baselineLoadKg }));
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it.each([0, 0.25, 1.25, 82.5, 100.25, 1000])(
+    "accepts a baselineLoadKg of %s (exact 0.25-grid value)",
+    (baselineLoadKg) => {
+      const result = createPrescriptionSchema.safeParse(baseInput({ baselineLoadKg }));
+      expect(result.success).toBe(true);
+    },
+  );
+
   it("rejects a baselineLoadKg above the 1000kg ceiling", () => {
     const result = createPrescriptionSchema.safeParse(baseInput({ baselineLoadKg: 1000.25 }));
     expect(result.success).toBe(false);

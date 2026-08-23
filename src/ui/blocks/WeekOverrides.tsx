@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { weekOverrideTypeSchema, type WeekOverrideType } from "@/domain/blocks/schema";
+import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import type { WeekOverrideDto } from "./types";
 
 type Status = "loading" | "ready" | "error";
@@ -11,6 +12,18 @@ interface WeekOverridesProps {
 }
 
 const TYPES = weekOverrideTypeSchema.options;
+
+// domain/blocks/schema.ts — setMultiplier/loadMultiplier are
+// z.number().positive().max(2). Blank means "don't modify this axis";
+// non-empty-but-unparseable is a real input error, not silently dropped.
+const MAX_OVERRIDE_MULTIPLIER = 2;
+
+function parseOptionalMultiplier(raw: string): number | null | "invalid" {
+  if (raw.trim() === "") return null;
+  const parsed = parseDecimalInput(raw);
+  if (parsed === null || parsed <= 0 || parsed > MAX_OVERRIDE_MULTIPLIER) return "invalid";
+  return parsed;
+}
 
 // domain-model.md §5 — "a manual deload is a WeekOverride inserted at any
 // time": unlike schedule/deload editing this is never locked to a block
@@ -46,6 +59,17 @@ export function WeekOverrides({ blockId }: WeekOverridesProps) {
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
     setError(null);
+
+    // L-5 remediation — a comma-typed multiplier must never silently
+    // collapse to "no override"; unsigned parsing only (targetRirShift stays
+    // a signed Number(...) field below, untouched).
+    const setMultiplierValue = parseOptionalMultiplier(setMultiplier);
+    const loadMultiplierValue = parseOptionalMultiplier(loadMultiplier);
+    if (setMultiplierValue === "invalid" || loadMultiplierValue === "invalid") {
+      setError("Enter valid multipliers (greater than 0, at most 2×), or leave them blank.");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch(`/api/blocks/${blockId}/week-overrides`, {
@@ -55,8 +79,8 @@ export function WeekOverrides({ blockId }: WeekOverridesProps) {
           weekIndex: Number(weekIndex),
           type,
           modifiers: {
-            ...(setMultiplier.trim() !== "" ? { setMultiplier: Number(setMultiplier) } : {}),
-            ...(loadMultiplier.trim() !== "" ? { loadMultiplier: Number(loadMultiplier) } : {}),
+            ...(setMultiplierValue !== null ? { setMultiplier: setMultiplierValue } : {}),
+            ...(loadMultiplierValue !== null ? { loadMultiplier: loadMultiplierValue } : {}),
             ...(targetRirShift.trim() !== "" ? { targetRirShift: Number(targetRirShift) } : {}),
           },
           note: note.trim() === "" ? undefined : note,
@@ -159,13 +183,10 @@ export function WeekOverrides({ blockId }: WeekOverridesProps) {
           <label className="flex flex-col gap-1 text-xs text-slate-400">
             Sets ×
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
-              step="0.05"
-              min="0.05"
-              max="2"
               value={setMultiplier}
-              onChange={(e) => setSetMultiplier(e.target.value)}
+              onChange={(e) => setSetMultiplier(sanitizeDecimalDraft(e.target.value))}
               placeholder="none"
               className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
             />
@@ -173,13 +194,10 @@ export function WeekOverrides({ blockId }: WeekOverridesProps) {
           <label className="flex flex-col gap-1 text-xs text-slate-400">
             Load ×
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
-              step="0.05"
-              min="0.05"
-              max="2"
               value={loadMultiplier}
-              onChange={(e) => setLoadMultiplier(e.target.value)}
+              onChange={(e) => setLoadMultiplier(sanitizeDecimalDraft(e.target.value))}
               placeholder="none"
               className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
             />

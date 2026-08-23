@@ -5,10 +5,15 @@ A personal, single-user, mobile-first workout-tracking PWA. See
 data model, and ADRs — this README only covers running and deploying what's
 built so far.
 
-**Phase status:** Phase 0 (project foundation / walking skeleton) — see
-[`docs/architecture/implementation-plan.md`](docs/architecture/implementation-plan.md).
-Auth and an empty authenticated "Today" shell exist; no exercises, programs,
-or workout logging yet.
+**Phase status:** Phases 0–5 (through block lifecycle: deloads, overrides,
+transitions) deployed and accepted, plus a bounded Phase 5.5 Light pass
+(exercise catalog expansion, decimal `loadStepKg` input polish) — see
+[`docs/architecture/implementation-plan.md`](docs/architecture/implementation-plan.md)
+and [`docs/reviews/`](docs/reviews/) for phase-by-phase detail. Auth,
+exercise library, programs/templates/prescriptions, Today + offline-safe
+workout execution, the progression engine, and block lifecycle (deloads,
+week overrides, transitions) all exist and are in use. Volume tracking
+(Phase 6) is not yet built.
 
 ## Stack
 

@@ -2,6 +2,7 @@
 
 import { MUSCLE_GROUPS, type MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
 import { CONTRIBUTION_ROLES, type ContributionRole } from "@/domain/exercises/schema";
+import { sanitizeDecimalDraft } from "@/ui/decimalInput";
 
 export interface ContributionRow {
   muscleGroupId: MuscleGroupSlug | "";
@@ -82,13 +83,11 @@ export function ContributionEditor({ rows, onChange }: ContributionEditorProps) 
               ))}
             </select>
             <input
-              type="number"
-              min="0"
-              max="1"
-              step="0.05"
+              type="text"
+              inputMode="decimal"
               placeholder={row.role === "primary" ? "1.0" : "0.5"}
               value={row.weight}
-              onChange={(e) => updateRow(index, { weight: e.target.value })}
+              onChange={(e) => updateRow(index, { weight: sanitizeDecimalDraft(e.target.value) })}
               className="w-24 rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
             />
           </div>

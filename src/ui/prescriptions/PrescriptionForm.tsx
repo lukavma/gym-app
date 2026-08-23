@@ -11,6 +11,7 @@ import {
   type StrategyId,
 } from "@/domain/progression/registry";
 import { MAX_BASELINE_LOAD_KG } from "@/domain/prescriptions/schema";
+import { decimalPlaceCount, parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import type { ExerciseDto } from "@/ui/exercises/types";
 import type { PrescriptionDto } from "./types";
 
@@ -124,6 +125,32 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
     const config: Record<string, unknown> = {};
     if (needsRepCap && repCap.trim() !== "") config.repCap = Number(repCap);
 
+    // L-4 remediation — a comma-typed baseline must never silently clear an
+    // existing one on edit; empty still means "no baseline" (unchanged).
+    let baselineLoadKgValue: number | null | undefined;
+    if (baselineLoadKg.trim() === "") {
+      baselineLoadKgValue = mode === "create" ? undefined : null;
+    } else {
+      const parsed = parseDecimalInput(baselineLoadKg);
+      // LOW-2 (phase-5.5-light-remediation-verification.md) — a raw
+      // more-than-2-decimal draft (e.g. "1,005") is float-noise, not a
+      // deliberate 0.25-grid value; the domain schema's `.multipleOf(0.25)`
+      // catches it too, but rejecting it here avoids a round trip for the
+      // common float-noise case.
+      if (
+        parsed === null ||
+        parsed < 0 ||
+        parsed > MAX_BASELINE_LOAD_KG ||
+        decimalPlaceCount(baselineLoadKg) > 2
+      ) {
+        setError(
+          `Enter a valid baseline load between 0 and ${MAX_BASELINE_LOAD_KG}, with at most 2 decimal places.`,
+        );
+        return;
+      }
+      baselineLoadKgValue = parsed;
+    }
+
     const payload = {
       exerciseId,
       scheme: { v: 1 as const, scheme },
@@ -132,7 +159,7 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
         : mode === "create"
           ? undefined
           : null,
-      baselineLoadKg: emptyOr(mode, baselineLoadKg, Number),
+      baselineLoadKg: baselineLoadKgValue,
       restSeconds: emptyOr(mode, restSeconds, Number),
       progression: { strategyId, config },
       notes: emptyOr(mode, notes, (v) => v),
@@ -343,13 +370,10 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Baseline load (kg, optional)
         <input
-          type="number"
+          type="text"
           inputMode="decimal"
-          min={0}
-          max={MAX_BASELINE_LOAD_KG}
-          step="0.25"
           value={baselineLoadKg}
-          onChange={(e) => setBaselineLoadKg(e.target.value)}
+          onChange={(e) => setBaselineLoadKg(sanitizeDecimalDraft(e.target.value))}
           className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
         />
       </label>

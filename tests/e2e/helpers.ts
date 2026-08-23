@@ -40,11 +40,28 @@ export async function login(page: Page): Promise<void> {
 // reachable non-"Start workout" state is the foreign-active banner (a
 // leftover in-progress session from a prior spec run against the same,
 // persistent dev Postgres). Take it over so the test starts deterministic.
+//
+// phase-5.5-light-review.md §4 — TodaySection's loading gate stays on
+// `remoteState.kind === "checking"` ("Loading…", neither button rendered)
+// until the remote-session check resolves. A one-shot, non-retrying
+// `isVisible()` right after `login()` returns can fire inside that window,
+// see neither button, and wrongly conclude there's nothing to take over.
+// Same `Promise.race(...waitFor())` idiom login() already uses below: wait
+// for whichever of the two mutually-exclusive buttons actually renders,
+// rather than sampling the DOM once.
+const startWorkoutButtonName = "Start workout";
+const takeoverButtonName = "Discard it & start fresh";
+
 export async function ensureNoActiveSession(page: Page): Promise<void> {
-  const takeover = page.getByRole("button", { name: "Discard it & start fresh" });
-  if (await takeover.isVisible().catch(() => false)) {
+  const takeover = page.getByRole("button", { name: takeoverButtonName });
+  const startWorkout = page.getByRole("button", { name: startWorkoutButtonName });
+  const hasForeignActive = await Promise.race([
+    takeover.waitFor().then(() => true),
+    startWorkout.waitFor().then(() => false),
+  ]);
+  if (hasForeignActive) {
     await takeover.click();
-    await expect(page.getByRole("button", { name: "Start workout" })).toBeVisible();
+    await expect(startWorkout).toBeVisible();
   }
 }
 

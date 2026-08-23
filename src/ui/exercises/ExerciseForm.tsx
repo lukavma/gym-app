@@ -9,6 +9,7 @@ import {
   MAX_LOAD_STEP_KG,
   MECHANICS_TYPES,
 } from "@/domain/exercises/schema";
+import { decimalPlaceCount, parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import {
   ContributionEditor,
   emptyContributionRow,
@@ -86,28 +87,70 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
     };
   }, [mode, exerciseId]);
 
-  function buildContributionsPayload() {
-    return contributions
-      .filter((row) => row.muscleGroupId !== "")
-      .map((row) => ({
-        muscleGroupId: row.muscleGroupId,
-        role: row.role,
-        weight: row.weight.trim() === "" ? undefined : Number(row.weight),
-      }));
+  // Empty means "use the role default" (unchanged); non-empty text that
+  // fails to parse is a real input error, not silently discarded into the
+  // default — mirrors the loadStepKg handling below.
+  function buildContributionsPayload():
+    | { contributions: { muscleGroupId: string; role: string; weight: number | undefined }[] }
+    | { error: string } {
+    const result: { muscleGroupId: string; role: string; weight: number | undefined }[] = [];
+    for (const row of contributions) {
+      if (row.muscleGroupId === "") continue;
+      if (row.weight.trim() === "") {
+        result.push({ muscleGroupId: row.muscleGroupId, role: row.role, weight: undefined });
+        continue;
+      }
+      const parsed = parseDecimalInput(row.weight);
+      // M-1(new) (phase-5.5-light-remediation-verification.md) — the parse
+      // check alone let a 3-decimal weight (e.g. "0,555") through to the API,
+      // which the numeric(3,2) column then silently rounded. Same
+      // decimalPlaceCount guard already used for loadStepKg above.
+      if (parsed === null || decimalPlaceCount(row.weight) > 2) {
+        return { error: "Enter valid muscle contribution weights, or leave them blank." };
+      }
+      result.push({ muscleGroupId: row.muscleGroupId, role: row.role, weight: parsed });
+    }
+    return { contributions: result };
   }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
 
+    // Empty means "use the equipment default" (unchanged); non-empty text
+    // that fails to parse (e.g. a stray character) is a real input error,
+    // not silently discarded into the default.
+    let loadStepKgValue: number | undefined;
+    if (loadStepKg.trim() !== "") {
+      const parsed = parseDecimalInput(loadStepKg);
+      if (
+        parsed === null ||
+        parsed <= 0 ||
+        parsed > MAX_LOAD_STEP_KG ||
+        decimalPlaceCount(loadStepKg) > 2
+      ) {
+        setError(
+          `Enter a valid load step greater than 0, up to ${MAX_LOAD_STEP_KG}, with at most 2 decimal places.`,
+        );
+        return;
+      }
+      loadStepKgValue = parsed;
+    }
+
+    const contributionsResult = buildContributionsPayload();
+    if ("error" in contributionsResult) {
+      setError(contributionsResult.error);
+      return;
+    }
+
     const payload = {
       name,
       equipment,
       mechanics,
       laterality,
-      loadStepKg: loadStepKg.trim() === "" ? undefined : Number(loadStepKg),
+      loadStepKg: loadStepKgValue,
       notes: notes.trim() === "" ? undefined : notes,
-      contributions: buildContributionsPayload(),
+      contributions: contributionsResult.contributions,
     };
 
     setStatus("submitting");
@@ -264,14 +307,11 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Load step (kg)
         <input
-          type="number"
+          type="text"
           inputMode="decimal"
-          min="0"
-          max={MAX_LOAD_STEP_KG}
-          step="0.25"
           placeholder="Equipment default"
           value={loadStepKg}
-          onChange={(e) => setLoadStepKg(e.target.value)}
+          onChange={(e) => setLoadStepKg(sanitizeDecimalDraft(e.target.value))}
           className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
         />
       </label>

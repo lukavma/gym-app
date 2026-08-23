@@ -246,6 +246,18 @@ describe("progression-engine §9 matrix", () => {
     expect((draft.target!.loadKg! * 10) % (2.0 * 10)).toBe(0);
   });
 
+  it("case 12b — rounding: fractional loadStepKg (1.25 kg) regression (Phase 5.5 Light)", () => {
+    // Off-grid working load 99 with a 1.25 kg step: 99 + 1.25 increment =
+    // 100.25 -> nearest 1.25 multiple is 100 (100.25/1.25 = 80.2, rounds
+    // down to 80 -> 100).
+    const draft = evaluateLoadProgression(
+      makeCtx({ workSets: straightSets(5, 99, 5, 2), loadStepKg: 1.25 }),
+      loadCfg(),
+    );
+    expect(draft.action).toBe("increase_load");
+    expect(draft.target).toEqual({ loadKg: 100 });
+  });
+
   it("case 13 — determinism: identical context evaluated twice ⇒ deep-equal drafts", () => {
     const build = () =>
       makeCtx({

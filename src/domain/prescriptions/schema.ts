@@ -9,13 +9,15 @@ import { strategyIdSchema, supportsScheme, type StrategyId } from "../progressio
 // MAX_LOAD_STEP_KG vs. its column ceiling.)
 export const MAX_BASELINE_LOAD_KG = 1000;
 
-const baselineLoadKgSchema = z
-  .number()
-  .min(0)
-  .max(MAX_BASELINE_LOAD_KG)
-  .refine((v) => Math.round(v * 100) % 25 === 0, {
-    message: "must be a multiple of 0.25",
-  });
+// LOW-2 (phase-5.5-light-remediation-verification.md) — the previous
+// `Math.round(v * 100) % 25 === 0` refine had a real floating-point hole:
+// raw `v * 100` arithmetic on e.g. 1.005 can itself already be imprecise
+// (IEEE 754), so values within ~0.005 of the grid (1.005, 82.501, 0.249,
+// 1.001) passed and were then silently rounded by the numeric(6,2) column.
+// `.multipleOf(0.25)` uses zod's string-decimal-based comparison instead of
+// raw float arithmetic (the same mechanism already proven float-safe for
+// loadStepKg's `.multipleOf(0.01)`), so it rejects all four correctly.
+const baselineLoadKgSchema = z.number().min(0).max(MAX_BASELINE_LOAD_KG).multipleOf(0.25);
 
 const progressionInputSchema = z.object({
   strategyId: strategyIdSchema,

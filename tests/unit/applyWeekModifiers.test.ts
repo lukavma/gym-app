@@ -97,6 +97,11 @@ describe("applyLoadMultiplier", () => {
   it("rounds to a dumbbell-style step", () => {
     expect(applyLoadMultiplier(30, 0.5, 2)).toBe(16);
   });
+
+  it("rounds to a fractional loadStepKg (Phase 5.5 Light regression)", () => {
+    // 48 * 0.9 = 43.2 -> nearest 1.25 multiple is 43.75 (43.2/1.25 = 34.56).
+    expect(applyLoadMultiplier(48, 0.9, 1.25)).toBe(43.75);
+  });
 });
 
 describe("applyWeekModifiersToPrescription", () => {

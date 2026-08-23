@@ -105,6 +105,29 @@ async function logSet(page: Page, kg: string, reps: string): Promise<void> {
   await page.getByRole("button", { name: "Log" }).click();
 }
 
+// phase-5.5-light-review.md §4 — this spec's only in-progress-session
+// cleanup lives in launch 4's success path (the "Discard workout" click at
+// the end), so a failure in any earlier launch previously left the shared
+// dev Postgres holding an in_progress session — which then broke the NEXT
+// run of this same spec via the ensureNoActiveSession race that helper's fix
+// addresses above, i.e. the failure self-perpetuated. Runs only when the
+// test did not pass (a passing run already cleaned up via launch 4); errors
+// here are swallowed so a cleanup failure never masks the real test failure.
+test.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  const browserInstance = await chromium.launch();
+  try {
+    const context = await browserInstance.newContext({ baseURL: BASE_URL });
+    const page = await context.newPage();
+    await login(page);
+    await ensureNoActiveSession(page);
+  } catch {
+    // Best-effort only.
+  } finally {
+    await browserInstance.close();
+  }
+});
+
 test("a cold browser process launched straight into /today works offline with no warmed route", async () => {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gym-app-e2e-cold-"));
 

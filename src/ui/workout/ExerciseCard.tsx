@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { formatScheme } from "@/domain/schemes/setScheme";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
+import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import type { ExplicitDecisionInput } from "@/sync/activeSession";
 import type { ActiveSessionExerciseDto, ActiveSessionSetDto } from "@/sync/types";
@@ -90,7 +91,11 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
   const targetRir = exercise.prescription?.snapshot.targetRir ?? null;
 
   async function handleLogSet() {
-    const weightKg = Number(weight);
+    const weightKg = parseDecimalInput(weight);
+    if (weightKg === null) {
+      setError("Weight is required.");
+      return;
+    }
     const repsValue = Number(reps);
     const rirValue = rir.trim() === "" ? null : Number(rir);
 
@@ -183,10 +188,10 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
             <label className="flex flex-1 flex-col gap-1">
               <span className="text-xs text-slate-400">kg</span>
               <input
-                type="number"
+                type="text"
                 inputMode="decimal"
                 value={weight}
-                onChange={(e) => setWeight(e.target.value)}
+                onChange={(e) => setWeight(sanitizeDecimalDraft(e.target.value))}
                 disabled={disabled}
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base text-slate-50 outline-none focus:border-slate-400 disabled:opacity-50"
               />
@@ -274,10 +279,10 @@ function SetRow({
       <li className="flex flex-col gap-1">
         <div className="flex items-center gap-2 text-sm">
           <input
-            type="number"
+            type="text"
             inputMode="decimal"
             value={weight}
-            onChange={(e) => setWeight(e.target.value)}
+            onChange={(e) => setWeight(sanitizeDecimalDraft(e.target.value))}
             className="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
           />
           <input
@@ -297,7 +302,11 @@ function SetRow({
           <button
             type="button"
             onClick={() => {
-              const weightKg = Number(weight);
+              const weightKg = parseDecimalInput(weight);
+              if (weightKg === null) {
+                setError("Weight is required.");
+                return;
+              }
               const repsValue = Number(reps);
               const rirValue = rir.trim() === "" ? null : Number(rir);
               const validationError = validateSetInput(weightKg, repsValue, rirValue);

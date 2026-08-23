@@ -98,6 +98,25 @@ describe("createExerciseSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  // M-1(new) (phase-5.5-light-remediation-verification.md) —
+  // exercise_muscle_contributions.weight is numeric(3,2); without a
+  // precision guard the column silently rounds a 3-decimal weight instead
+  // of rejecting it.
+  it("rejects a contribution weight with more than 2 decimal places", () => {
+    const result = createExerciseSchema.safeParse(
+      baseInput({ contributions: [{ muscleGroupId: "quads", role: "primary", weight: 0.555 }] }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a valid-precision contribution weight", () => {
+    const result = createExerciseSchema.safeParse(
+      baseInput({ contributions: [{ muscleGroupId: "quads", role: "primary", weight: 0.55 }] }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.data?.contributions[0]?.weight).toBe(0.55);
+  });
+
   it("rejects an unknown muscle group slug", () => {
     const result = createExerciseSchema.safeParse(
       baseInput({ contributions: [{ muscleGroupId: "biceps femoris", role: "primary" }] }),
@@ -122,6 +141,22 @@ describe("createExerciseSchema", () => {
     const result = createExerciseSchema.safeParse(baseInput({ loadStepKg: 99.99 }));
     expect(result.success).toBe(true);
   });
+
+  // L-7 (phase-5.5-light-review.md) — numeric(4,2) stores at most 2 decimal
+  // places; without a schema-level guard the column silently rounds instead
+  // of rejecting.
+  it("rejects a loadStepKg with more than 2 decimal places", () => {
+    const result = createExerciseSchema.safeParse(baseInput({ loadStepKg: 1.234 }));
+    expect(result.success).toBe(false);
+  });
+
+  it.each([0.25, 0.5, 1.25, 2.5, 99.99])(
+    "accepts a loadStepKg of %s (valid step precision)",
+    (loadStepKg) => {
+      const result = createExerciseSchema.safeParse(baseInput({ loadStepKg }));
+      expect(result.success).toBe(true);
+    },
+  );
 
   it("rejects an unknown equipment value", () => {
     const result = createExerciseSchema.safeParse(baseInput({ equipment: "resistance-band" }));
@@ -153,6 +188,13 @@ describe("updateExerciseSchema", () => {
     ]);
   });
 
+  it("rejects a replacement contribution weight with more than 2 decimal places (M-1(new))", () => {
+    const result = updateExerciseSchema.safeParse({
+      contributions: [{ muscleGroupId: "chest", role: "primary", weight: 0.555 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("rejects a replacement contribution list with no primary", () => {
     const result = updateExerciseSchema.safeParse({
       contributions: [{ muscleGroupId: "chest", role: "secondary" }],
@@ -168,6 +210,16 @@ describe("updateExerciseSchema", () => {
   it("allows clearing nullable fields explicitly", () => {
     const result = updateExerciseSchema.parse({ notes: null, movementPattern: null });
     expect(result).toEqual({ notes: null, movementPattern: null });
+  });
+
+  it("rejects a loadStepKg with more than 2 decimal places (L-7)", () => {
+    const result = updateExerciseSchema.safeParse({ loadStepKg: 1.234 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a valid-precision loadStepKg", () => {
+    const result = updateExerciseSchema.safeParse({ loadStepKg: 1.25 });
+    expect(result.success).toBe(true);
   });
 });
 

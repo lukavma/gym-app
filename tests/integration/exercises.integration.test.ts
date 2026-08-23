@@ -155,6 +155,23 @@ describe("exercises service (PGlite integration)", () => {
     expect(updated.contributions[0]?.muscleGroupId).toBe("hamstrings");
   });
 
+  it("round-trips fractional loadStepKg values through create, update, and read (Phase 5.5 Light)", async () => {
+    const created = await createExercise(db, userId, { ...SQUAT_INPUT, loadStepKg: 1.25 });
+    expect(created.loadStepKg).toBe(1.25);
+
+    const fetched = await getExercise(db, userId, created.id);
+    expect(fetched?.loadStepKg).toBe(1.25);
+
+    const updated = await updateExercise(db, userId, created.id, { loadStepKg: 0.25 });
+    expect(updated.loadStepKg).toBe(0.25);
+
+    const refetched = await getExercise(db, userId, created.id);
+    expect(refetched?.loadStepKg).toBe(0.25);
+
+    const [listed] = await listExercises(db, userId, { search: "Back Squat" });
+    expect(listed?.loadStepKg).toBe(0.25);
+  });
+
   it("throws ExerciseNotFoundError when updating a nonexistent exercise", async () => {
     await expect(
       updateExercise(db, userId, "00000000-0000-7000-8000-000000000000", { name: "x" }),

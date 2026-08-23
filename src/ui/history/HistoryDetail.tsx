@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { formatScheme } from "@/domain/schemes/setScheme";
 import { planSetDeletion } from "@/domain/sync/setNumbering";
 import type { WeekModifiers } from "@/domain/blocks/schema";
+import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import {
   correctHistorySet,
   deleteHistorySet,
@@ -165,48 +166,68 @@ function HistorySetRow({
   const [weight, setWeight] = useState(String(set.weightKg));
   const [reps, setReps] = useState(String(set.reps));
   const [rir, setRir] = useState(set.rir === null ? "" : String(set.rir));
+  const [error, setError] = useState<string | null>(null);
 
   if (editing) {
     return (
-      <li className="flex items-center gap-2 text-sm">
-        <input
-          type="number"
-          inputMode="decimal"
-          value={weight}
-          onChange={(e) => setWeight(e.target.value)}
-          className="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
-        />
-        <input
-          type="number"
-          inputMode="numeric"
-          value={reps}
-          onChange={(e) => setReps(e.target.value)}
-          className="w-14 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
-        />
-        <input
-          type="number"
-          inputMode="numeric"
-          value={rir}
-          onChange={(e) => setRir(e.target.value)}
-          className="w-12 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
-        />
-        <button
-          type="button"
-          onClick={() => {
-            onSave({
-              weightKg: Number(weight),
-              reps: Number(reps),
-              rir: rir.trim() === "" ? null : Number(rir),
-            });
-            setEditing(false);
-          }}
-          className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-900"
-        >
-          Save
-        </button>
-        <button type="button" onClick={() => setEditing(false)} className="text-xs text-slate-500">
-          Cancel
-        </button>
+      <li className="flex flex-col gap-1">
+        <div className="flex items-center gap-2 text-sm">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={weight}
+            onChange={(e) => setWeight(sanitizeDecimalDraft(e.target.value))}
+            className="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
+          />
+          <input
+            type="number"
+            inputMode="numeric"
+            value={reps}
+            onChange={(e) => setReps(e.target.value)}
+            className="w-14 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
+          />
+          <input
+            type="number"
+            inputMode="numeric"
+            value={rir}
+            onChange={(e) => setRir(e.target.value)}
+            className="w-12 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              // M-1 remediation — a comma-typed or otherwise unparseable
+              // correction must never silently become 0 kg on a completed
+              // set; an explicitly typed 0 stays valid (bodyweight sets).
+              const weightKg = parseDecimalInput(weight);
+              if (weightKg === null) {
+                setError("Weight is required.");
+                return;
+              }
+              setError(null);
+              onSave({
+                weightKg,
+                reps: Number(reps),
+                rir: rir.trim() === "" ? null : Number(rir),
+              });
+              setEditing(false);
+            }}
+            className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-900"
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setEditing(false);
+            }}
+            className="text-xs text-slate-500"
+          >
+            Cancel
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
       </li>
     );
   }

@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/ui/Button";
 import { blockGoalSchema, type BlockGoal } from "@/domain/blocks/schema";
+import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import type { TemplateDto } from "@/ui/templates/types";
 import type { BlockDto } from "./types";
 import { WeekOverrides } from "./WeekOverrides";
@@ -48,6 +49,18 @@ const GOALS = blockGoalSchema.options;
 function todayDateString(): string {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+// domain/blocks/schema.ts — setMultiplier/loadMultiplier are
+// z.number().positive().max(2). Blank means "don't modify this axis";
+// non-empty-but-unparseable is a real input error, not silently dropped.
+const MAX_DELOAD_MULTIPLIER = 2;
+
+function parseOptionalMultiplier(raw: string): number | null | "invalid" {
+  if (raw.trim() === "") return null;
+  const parsed = parseDecimalInput(raw);
+  if (parsed === null || parsed <= 0 || parsed > MAX_DELOAD_MULTIPLIER) return "invalid";
+  return parsed;
 }
 
 export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormProps) {
@@ -237,19 +250,30 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
         weekdays:
           scheduleMode === "rotation" || row.weekdays.length === 0 ? undefined : row.weekdays,
       }));
-      payload.deload = deloadEnabled
-        ? {
-            mode: "scheduled",
-            weekIndex: deloadWeekIndex === "last" ? "last" : Number(deloadWeekIndex),
-            modifiers: {
-              ...(setMultiplier.trim() !== "" ? { setMultiplier: Number(setMultiplier) } : {}),
-              ...(loadMultiplier.trim() !== "" ? { loadMultiplier: Number(loadMultiplier) } : {}),
-              ...(targetRirShift.trim() !== "" ? { targetRirShift: Number(targetRirShift) } : {}),
-            },
-          }
-        : mode === "create"
-          ? undefined
-          : null;
+      if (deloadEnabled) {
+        // L-5 remediation — a comma-typed multiplier must never silently
+        // collapse to "no override"; unsigned parsing only (targetRirShift
+        // stays a signed Number(...) field below, untouched).
+        const setMultiplierValue = parseOptionalMultiplier(setMultiplier);
+        const loadMultiplierValue = parseOptionalMultiplier(loadMultiplier);
+        if (setMultiplierValue === "invalid" || loadMultiplierValue === "invalid") {
+          setError(
+            "Enter valid deload multipliers (greater than 0, at most 2×), or leave them blank.",
+          );
+          return;
+        }
+        payload.deload = {
+          mode: "scheduled",
+          weekIndex: deloadWeekIndex === "last" ? "last" : Number(deloadWeekIndex),
+          modifiers: {
+            ...(setMultiplierValue !== null ? { setMultiplier: setMultiplierValue } : {}),
+            ...(loadMultiplierValue !== null ? { loadMultiplier: loadMultiplierValue } : {}),
+            ...(targetRirShift.trim() !== "" ? { targetRirShift: Number(targetRirShift) } : {}),
+          },
+        };
+      } else {
+        payload.deload = mode === "create" ? undefined : null;
+      }
     }
 
     setStatus("submitting");
@@ -597,13 +621,10 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
                 <label className="flex flex-col gap-1 text-xs text-slate-400">
                   Sets ×
                   <input
-                    type="number"
+                    type="text"
                     inputMode="decimal"
-                    step="0.05"
-                    min="0.05"
-                    max="2"
                     value={setMultiplier}
-                    onChange={(e) => setSetMultiplier(e.target.value)}
+                    onChange={(e) => setSetMultiplier(sanitizeDecimalDraft(e.target.value))}
                     placeholder="none"
                     className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
                   />
@@ -611,13 +632,10 @@ export function BlockForm({ mode, programId, blockId, fromBlockId }: BlockFormPr
                 <label className="flex flex-col gap-1 text-xs text-slate-400">
                   Load ×
                   <input
-                    type="number"
+                    type="text"
                     inputMode="decimal"
-                    step="0.05"
-                    min="0.05"
-                    max="2"
                     value={loadMultiplier}
-                    onChange={(e) => setLoadMultiplier(e.target.value)}
+                    onChange={(e) => setLoadMultiplier(sanitizeDecimalDraft(e.target.value))}
                     placeholder="none"
                     className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
                   />

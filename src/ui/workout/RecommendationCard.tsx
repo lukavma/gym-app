@@ -5,6 +5,7 @@ import type { RecommendationDto } from "@/sync/types";
 import type { ExplicitDecisionInput } from "@/sync/activeSession";
 import type { RecommendationTarget } from "@/domain/progression/engine";
 import { STRATEGY_DISPLAY_NAMES, type StrategyId } from "@/domain/progression/registry";
+import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import {
   ACTION_COPY,
   CONFIDENCE_COPY,
@@ -64,8 +65,8 @@ export function RecommendationCard({
   function submitCustom() {
     const chosen: RecommendationTarget = {};
     if (customLoad.trim() !== "") {
-      const loadKg = Number(customLoad);
-      if (!Number.isFinite(loadKg) || loadKg < 0) {
+      const loadKg = parseDecimalInput(customLoad);
+      if (loadKg === null || loadKg < 0) {
         setError("Weight must be 0 or more.");
         return;
       }
@@ -150,10 +151,10 @@ export function RecommendationCard({
               <label className="flex flex-1 flex-col gap-1">
                 <span className="text-[10px] text-slate-400">kg</span>
                 <input
-                  type="number"
+                  type="text"
                   inputMode="decimal"
                   value={customLoad}
-                  onChange={(e) => setCustomLoad(e.target.value)}
+                  onChange={(e) => setCustomLoad(sanitizeDecimalDraft(e.target.value))}
                   disabled={disabled}
                   className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-50 outline-none focus:border-slate-400 disabled:opacity-50"
                 />
