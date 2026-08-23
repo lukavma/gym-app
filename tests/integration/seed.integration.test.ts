@@ -59,22 +59,64 @@ async function ledgerSlugs(db: TestDb, userId: string) {
 }
 
 describe("seed (PGlite integration)", () => {
-  it("seeds all 15 canonical muscle groups", async () => {
+  // ADR-010 vocabulary v2 — 17 leaves + 1 rollup (`back`).
+  it("seeds all 18 canonical muscle groups, with exactly one kind='rollup' row", async () => {
     const db = await createTestDb();
     await seedMuscleGroups(db);
 
     const rows = await db.select().from(muscleGroups);
     expect(rows).toHaveLength(MUSCLE_GROUP_SLUGS.length);
     expect(new Set(rows.map((r) => r.id))).toEqual(new Set(MUSCLE_GROUP_SLUGS));
+
+    const rollups = rows.filter((r) => r.kind === "rollup");
+    expect(rollups).toHaveLength(1);
+    expect(rollups[0]?.id).toBe("back");
+    expect(rows.filter((r) => r.kind === "muscle")).toHaveLength(17);
   });
 
-  it("reseeding muscle groups is idempotent", async () => {
+  it("defaults kind to 'muscle' and enforces the kind CHECK constraint", async () => {
+    const db = await createTestDb();
+
+    await db.insert(muscleGroups).values({ id: "test_group", displayName: "Test", position: 99 });
+    const [defaulted] = await db
+      .select()
+      .from(muscleGroups)
+      .where(eq(muscleGroups.id, "test_group"));
+    expect(defaulted?.kind).toBe("muscle");
+
+    await expect(
+      db.insert(muscleGroups).values({
+        id: "bogus_group",
+        displayName: "Bogus",
+        position: 100,
+        kind: "bogus",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("reseeding muscle groups is idempotent, including kind", async () => {
     const db = await createTestDb();
     await seedMuscleGroups(db);
     await seedMuscleGroups(db);
 
     const rows = await db.select().from(muscleGroups);
     expect(rows).toHaveLength(MUSCLE_GROUP_SLUGS.length);
+  });
+
+  it("reseeding corrects a drifted kind/displayName/position back to the domain constant", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+
+    await db
+      .update(muscleGroups)
+      .set({ kind: "muscle", displayName: "Drifted", position: 1 })
+      .where(eq(muscleGroups.id, "back"));
+
+    await seedMuscleGroups(db);
+
+    const [back] = await db.select().from(muscleGroups).where(eq(muscleGroups.id, "back"));
+    expect(back?.kind).toBe("rollup");
+    expect(back?.displayName).toBe("Back");
   });
 
   it("seeds the full exercise catalog for a user, each with >=1 primary contribution", async () => {

@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import type { AppDb } from "@/db/client";
 import { createTestDb } from "./testDb";
-import { exercises, users } from "@/db/schema";
-import { isUuidv7 } from "@/domain/ids/uuidv7";
+import { exerciseMuscleContributions, exercises, users } from "@/db/schema";
+import { isUuidv7, newId } from "@/domain/ids/uuidv7";
 import { seedMuscleGroups } from "@/db/seed";
 import {
   createExercise,
@@ -11,6 +11,7 @@ import {
   ExerciseNameConflictError,
   ExerciseNotFoundError,
   ExerciseReferencedError,
+  RollupContributionNotCarriedError,
   getExercise,
   listExercises,
   setExerciseArchived,
@@ -219,5 +220,137 @@ describe("exercises service (PGlite integration)", () => {
     } finally {
       await db.execute(sql`DROP TABLE test_history_fixture`);
     }
+  });
+});
+
+// ADR-010 Release 1 — leaf-only create, carry-through-only update. A legacy
+// direct `back` contribution can no longer be produced by createExercise
+// (it's leaf-only at the schema level), so these fixtures insert one
+// directly, exactly reproducing what a pre-Release-1 row looks like.
+describe("exercises service — muscle taxonomy v2 Release 1 (PGlite integration)", () => {
+  let db: AppDb;
+  let userId: string;
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    await seedMuscleGroups(db);
+    userId = (await insertTestUser(db)).id;
+  });
+
+  async function insertLegacyBackFixture(name: string): Promise<string> {
+    const exerciseId = newId();
+    await db.insert(exercises).values({
+      id: exerciseId,
+      userId,
+      name,
+      equipment: "cable",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+    });
+    await db.insert(exerciseMuscleContributions).values({
+      exerciseId,
+      muscleGroupId: "back",
+      role: "primary",
+      weight: 1,
+    });
+    return exerciseId;
+  }
+
+  it("creates exercises with the new leaf muscle groups (lats, upper_back, adductors)", async () => {
+    const created = await createExercise(db, userId, {
+      name: "Weighted Pull-Up",
+      equipment: "bodyweight",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [
+        { muscleGroupId: "lats", role: "primary", weight: 1 },
+        { muscleGroupId: "upper_back", role: "secondary", weight: 0.5 },
+      ],
+    });
+    expect(created.contributions.map((c) => c.muscleGroupId).sort()).toEqual([
+      "lats",
+      "upper_back",
+    ]);
+
+    const adductorExercise = await createExercise(db, userId, {
+      name: "Cable Hip Adduction",
+      equipment: "cable",
+      mechanics: "isolation",
+      laterality: "unilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "adductors", role: "primary", weight: 1 }],
+    });
+    const fetched = await getExercise(db, userId, adductorExercise.id);
+    expect(fetched?.contributions[0]?.muscleGroupId).toBe("adductors");
+  });
+
+  it("carries forward an existing back contribution on update", async () => {
+    const exerciseId = await insertLegacyBackFixture("Legacy Barbell Row");
+    const updated = await updateExercise(db, userId, exerciseId, {
+      contributions: [{ muscleGroupId: "back", role: "primary", weight: 1 }],
+    });
+    expect(updated.contributions).toEqual([{ muscleGroupId: "back", role: "primary", weight: 1 }]);
+  });
+
+  it("leaves a legacy back contribution untouched by a metadata-only edit (contributions omitted)", async () => {
+    const exerciseId = await insertLegacyBackFixture("Legacy Barbell Row");
+    const updated = await updateExercise(db, userId, exerciseId, { name: "Renamed Row" });
+    expect(updated.name).toBe("Renamed Row");
+    expect(updated.contributions).toEqual([{ muscleGroupId: "back", role: "primary", weight: 1 }]);
+  });
+
+  it("allows explicitly replacing a legacy back contribution with a leaf", async () => {
+    const exerciseId = await insertLegacyBackFixture("Legacy Barbell Row");
+    const updated = await updateExercise(db, userId, exerciseId, {
+      contributions: [{ muscleGroupId: "lats", role: "primary", weight: 1 }],
+    });
+    expect(updated.contributions).toEqual([{ muscleGroupId: "lats", role: "primary", weight: 1 }]);
+
+    const fetched = await getExercise(db, userId, exerciseId);
+    expect(fetched?.contributions.some((c) => c.muscleGroupId === "back")).toBe(false);
+  });
+
+  it("rejects introducing back on an update when the exercise never had it, and rolls back atomically", async () => {
+    const created = await createExercise(db, userId, {
+      name: "Fresh Pull-Up",
+      equipment: "bodyweight",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "lats", role: "primary", weight: 1 }],
+    });
+
+    await expect(
+      updateExercise(db, userId, created.id, {
+        name: "Renamed Pull-Up",
+        contributions: [{ muscleGroupId: "back", role: "primary", weight: 1 }],
+      }),
+    ).rejects.toThrow(RollupContributionNotCarriedError);
+
+    // Atomic: neither the rejected contribution swap nor the accompanying
+    // name change (same call) took effect.
+    const fetched = await getExercise(db, userId, created.id);
+    expect(fetched?.name).toBe("Fresh Pull-Up");
+    expect(fetched?.contributions).toEqual([{ muscleGroupId: "lats", role: "primary", weight: 1 }]);
+  });
+
+  it("preserves no-existence-leak: a non-owner gets ExerciseNotFoundError, not RollupContributionNotCarriedError", async () => {
+    const otherUserId = (await insertTestUser(db, "other-taxonomy@example.com")).id;
+    const created = await createExercise(db, otherUserId, {
+      name: "Someone Else's Pull-Up",
+      equipment: "bodyweight",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "lats", role: "primary", weight: 1 }],
+    });
+
+    await expect(
+      updateExercise(db, userId, created.id, {
+        contributions: [{ muscleGroupId: "back", role: "primary", weight: 1 }],
+      }),
+    ).rejects.toThrow(ExerciseNotFoundError);
   });
 });

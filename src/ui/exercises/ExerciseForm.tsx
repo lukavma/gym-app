@@ -172,6 +172,10 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
 
       if (res.status === 409) {
         setError("An active exercise with this name already exists.");
+      } else if (res.status === 422) {
+        setError(
+          "Back can't be added as a new contribution — choose Lats or Upper Back for a new pull, or keep the exercise's existing Back row unchanged.",
+        );
       } else if (res.status === 400) {
         setError("Please check the muscle contributions: at least one primary is required.");
       } else {

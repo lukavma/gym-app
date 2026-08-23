@@ -9,6 +9,7 @@ import {
   ExerciseNameConflictError,
   ExerciseNotFoundError,
   ExerciseReferencedError,
+  RollupContributionNotCarriedError,
 } from "@/server/exercises/service";
 
 export const runtime = "nodejs";
@@ -56,6 +57,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
     if (err instanceof ExerciseNameConflictError) {
       return NextResponse.json({ error: "name_conflict" }, { status: 409 });
+    }
+    if (err instanceof RollupContributionNotCarriedError) {
+      return NextResponse.json(
+        { error: "rollup_not_carried", muscleGroupId: err.muscleGroupId },
+        { status: 422 },
+      );
     }
     throw err;
   }

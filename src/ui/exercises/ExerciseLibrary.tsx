@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { MUSCLE_GROUP_DISPLAY_NAMES } from "@/domain/exercises/muscleGroups";
+import { contributionMuscleLabel } from "./muscleGroupDisplay";
 import type { ExerciseDto } from "./types";
 
 type Status = "loading" | "ready" | "error";
@@ -93,7 +93,7 @@ export function ExerciseLibrary() {
               <span className="text-xs text-slate-400">
                 {exercise.contributions
                   .filter((c) => c.role === "primary")
-                  .map((c) => MUSCLE_GROUP_DISPLAY_NAMES[c.muscleGroupId])
+                  .map((c) => contributionMuscleLabel(c.muscleGroupId))
                   .join(", ")}
               </span>
             </Link>

@@ -12,12 +12,23 @@ import type {
   ResolvedContribution,
   UpdateExerciseInput,
 } from "@/domain/exercises/schema";
-import type { MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
+import { isRollupMuscleGroupSlug, type MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
 
 export class ExerciseNotFoundError extends Error {
   constructor() {
     super("Exercise not found");
     this.name = "ExerciseNotFoundError";
+  }
+}
+
+// Thrown when an update's contribution list introduces a rollup slug (e.g.
+// `back`) that the exercise didn't already carry before this update
+// (ADR-010: "leaf-only for new rows... update accepts a rollup slug only as
+// carry-through of a row that already exists on that exercise").
+export class RollupContributionNotCarriedError extends Error {
+  constructor(public readonly muscleGroupId: string) {
+    super(`Contribution "${muscleGroupId}" cannot be added — it is not a leaf muscle group`);
+    this.name = "RollupContributionNotCarriedError";
   }
 }
 
@@ -230,6 +241,27 @@ export async function updateExercise(
       if (!row) throw new Error("Failed to update exercise");
 
       if (input.contributions !== undefined) {
+        // ADR-010 carry-through rule: a submitted rollup slug (e.g. `back`)
+        // is only valid if this exercise already had that exact row before
+        // this update — never as a newly introduced contribution. Checked
+        // before any mutation below, so a rejection leaves the whole
+        // transaction (including the metadata patch above) rolled back.
+        const submittedRollupSlugs = input.contributions
+          .map((c) => c.muscleGroupId)
+          .filter(isRollupMuscleGroupSlug);
+
+        if (submittedRollupSlugs.length > 0) {
+          const priorContributions = await tx
+            .select({ muscleGroupId: exerciseMuscleContributions.muscleGroupId })
+            .from(exerciseMuscleContributions)
+            .where(eq(exerciseMuscleContributions.exerciseId, id));
+          const priorSlugs = new Set(priorContributions.map((c) => c.muscleGroupId));
+
+          for (const slug of submittedRollupSlugs) {
+            if (!priorSlugs.has(slug)) throw new RollupContributionNotCarriedError(slug);
+          }
+        }
+
         await tx
           .delete(exerciseMuscleContributions)
           .where(eq(exerciseMuscleContributions.exerciseId, id));
@@ -249,6 +281,7 @@ export async function updateExercise(
     });
   } catch (err) {
     if (err instanceof ExerciseNotFoundError) throw err;
+    if (err instanceof RollupContributionNotCarriedError) throw err;
     if (isPostgresErrorCode(err, UNIQUE_VIOLATION)) throw new ExerciseNameConflictError();
     throw err;
   }

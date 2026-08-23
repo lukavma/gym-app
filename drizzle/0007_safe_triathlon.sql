@@ -1,0 +1,2 @@
+ALTER TABLE "muscle_groups" ADD COLUMN "kind" text DEFAULT 'muscle' NOT NULL;--> statement-breakpoint
+ALTER TABLE "muscle_groups" ADD CONSTRAINT "ck_muscle_groups_kind" CHECK ("muscle_groups"."kind" in ('muscle', 'rollup'));

@@ -13,6 +13,7 @@ export async function seedMuscleGroups(db: AppDb): Promise<void> {
         id: group.slug,
         displayName: group.displayName,
         position: group.position,
+        kind: group.kind,
       })),
     )
     .onConflictDoUpdate({
@@ -20,6 +21,7 @@ export async function seedMuscleGroups(db: AppDb): Promise<void> {
       set: {
         displayName: sql`excluded.display_name`,
         position: sql`excluded.position`,
+        kind: sql`excluded.kind`,
       },
     });
 }

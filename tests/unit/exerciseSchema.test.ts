@@ -124,6 +124,25 @@ describe("createExerciseSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  // ADR-010 Release 1 — "create rejects rollup slugs" is enforced entirely
+  // here (leafMuscleGroupSlugSchema), with no service-layer check needed.
+  it("rejects the back rollup slug", () => {
+    const result = createExerciseSchema.safeParse(
+      baseInput({ contributions: [{ muscleGroupId: "back", role: "primary" }] }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it.each(["lats", "upper_back", "adductors"])(
+    "accepts the new leaf muscle group %s",
+    (muscleGroupId) => {
+      const result = createExerciseSchema.safeParse(
+        baseInput({ contributions: [{ muscleGroupId, role: "primary" }] }),
+      );
+      expect(result.success).toBe(true);
+    },
+  );
+
   it("rejects a non-positive loadStepKg", () => {
     const result = createExerciseSchema.safeParse(baseInput({ loadStepKg: 0 }));
     expect(result.success).toBe(false);
@@ -200,6 +219,19 @@ describe("updateExerciseSchema", () => {
       contributions: [{ muscleGroupId: "chest", role: "secondary" }],
     });
     expect(result.success).toBe(false);
+  });
+
+  // ADR-010 Release 1 — update deliberately still accepts the back rollup
+  // slug at the schema level (Zod has no DB access, so it can't tell
+  // carry-through of an existing row apart from introducing a new one).
+  // src/server/exercises/service.ts's transactional carry-through check is
+  // what actually rejects the "introduced where none existed" case — see
+  // tests/integration/exercises.integration.test.ts.
+  it("accepts the back rollup slug at the schema level (carry-through is a service-layer concern)", () => {
+    const result = updateExerciseSchema.safeParse({
+      contributions: [{ muscleGroupId: "back", role: "primary" }],
+    });
+    expect(result.success).toBe(true);
   });
 
   it("rejects unknown fields (strict)", () => {
