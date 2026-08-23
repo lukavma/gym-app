@@ -55,11 +55,14 @@ graph LR
 ## 2. Reference data
 
 ### MuscleGroup
-Seeded reference entity (not a hard-coded enum) so groups can be added later without schema change.
+Seeded reference entity (not a hard-coded enum) so groups can be added later without schema change. Vocabulary v2 (ADR-010, accepted 2026-08-23) — **17 leaves + 1 rollup**:
 
-- Identity: stable text slug (`chest`, `back`, `front_delts`, `side_delts`, `rear_delts`, `traps`, `biceps`, `triceps`, `forearms`, `abs`, `quads`, `hamstrings`, `glutes`, `calves`, `lower_back`).
-- `back` is deliberately one group in MVP (matching the RP preset granularity and keeping contribution mapping simple); a future lats/upper-back split is additive, not a migration of meaning.
-- Lifecycle: effectively immutable; additions allowed, deletions not (history may reference).
+- `kind: 'muscle' | 'rollup'`. A **leaf** (`kind = 'muscle'`) is a tracking bucket that contributions target. A **rollup** (`kind = 'rollup'`) is an analytical region whose totals are derived from its member leaves; it exists so that coarse reference data (RP's "Back" landmarks) has an honest anchor. Rollup membership is a domain constant in `src/domain/exercises/muscleGroups.ts` (`back → [lats, upper_back]`), not a table and not a `parent_id` — there is exactly one rollup and no hierarchy.
+- Leaves (stable text slugs): `chest`, `lats`, `upper_back`, `front_delts`, `side_delts`, `rear_delts`, `traps`, `biceps`, `triceps`, `forearms`, `abs`, `quads`, `hamstrings`, `glutes`, `adductors`, `calves`, `lower_back`.
+- Rollup: `back` ("Back") = `lats` + `upper_back` (+ any legacy direct `back` contributions — §3, §8). `traps`, `rear_delts` and `lower_back` are *not* members: RP lists Traps and Rear/Side Delts separately and has no erector row, so those leaves stand alone.
+- Naming conventions (display copy, documented because the vocabulary is a training heuristic, not anatomy): `upper_back` = rhomboids / mid- and lower-trapezius region ("Upper Back"); `traps` = upper-trapezius shrug work ("Traps"); `lower_back` = the spinal-erector / lower-back tracking bucket, displayed as **"Lower Back (Erectors)"** — the slug is retained unchanged. Display sections on screens (Back, Legs, Arms & Shoulders, Torso) are UI ordering only (`position`), never data.
+- History of the split: `back` was a single leaf through Phase 5.5 (matching RP granularity). The split into `lats`/`upper_back` was **not purely additive**, contrary to what this section previously claimed: adding the leaves is additive, but re-pointing existing `back` contributions is a real reconciliation of data (ADR-010), performed in application code by deterministic seeded id with role and weight preserved. What *is* preserved exactly is the rollup's historical total (ADR-010 sum-preservation invariant).
+- Mutation rules: add-only (deletions never — history interpretation may depend on any group); `kind` is immutable once seeded; a rollup never becomes a leaf or vice versa. Muscle groups beyond vocabulary v2 require an ADR amendment, not a seed edit.
 
 ---
 
@@ -75,6 +78,8 @@ Properties: `name`, `equipment` (barbell | dumbbell | machine | cable | bodyweig
 
 - Defaults: primary → 1.0, secondary → 0.5. The 0.5 is a **labeled heuristic convention** (EVIDENCE-004: best-fitting statistical convention, not a biological constant) and is stored per row so it can be tuned per exercise later without schema change.
 - Invariant: at least one `primary` contribution per exercise; one row per (exercise, muscle).
+- **Leaf-only rule (vocabulary v2):** new contribution rows target leaf groups only. A rollup slug is rejected on create; on update it is accepted only as a *carry-through* of a row that already exists on that exercise (the update path replaces the whole contribution list, so a legacy row must be able to pass through unchanged). A legacy direct-rollup row is therefore never created, but may be kept, edited in weight/role, removed, or reclassified to a leaf — and is always visible in the editor with an explicit reclassify affordance. Nothing infers a leaf on the user's behalf.
+- Seeded defaults **partition** the rollup: every seeded `back` row maps to exactly one of `lats` / `upper_back` (authoritative mapping table in ADR-010); no sibling secondaries are added by default. A user may add them, accepting that the rollup then exceeds RP-style "one set per exercise" counting (§8).
 
 ### Exercise identity policy (important invariant)
 - The exercise id is a **stable identity for a movement**. Renaming (“Bench Press” → “Barbell Bench Press”) is allowed: history displays the current name.
@@ -262,6 +267,7 @@ rawDirectSets(muscle, week) = count of work sets where muscle is a primary contr
 ```
 
 - Uses **current** contribution weights, deliberately not snapshots: volume is an analytic convention, and one convention applied uniformly across all of history keeps week-to-week trends comparable. Snapshotting would freeze different weeks under different conventions after any edit — worse for the only use volume has (trend context). Documented trade-off in ADR-007; a future “as-of” mode is additive if ever wanted.
+- Rollups are derived too (vocabulary v2): `effectiveSets(back, week) = effectiveSets(lats) + effectiveSets(upper_back) + unclassifiedBack`, where `unclassifiedBack` is the contribution of legacy direct `back` rows (user-created exercises are never auto-remapped); `rawDirectSets(back)` counts each set at most once even if an exercise is primary on both members, or on a member and the rollup. The UI renders the reconciliation (`Back = Lats + Upper Back + Unclassified Back`, the last term hidden when zero). Nothing about rollups is persisted; landmarks attach to the rollup (RP "Back"), never to its member leaves (`volume-model.md` §2, §4).
 - `VolumePreset` (aggregate: preset + per-muscle `VolumeLandmark { key, min?, max?, openEnded }`) provides display bands. The RP preset is seeded as `classification: heuristic` with a source pointer — never enforced, never auto-adjusting anything (GAP-01). Details in `volume-model.md`.
 
 ---
@@ -270,7 +276,7 @@ rawDirectSets(muscle, week) = count of work sets where muscle is a primary contr
 
 | Concept | Mutable? | Snapshot strategy |
 |---|---|---|
-| MuscleGroup | add-only | — |
+| MuscleGroup | add-only; `kind` immutable | — (vocabulary v2 reconciled seeded `back` rows to leaves by deterministic id, role/weight preserved — ADR-010) |
 | Exercise metadata (name, equipment…) | yes | not snapshotted; identity policy instead |
 | MuscleContribution weights | yes | **not snapshotted** — current-convention derivation (§8) |
 | Program / Template / Prescription | yes | **snapshot-on-use** into SessionExercise at session start |
@@ -290,7 +296,7 @@ rawDirectSets(muscle, week) = count of work sets where muscle is a primary contr
 2. Session snapshots are written exactly once, at start; ad-hoc additions append snapshots at add time.
 3. Completed sessions: structure immutable, values editable, never re-snapshotted.
 4. Exercises with history: archivable, never deletable (DB `RESTRICT`).
-5. Every exercise has ≥1 primary muscle contribution; weights in (0, 1].
+5. Every exercise has ≥1 primary muscle contribution; weights in (0, 1]; new contribution rows target leaf groups only — a rollup accepts no new contributions (legacy direct rows are carried through, never created).
 6. RIR is an integer 0–10 or null, everywhere. Target RIR is always a band.
 7. Scheme JSON must validate against its versioned schema before persistence.
 8. Recommendations: at most one non-superseded pending per (exercise, block); decision written at most once.

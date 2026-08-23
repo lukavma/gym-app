@@ -44,13 +44,14 @@ Login rate limiting (fixed-window, restart-safe because state is in the DB, not 
 | locked_until | timestamptz | null |
 
 ### 2.3 `muscle_groups`
-Seeded reference data.
+Seeded reference data — vocabulary v2 (ADR-010): 18 rows = 17 leaves + the `back` rollup. Upserted from the domain constant on every deploy (`display_name`, `position`, `kind` synced); rows are never deleted.
 
 | Column | Type | Constraints |
 |---|---|---|
-| id | text | PK — slug (`chest`, `back`, …, see `domain-model.md` §2) |
+| id | text | PK — slug (`chest`, `lats`, `upper_back`, …, `back`; see `domain-model.md` §2) |
 | display_name | text | not null |
 | position | smallint | not null (stable display order) |
+| kind | text | not null default `'muscle'`, ck in (`'muscle'`, `'rollup'`) — `'rollup'` only for `back`; rollup membership (`back → lats, upper_back`) is a domain constant, deliberately not a table or `parent_id` |
 
 ### 2.4 `exercises`
 
@@ -82,6 +83,10 @@ Indexes/constraints: `uq_exercises_active_name` — unique `(user_id, lower(name
 | updated_at | timestamptz | |
 
 PK `(exercise_id, muscle_group_id)`. Service-level invariant: ≥1 primary row per exercise. (CASCADE is safe: exercises with history are archive-only, enforced by RESTRICT FKs from history tables.)
+
+**Leaf-only rule (ADR-010):** the service accepts a *new* contribution row only for groups with `kind = 'muscle'`. A row on a rollup group can exist only as a legacy direct contribution (a pre-v2 `back` row on a user-created exercise, or a reported reconciliation conflict) and may be carried through an update unchanged, edited, removed, or reclassified to a leaf — never newly created. Enforced in `src/server/exercises` with integration coverage, not as a DB constraint (it would need a join on `muscle_groups.kind`).
+
+**Seeded-row reconciliation (ADR-010):** seeded `back` rows are re-pointed to `lats`/`upper_back` by the seed pipeline, not by a SQL migration — catalog slugs are not persisted here, so the step derives each seeded id in application code (`seededExerciseId(userId, slug)`) and runs a conditional update restricted to `exercises.is_seeded = true`, `muscle_group_id = 'back'`, and no existing row on the target leaf. `role` and `weight` are never touched; `updated_at` is set. Idempotent by state (zero rows on every later run), no ledger.
 
 ### 2.6 `programs`
 
@@ -291,6 +296,8 @@ Decision columns are embedded (not a separate table): strictly 0..1 decision per
 
 `uq_landmark` — unique `(preset_id, muscle_group_id, key)`. ck: at least one of value_min/value_max not null.
 
+A landmark may reference a rollup row: the RP "Back" row attaches to `back` (`kind = 'rollup'`). Seeding never writes landmarks for a rollup's member leaves (`lats`, `upper_back`) — that would double-count the Back band — nor for `forearms`, `lower_back`, `adductors`, for which RP has no row (volume-model §4). A seed rule and UI rule, not a constraint: users may add their own landmark rows to any group.
+
 ### 2.18 `bodyweight_entries`
 
 | Column | Type | Constraints |
@@ -373,11 +380,12 @@ Dotted = nullable lineage/context references whose loss never changes historical
 | Exercise renamed | intended behavior: history shows current name (identity policy, `domain-model.md` §3) |
 | Strategy code evolves | `recommendations.strategy_version` + frozen `config`/`inputs`; prescriptions pin no version (always current), snapshots record what ran |
 | Contribution weights edited | deliberately re-interprets derived volume everywhere (`volume-model.md` §3); facts untouched |
+| Muscle taxonomy v2 reconciliation (seeded `back` → `lats` / `upper_back`) | same policy: leaf series are re-interpreted uniformly for all history; the `back` rollup total is exactly preserved for every week (ADR-010 sum-preservation invariant); facts untouched |
 | Preset/landmark edits | display-only data; nothing historical references it |
 
 ## 5. Derived data — explicitly not persisted
 
-Weekly volume aggregates, rolling bodyweight averages, e1RM/trend series, block "current week", completion percentages, dashboard highlights. All are pure functions over the tables above; persisting them would create consistency liabilities with zero read-performance need at single-user scale. The only persisted derived artifact is `recommendations` — kept for auditability and because its Decision is source-of-truth user data (`architecture-plan.md` §7).
+Weekly volume aggregates (leaf series, rollup totals and the `unclassifiedBack` term alike), rolling bodyweight averages, e1RM/trend series, block "current week", completion percentages, dashboard highlights. All are pure functions over the tables above; persisting them would create consistency liabilities with zero read-performance need at single-user scale. The only persisted derived artifact is `recommendations` — kept for auditability and because its Decision is source-of-truth user data (`architecture-plan.md` §7).
 
 ## 6. Sizing sanity check
 

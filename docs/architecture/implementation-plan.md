@@ -1,13 +1,13 @@
 # Implementation Plan
 
 Status: Accepted (2026-08-09)
-Role: the execution roadmap for the coding agent. Eleven phases, each a vertical slice that ends deployed and usable. Phases 0–8 constitute the MVP (`mvp-scope.md` §1); Phases 9–10 are post-MVP. Every phase lists its binding specs — when this plan and a spec document disagree, **the spec document wins**; when implementation reality contradicts both, stop and flag it rather than silently diverging.
+Role: the execution roadmap for the coding agent. Eleven phases plus one accepted pre-Phase-6 taxonomy pass (ADR-010, 2026-08-23), each a vertical slice that ends deployed and usable. Phases 0–8 constitute the MVP (`mvp-scope.md` §1); Phases 9–10 are post-MVP. Every phase lists its binding specs — when this plan and a spec document disagree, **the spec document wins**; when implementation reality contradicts both, stop and flag it rather than silently diverging.
 
 ---
 
 ## 0. Ground rules for the coding agent
 
-1. **Binding documents** per area: `data-model.md` (schema — column-level authority), `domain-model.md` (entities, invariants), `prescription-model.md` + `progression-engine.md` (engine behavior, test matrix), `volume-model.md` (aggregation), `pwa-offline-strategy.md` (sync mechanics, §12 test list), ADR-001…008 (locked decisions), `mvp-scope.md` (cut line), `evidence-to-design.md` (labeling/copy rules), `open-decisions.md` (defaults when ambiguity is real).
+1. **Binding documents** per area: `data-model.md` (schema — column-level authority), `domain-model.md` (entities, invariants), `prescription-model.md` + `progression-engine.md` (engine behavior, test matrix), `volume-model.md` (aggregation), `pwa-offline-strategy.md` (sync mechanics, §12 test list), ADR-001…010 (locked decisions; ADR-010 = muscle taxonomy v2), `mvp-scope.md` (cut line), `evidence-to-design.md` (labeling/copy rules), `open-decisions.md` (defaults when ambiguity is real).
 2. **Scope discipline:** build only the current phase. Each phase's "Not yet" list is binding — reserved shapes (per-set schemes, recovery consumption, percent1RM) exist in docs to prove extensibility, not as an invitation.
 3. **The ten invariants** in `domain-model.md` §10 hold from the moment their entities exist. Three deserve constant paranoia: sessions are interpretable from their snapshots alone; recommendations never mutate plans; execution facts are never lost or silently rewritten.
 4. **One write path for execution facts:** session/set/decision writes always go through the outbox sync module — from Phase 3 day one, even when online (online just means immediate flush). Definition CRUD (exercises, programs, templates, blocks, presets) is plain online REST. Never add a second write path for facts.
@@ -58,7 +58,7 @@ Integration tests need no env (PGlite in-memory, migrations applied programmatic
 ### 1.4 Migrations & seeds
 
 - Schema changes only via `drizzle-kit generate` → committed SQL in `drizzle/` → applied by `drizzle-kit migrate` as a CI release step against production (before each App Service deployment; reaches the DB via the Azure-services firewall allowance, dynamic runner-IP rule as fallback — ADR-009) and on dev start. Never edit an applied migration.
-- Seeds are idempotent upserts keyed by slug (`muscle_groups`, exercise catalog, RP volume preset) in `src/db/seed/`, safe to rerun on every deploy.
+- Seeds are idempotent upserts keyed by slug (`muscle_groups`, exercise catalog, RP volume preset) in `src/db/seed/`, safe to rerun on every deploy. The same pipeline may carry **state-predicated reconciliation steps** (ADR-010): conditional updates whose predicate is consumed by the update itself, so every later run touches zero rows — no ledger — and which print their counts to deployment output. Because the pipeline runs `db:migrate → db:seed → app deploy`, a reconciliation that changes data semantics must only ship after a build that tolerates both the old and the new state is already live (two-stage rollout, Pre-Phase 6 below).
 
 ### 1.5 Testing policy (non-negotiable suites in bold)
 
@@ -92,7 +92,7 @@ Typecheck + lint + all tests green in CI; deployed to production; new surface sm
 
 **Goal:** the exercise vocabulary the rest of the system references.
 
-**Builds:** tables `muscle_groups` (seed all 15 slugs from domain-model §2), `exercises`, `exercise_muscle_contributions`; seed catalog (~40 common movements with primary 1.0 / secondary 0.5 defaults per domain-model §3, each with sensible `loadStepKg` — default 2.5, dumbbell moves 2.0, machines 5.0); CRUD UI (list, create/edit with contribution editor, archive/unarchive, optional `baselineLoadKg`); REST routes `/api/exercises[...]`.
+**Builds:** tables `muscle_groups` (seed all 15 slugs of vocabulary v1 — superseded by taxonomy v2's 17 leaves + `back` rollup in the Pre-Phase 6 pass; domain-model §2 now documents v2), `exercises`, `exercise_muscle_contributions`; seed catalog (~40 common movements with primary 1.0 / secondary 0.5 defaults per domain-model §3, each with sensible `loadStepKg` — default 2.5, dumbbell moves 2.0, machines 5.0); CRUD UI (list, create/edit with contribution editor, archive/unarchive, optional `baselineLoadKg`); REST routes `/api/exercises[...]`.
 
 **Tests:** integration — archive hides from default listing but record stays readable; delete with history returns 409 (testable properly from Phase 3; assert FK RESTRICT now via seeded fixture); contribution weight validation (0 < w ≤ 1).
 
@@ -153,17 +153,46 @@ Typecheck + lint + all tests green in CI; deployed to production; new surface sm
 
 **Not yet:** autoregulated deloads (OD-09).
 
+### Pre-Phase 6 — Muscle taxonomy v2 (size S–M; two deployable releases; accepted rescope, ADR-010)
+
+**Goal:** replace the merged `back` leaf with `lats` + `upper_back` leaves and a derived `back` rollup, and add `adductors`, *before* any volume artifact binds to the vocabulary — so Phase 6 is built once. Decision record: `adr/ADR-010-muscle-taxonomy-v2.md`; semantics: domain-model §2–3, data-model §2.3/§2.5/§2.17, volume-model §1–6; evidence row: evidence-to-design #19.
+
+**Gate:** a **successful Phase 5.5 Light targeted closeout verification verdict** — remediation implementation is complete, but verification was still pending when this pass was accepted, and taxonomy implementation may not start before that verdict (its 92-entry catalog is the input to the ADR-010 mapping; if verification changes any `back`-carrying slug, re-check the mapping before Release 2); product-owner approval recorded in `docs/reviews/pre-phase-6-muscle-taxonomy-rescope-plan.md`.
+
+**Why two releases (binding):** the pipeline runs `db:migrate → db:seed → app deploy`, so a seed-time reconciliation executes while the *previous* build is still live. Verified against that build's paths: its exercise editor validates contributions against the old 15-slug enum (saving any field of a reconciled exercise fails with a 400 and a misleading message) and its unmatched select lets the user re-save a reconciled exercise with `back`, re-creating a direct `back` row. Today/workout/history never read contributions and `kind` is invisible to that build — but the editor failure and the write-back race are real, so compatible code must be live before data semantics change. No deployment infrastructure is added: two ordinary deploys, each through the standard review gate.
+
+**Release 1 — capability (no data-semantics change):**
+- Migration: `muscle_groups.kind` (`text not null default 'muscle'`, ck in `('muscle','rollup')`). No data motion in SQL.
+- Vocabulary: domain constant → 17 leaves + `back` rollup (`kind`, display names incl. "Lower Back (Erectors)", positions, `ROLLUP_MEMBERS = { back: ['lats', 'upper_back'] }`); `seedMuscleGroups` upsert syncs `kind`; `muscle_groups` becomes 18 rows.
+- Read compatibility: library, editor and API render every slug; a legacy direct `back` row is shown in the editor with an explicit "Unclassified — reclassify?" affordance (the user picks a leaf, or leaves it).
+- Validation (service level, integration-tested): create rejects rollup slugs; update accepts a rollup slug only as carry-through of a row that already exists on that exercise. **From this release on, the app cannot write a new direct `back` row** — the precondition that makes Release 2's seed window safe.
+- Catalog **unchanged** (still targets `back`); no reconciliation step; no new entries.
+- Acceptance: deployed; on the phone a seeded row exercise still shows Back, a new pull can be created on Lats / Upper Back, and a user-created exercise holding a `back` row can be saved unchanged, edited, and reclassified.
+- Rollback (ADR-010): the pre-Release-1 build is a safe rollback target **only until the first leaf contribution is written** — it rejects `lats` / `upper_back` on write and misrenders them on read. The acceptance step above writes one, so phone acceptance closes the window; from then on roll forward by default, PITR only for catastrophe. Do not plan Release 1 as "freely reversible".
+
+**Release 2 — data (only after Release 1 is live and phone-verified):**
+- Catalog: the 14 `back`-carrying entries switch to their ADR-010 leaf so fresh and not-yet-applied entries seed correctly; `machine-hip-adduction` ("Hip Adduction Machine", `adductors` primary) added as the first honest adductor entry; the catalog contribution type is narrowed to leaf slugs; no `adductors` retrofit onto existing compounds.
+- Reconciliation step in `runSeed`, order `seedMuscleGroups → reconcileContributions → seedExerciseCatalogForAllUsers`: for every user × each of the 14 mapped slugs, derive the id with the existing `seededExerciseId(userId, slug)` and run the ADR-010 conditional update — `exercise_id = <id> AND user_id = <user> AND is_seeded = true AND muscle_group_id = 'back' AND NOT EXISTS (row on the target leaf)` — setting only `muscle_group_id` (and `updated_at`). Role and weight untouched; no name matching, no pgcrypto, no ledger: idempotent by state.
+- Reporting (required): one summary line per run in deployment output — `taxonomy-v2 reconciliation: users=N mapped=M updated=U noop=K conflicts=C customDirectBack=D` — where `noop` = seeded row missing or no `back` row (already reconciled, removed, hard-deleted, never applied, or name-collided), `conflicts` = a row on the target leaf already exists (the `back` row is left in place and shows as Unclassified Back), `customDirectBack` = user-created exercises still holding a direct `back` row (informational). Each conflict prints its own line with user id, slug, exercise id and target, in GitHub Actions `::warning::` format so it surfaces as a run annotation. Conflicts never silently pass and never fail the deploy (the resulting state is honest and user-resolvable in the editor).
+- Acceptance: deployed; the production summary line is quoted verbatim in the implementation report with `conflicts=0` (or every conflict explained); on the phone seeded pulls show Lats / Upper Back, the editor offers 17 leaves, and a second deploy of the same build reports `updated=0`.
+
+**Tests:** unit — vocabulary constants (18 rows, exactly one rollup, membership, leaf set), the catalog references leaf slugs only, every ADR-010 mapping row names a catalog slug and every `back`-carrying catalog slug has a mapping row; integration (PGlite, plus a real-Postgres run per the Phase 5.5 review harness) — reconstruct a pre-v2 user (original 40 applied, then 92) with the Phase 5.5 mutation set extended by a renamed seeded row exercise, an edited `back` weight (0.75), a removed `back` contribution, a hard-deleted seeded pull, a custom exercise colliding with a seeded name, and a custom exercise holding a direct `back` row; run `runSeed` twice and assert: renamed exercise reconciled by id; 0.75 carried to the leaf; removed row still absent; hard-deleted row not resurrected; both custom exercises byte-identical; second run reports `updated=0`; counts exactly as reported; **sum preservation at the row level** — per exercise, the multiset of `(role, weight)` over `{lats, upper_back, back}` after equals the multiset over `{back}` before (which implies the weekly identity for any weight-summing aggregation, asserted again at the aggregation level by the Phase 6 fixture); validation — create with `back` → 400, update carry-through accepted, update introducing `back` on an exercise without one → 400; the defensive conflict path leaves the `back` row and reports it.
+
+**Not yet (binding):** a second rollup, `parent_id`/DAG, rollup tables, persisted aggregates, as-of contribution history, per-leaf landmarks, automatic contribution inference, anatomical sub-head groups, library muscle filters, any Phase 6 volume UI.
+
 ### Phase 6 — Volume tracking (size M)
 
-**Goal:** weekly per-muscle volume with honest labels.
+**Goal:** weekly per-muscle volume with honest labels, built once against taxonomy v2 (17 leaves + `back` rollup — ADR-010).
 
-**Builds:** tables `volume_presets`, `volume_landmarks`; RP preset seeded per `docs/input/rp-volume-landmarks.md` with heuristic labeling and the documented caveats (rear/side-delt duplication, merged back → single `back` group); `src/domain/volume` aggregation (work sets only, warmups excluded, fractional by current contribution weights, calendar-week + block-week bucketing per volume-model); volume screen — current + trailing 4 weeks per muscle vs. active preset landmarks, deload badges, landmark value editing (creates/updates the user's values in place; preset switching is post-MVP).
+**Gate:** Pre-Phase 6 Release 2 live and phone-verified.
 
-**Tests:** **hand-computed fixture** (mixed compounds, 0.5 secondaries, a deload week, a warmup to exclude); unit bucketing incl. week edges; integration — landmark edit reflects immediately, no persisted aggregates anywhere (grep-level check: no volume cache table/column exists).
+**Builds:** tables `volume_presets`, `volume_landmarks`; RP preset seeded per `docs/input/rp-volume-landmarks.md` with heuristic labeling and the documented caveats (rear/side-delt duplication; RP "Back" row attached to the `back` rollup only; no landmarks for `lats`, `upper_back`, `adductors`, `forearms`, `lower_back`); `src/domain/volume` aggregation (work sets only, warmups excluded, fractional by current contribution weights, leaf series + rollup totals + `unclassifiedBack` with per-set raw deduplication, calendar-week + block-week bucketing per volume-model §2); volume screen — current + trailing 4 weeks per group vs. active preset landmarks, the `Back = Lats + Upper Back + Unclassified Back` reconciliation line (unclassified term hidden when zero), landmark-less leaves rendered without a band or invented range, deload badges, landmark value editing (creates/updates the user's values in place; preset switching is post-MVP).
 
-**Acceptance:** mvp-scope F8, incl. the non-coercive display rules (volume-model §5).
+**Tests:** **hand-computed fixture** (mixed compounds, 0.5 secondaries, a deload week, a warmup to exclude, a legacy direct-`back` contribution on a custom exercise, and an exercise primary on both `lats` and `upper_back` to prove raw deduplication); the same fixture evaluated under the pre-v2 merged `back` must give exactly the rollup's `effective` and `raw` (sum-preservation invariant, ADR-010); unit bucketing incl. week edges; integration — landmark edit reflects immediately, no persisted aggregates anywhere (grep-level check: no volume cache table/column exists), RP seed writes no landmark row for any rollup member leaf.
 
-**Not yet:** multiple named presets, volume-trend charts (Phase 9), any auto-volume-adjustment (never — GAP-01).
+**Acceptance:** mvp-scope F8, incl. the non-coercive display rules (volume-model §5, rule 6 included).
+
+**Not yet:** multiple named presets, volume-trend charts (Phase 9), any auto-volume-adjustment (never — GAP-01), a second rollup or per-leaf landmark values (ADR-010).
 
 ### Phase 7 — Bodyweight & recovery logs (size S)
 
@@ -201,4 +230,4 @@ Builds: `GET /api/export` (full-account JSON, versioned envelope, documented sha
 
 ## 3. Phase dependency graph
 
-Strictly linear 0→8 (each phase consumes the previous phase's tables/flows), with one soft edge: Phase 6 (volume) and Phase 7 (logs) are independent of each other and may swap order if convenient. 9 and 10 require 8. No phase may start on speculation from a later phase's spec.
+Strictly linear 0→8 (each phase consumes the previous phase's tables/flows), with one soft edge: Phase 6 (volume) and Phase 7 (logs) are independent of each other and may swap order if convenient. The Pre-Phase 6 muscle-taxonomy pass sits between Phase 5 (after a successful Phase 5.5 Light closeout verification verdict) and Phase 6 and is a hard prerequisite of Phase 6 — Phase 6 builds once against the final vocabulary; Phase 7 may still precede it. 9 and 10 require 8. No phase may start on speculation from a later phase's spec.
