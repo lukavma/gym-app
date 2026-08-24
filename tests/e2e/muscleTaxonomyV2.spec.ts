@@ -12,11 +12,18 @@ import { E2E_EMAIL, login } from "./helpers";
 // length swap would still cap at the wrong number once a legacy rollup row
 // is in the mix), plus the "Unclassified Back" read/reclassify affordance.
 //
-// The third test seeds a legacy direct-`back` contribution by writing to the
-// DB directly (the app itself can never create one after Release 1 — that's
-// the point) — same direct-DB-access precedent as tests/e2e/seed.ts. That
-// call runs in the Playwright test process itself, not the browser, so
-// DATABASE_URL must be set in the shell running `pnpm test:e2e`:
+// The second and third tests each seed their own legacy direct-`back`
+// contribution by writing to the DB directly (the app itself can never
+// create one after Release 1 — that's the point) — same direct-DB-access
+// precedent as tests/e2e/seed.ts. Neither relies on a seeded catalog
+// exercise still carrying `back`: Release 2's reconciliation
+// (pre-phase-6-muscle-taxonomy-release-2-implementation.md) deliberately
+// re-points every one of the 14 mapped catalog exercises (including
+// "Barbell Row", the original fixture here) onto its leaf target the first
+// time it runs against a database, so that assumption is no longer safe to
+// build a test on. These direct-DB calls run in the Playwright test process
+// itself, not the browser, so DATABASE_URL must be set in the shell running
+// `pnpm test:e2e`:
 //
 //   $env:DATABASE_URL="postgres://gymapp:gymapp@localhost:5432/gymapp"; pnpm test:e2e
 //
@@ -96,21 +103,43 @@ test.describe("muscle taxonomy v2 Release 1 (phone-sized viewport)", () => {
     await expect(addMuscleButton).toBeHidden();
   });
 
-  test("a legacy seeded Back contribution renders as Unclassified Back and survives an unrelated save", async ({
+  test("a legacy direct Back contribution renders as Unclassified Back and survives an unrelated save", async ({
     page,
   }) => {
-    await login(page);
-    await page.goto("/exercises");
+    const db = getDb();
+    const [user] = await db.select().from(users).where(eq(users.email, E2E_EMAIL));
+    if (!user) {
+      throw new Error(`E2E user "${E2E_EMAIL}" not found — has login() run yet?`);
+    }
 
-    // "Barbell Row" (src/db/seed/exerciseCatalog.ts) has a `back` primary
-    // contribution and is one of the 14 catalog rows Release 1 leaves
-    // untouched. Not `exact: true` — the library row's accessible name is
-    // the whole link's text content, name plus muscles-worked subtitle, so
-    // only a substring match against the name works (same as
-    // exerciseDecimalInput.spec.ts's row lookups); "Barbell Row" isn't a
-    // substring of any other catalog exercise's name.
-    await page.getByRole("link", { name: "Barbell Row" }).click();
-    await page.waitForURL(/\/exercises\/[^/]+$/);
+    // Explicit fixture, owned by this test — not a seeded catalog exercise.
+    // Release 2's reconciliation deliberately re-points every catalog
+    // exercise's `back` row (including the "Barbell Row" this test used to
+    // rely on) onto its leaf target the first time it runs against a
+    // database, so a real catalog exercise can no longer be assumed to
+    // still carry `back` here. Bypasses createExercise's Zod gate on
+    // purpose — this is what a pre-Release-1 direct `back` contribution
+    // looks like; the app itself can never write one after Release 1.
+    const exerciseId = newId();
+    const name = `E2E Legacy Back Unrelated Save ${Date.now()}`;
+    await db.insert(exercises).values({
+      id: exerciseId,
+      userId: user.id,
+      name,
+      equipment: "cable",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+    });
+    await db.insert(exerciseMuscleContributions).values({
+      exerciseId,
+      muscleGroupId: "back",
+      role: "primary",
+      weight: 1,
+    });
+
+    await login(page);
+    await page.goto(`/exercises/${exerciseId}`);
 
     const unclassifiedNote = page.getByText(
       "Unclassified Back — pick Lats or Upper Back, or leave as-is.",
@@ -120,13 +149,20 @@ test.describe("muscle taxonomy v2 Release 1 (phone-sized viewport)", () => {
     await page.getByRole("button", { name: "Save changes" }).click();
     await page.waitForURL(/\/exercises$/);
 
-    const row = page.getByRole("link", { name: "Barbell Row" });
+    // Not `exact: true` — same reason as the reclassify test below; `name`
+    // (timestamped) is unambiguous as a substring.
+    const row = page.getByRole("link", { name });
     await expect(row).toContainText("Unclassified Back");
     expect(await row.innerText()).not.toContain("undefined");
 
     await row.click();
     await page.waitForURL(/\/exercises\/[^/]+$/);
     await expect(unclassifiedNote).toBeVisible();
+
+    // Clean up so reruns don't accumulate exercises.
+    page.once("dialog", (d) => void d.accept());
+    await page.getByRole("button", { name: "Delete" }).click();
+    await page.waitForURL(/\/exercises$/);
   });
 
   test("a legacy direct Back contribution excludes Back from a freshly added row, and can be explicitly reclassified", async ({
@@ -178,8 +214,8 @@ test.describe("muscle taxonomy v2 Release 1 (phone-sized viewport)", () => {
     await page.getByRole("button", { name: "Save changes" }).click();
     await page.waitForURL(/\/exercises$/);
 
-    // Not `exact: true` — same reason as the Barbell Row lookup above; `name`
-    // (timestamped) is still unambiguous as a substring.
+    // Not `exact: true` — same reason as the row lookup in the test above;
+    // `name` (timestamped) is unambiguous as a substring.
     const row = page.getByRole("link", { name });
     await expect(row).toContainText("Lats");
     await expect(row).not.toContainText("Unclassified");

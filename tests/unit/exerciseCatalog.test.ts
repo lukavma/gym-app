@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { EXERCISE_CATALOG } from "@/db/seed";
+import { EXERCISE_CATALOG, RECONCILED_BACK_SLUGS } from "@/db/seed";
 import { EQUIPMENT_TYPES, LATERALITY_TYPES, MECHANICS_TYPES } from "@/domain/exercises/schema";
-import { MUSCLE_GROUP_SLUGS } from "@/domain/exercises/muscleGroups";
+import { LEAF_MUSCLE_GROUP_SLUGS, MUSCLE_GROUP_SLUGS } from "@/domain/exercises/muscleGroups";
 
 // Structural validation of the seed data itself (not the seeding mechanism,
 // covered separately by tests/integration/seed.integration.test.ts). A
@@ -63,4 +63,84 @@ describe("EXERCISE_CATALOG structure", () => {
       expect(entry?.laterality).toBe("unilateral");
     },
   );
+
+  // ADR-010 Release 2 — the catalog remap. Structural checks only; the
+  // reconciliation mechanism itself is covered by
+  // tests/integration/reconcileContributions.integration.test.ts.
+  describe("muscle taxonomy v2 Release 2 remap", () => {
+    it("uses only leaf muscle-group slugs — no direct back contribution anywhere", () => {
+      for (const item of EXERCISE_CATALOG) {
+        for (const contribution of item.contributions) {
+          expect(contribution.muscleGroupId).not.toBe("back");
+          expect(LEAF_MUSCLE_GROUP_SLUGS).toContain(contribution.muscleGroupId);
+        }
+      }
+    });
+
+    it("has exactly 14 mapped slugs, and every one exists in the catalog targeting exactly its ADR-010 leaf", () => {
+      const mappedEntries = Object.entries(RECONCILED_BACK_SLUGS);
+      expect(mappedEntries).toHaveLength(14);
+
+      for (const [slug, target] of mappedEntries) {
+        const item = EXERCISE_CATALOG.find((entry) => entry.slug === slug);
+        expect(item, `catalog is missing mapped slug "${slug}"`).toBeTruthy();
+        const contribution = item?.contributions.find((c) => c.muscleGroupId === target);
+        expect(
+          contribution,
+          `"${slug}" does not carry a "${target}" contribution after the Release 2 remap`,
+        ).toBeTruthy();
+      }
+    });
+
+    it("preserves role exactly as ADR-010's mapping table specifies (12 primary, 2 secondary)", () => {
+      const primarySlugs = [
+        "cable-lat-pulldown",
+        "bodyweight-pull-up",
+        "bodyweight-chin-up",
+        "machine-assisted-pull-up",
+        "cable-straight-arm-pulldown",
+        "barbell-row",
+        "dumbbell-row",
+        "cable-seated-row",
+        "machine-seated-row",
+        "barbell-pendlay-row",
+        "machine-t-bar-row",
+        "bodyweight-inverted-row",
+      ];
+      const secondarySlugs = ["barbell-deadlift", "other-trap-bar-deadlift"];
+      expect(primarySlugs).toHaveLength(12);
+      expect(secondarySlugs).toHaveLength(2);
+      expect(new Set([...primarySlugs, ...secondarySlugs])).toEqual(
+        new Set(Object.keys(RECONCILED_BACK_SLUGS)),
+      );
+
+      for (const slug of primarySlugs) {
+        const target = RECONCILED_BACK_SLUGS[slug];
+        const item = EXERCISE_CATALOG.find((entry) => entry.slug === slug);
+        const contribution = item?.contributions.find((c) => c.muscleGroupId === target);
+        expect(contribution?.role).toBe("primary");
+      }
+      for (const slug of secondarySlugs) {
+        const target = RECONCILED_BACK_SLUGS[slug];
+        const item = EXERCISE_CATALOG.find((entry) => entry.slug === slug);
+        const contribution = item?.contributions.find((c) => c.muscleGroupId === target);
+        expect(contribution?.role).toBe("secondary");
+      }
+    });
+
+    it("adds machine-hip-adduction with adductors primary, and no other entry uses adductors", () => {
+      const entry = EXERCISE_CATALOG.find((item) => item.slug === "machine-hip-adduction");
+      expect(entry?.name).toBe("Hip Adduction Machine");
+      expect(entry?.contributions).toEqual([{ muscleGroupId: "adductors", role: "primary" }]);
+
+      const adductorSlugs = EXERCISE_CATALOG.filter((item) =>
+        item.contributions.some((c) => c.muscleGroupId === "adductors"),
+      ).map((item) => item.slug);
+      expect(adductorSlugs).toEqual(["machine-hip-adduction"]);
+    });
+
+    it("is exactly 93 entries — the 92-entry Release 1 catalog plus machine-hip-adduction", () => {
+      expect(EXERCISE_CATALOG).toHaveLength(93);
+    });
+  });
 });

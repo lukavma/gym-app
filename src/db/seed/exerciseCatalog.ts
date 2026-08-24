@@ -1,8 +1,12 @@
 import type { Equipment, Laterality, Mechanics } from "@/domain/exercises/schema";
-import type { MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
+import type { LeafMuscleGroupSlug } from "@/domain/exercises/muscleGroups";
 
+// Release 2 (ADR-010): the catalog targets leaves only — a rollup slug
+// (`back`) can never be a *seeded* contribution. Legacy direct `back` rows
+// only ever exist as pre-v2 data, reconciled by
+// `src/db/seed/reconcileContributions.ts`, never authored here.
 export interface SeedContribution {
-  muscleGroupId: MuscleGroupSlug;
+  muscleGroupId: LeafMuscleGroupSlug;
   role: "primary" | "secondary";
 }
 
@@ -58,7 +62,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
       { muscleGroupId: "hamstrings", role: "primary" },
       { muscleGroupId: "glutes", role: "primary" },
       { muscleGroupId: "lower_back", role: "primary" },
-      { muscleGroupId: "back", role: "secondary" },
+      { muscleGroupId: "upper_back", role: "secondary" },
       { muscleGroupId: "traps", role: "secondary" },
       { muscleGroupId: "forearms", role: "secondary" },
     ],
@@ -114,7 +118,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "barbell",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
       { muscleGroupId: "forearms", role: "secondary" },
@@ -199,7 +203,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     mechanics: "compound",
     laterality: "unilateral",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -269,7 +273,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "cable",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -280,7 +284,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "cable",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -381,7 +385,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "machine",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -405,7 +409,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "bodyweight",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
       { muscleGroupId: "forearms", role: "secondary" },
@@ -543,7 +547,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "barbell",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -647,7 +651,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "cable",
     mechanics: "isolation",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "triceps", role: "secondary" },
     ],
   },
@@ -818,6 +822,15 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     contributions: [{ muscleGroupId: "hamstrings", role: "primary" }],
   },
   {
+    // ADR-010 Release 2 — first honest adductor entry; deliberately not
+    // retrofitted onto any existing compound (see the module comment above).
+    slug: "machine-hip-adduction",
+    name: "Hip Adduction Machine",
+    equipment: "machine",
+    mechanics: "isolation",
+    contributions: [{ muscleGroupId: "adductors", role: "primary" }],
+  },
+  {
     slug: "machine-seated-calf-raise",
     name: "Seated Calf Raise",
     equipment: "machine",
@@ -855,7 +868,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "machine",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -866,7 +879,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "machine",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -879,7 +892,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "bodyweight",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "biceps", role: "primary" },
       { muscleGroupId: "forearms", role: "secondary" },
     ],
@@ -933,7 +946,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     equipment: "bodyweight",
     mechanics: "compound",
     contributions: [
-      { muscleGroupId: "back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },
       { muscleGroupId: "rear_delts", role: "secondary" },
     ],
@@ -949,7 +962,7 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
       { muscleGroupId: "glutes", role: "primary" },
       { muscleGroupId: "quads", role: "primary" },
       { muscleGroupId: "hamstrings", role: "secondary" },
-      { muscleGroupId: "back", role: "secondary" },
+      { muscleGroupId: "upper_back", role: "secondary" },
       { muscleGroupId: "forearms", role: "secondary" },
     ],
   },
