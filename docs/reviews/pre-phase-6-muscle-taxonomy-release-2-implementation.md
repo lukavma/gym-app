@@ -218,3 +218,105 @@ No production code was changed in response to this flag — per instruction, onl
 ## Verdict
 
 **READY FOR INDEPENDENT REVIEW**, with the `reconcileContributions` concurrency behavior above flagged as requiring the reviewer's explicit assessment before Release 2 is considered clear for a production deploy.
+
+---
+
+## Production deployment closeout (2026-08-24)
+
+Appended after deployment. Documentation only — no code, test, or ADR change accompanies this section.
+
+### Commits
+
+| SHA | Subject | Contents |
+|---|---|---|
+| `7291e16bd0da6f98e2bf5bba9a8ada633abcc7fc` | `feat: reconcile muscle taxonomy v2 data` | The Release 2 implementation, ADR-010 M-1/M-2/M-4 corrections, unit/integration/e2e tests, and the four review reports (12 files). |
+| `a8b2b35c9226f55683cd6343ab41df090b098226` | `fix: gate taxonomy v2 concurrency test on its own database URL` | One file. See "The blocked first deploy" below. |
+
+Both pushed to `main` as ordinary fast-forwards. No amend, rebase, squash, or force-push at any point.
+
+### The blocked first deploy
+
+`7291e16`'s deploy ([run 32677789230](https://github.com/lukavma/gym-app/actions/runs/32677789230)) **failed at the quality gate**, and `Build, migrate, deploy` was **skipped** — no checkout, no `db:migrate`, no `db:seed`, no Azure deploy. Production was never touched by that run.
+
+Cause: `tests/integration/reconcileContributionsConcurrency.integration.test.ts` guarded itself with `describe.skipIf(!process.env.DATABASE_URL)`. That tests whether the variable is *set*, not whether a database is *reachable*, and `.github/workflows/ci.yml` sets `DATABASE_URL` to the placeholder `postgresql://ci:ci@localhost:5432/ci` with no Postgres service behind it. The suite therefore did not skip in CI; `beforeAll` ran and failed:
+
+```
+Error: connect ECONNREFUSED ::1:5432
+Error: connect ECONNREFUSED 127.0.0.1:5432
+FAIL tests/integration/reconcileContributionsConcurrency.integration.test.ts > reconcileContributions concurrency (real PostgreSQL)
+Failed Suites 1
+```
+
+Neither the remediation session nor the independent verification caught this: both exercised only `DATABASE_URL` pointing at a real disposable database (4/4 passed) and `DATABASE_URL` unset (4 skipped) — never "set but unreachable", which is exactly CI's configuration.
+
+`a8b2b35` keys the file off its own opt-in `RECONCILE_CONCURRENCY_DATABASE_URL`, which also matches what the file already required but could not express: its `beforeAll` refuses any database holding more than its own user, so the shared `DATABASE_URL` was never a valid target. Verified locally under the exact CI environment before pushing — full integration suite **182 passed | 4 skipped** (13 files passed, 1 skipped); with the opt-in variable set, **4/4 passed**; lint, `format:check` and `typecheck` clean.
+
+No production code changed. `reconcileContributions.ts` is byte-identical to the version covered by `pre-phase-6-muscle-taxonomy-release-2-remediation-verification.md`.
+
+### Deployment runs
+
+Both production deployments are the **same workflow run at the same commit SHA** (`a8b2b35`), re-run via GitHub's "Re-run all jobs" — attempt 2, not a new commit and not an empty commit:
+
+| | Attempt 1 | Attempt 2 |
+|---|---|---|
+| Run | [32702725604](https://github.com/lukavma/gym-app/actions/runs/32702725604) attempt 1 | [32702725604](https://github.com/lukavma/gym-app/actions/runs/32702725604) attempt 2 |
+| Started / finished (UTC) | 07:42:30 → 07:51:32 | 07:52:37 → 08:01:43 |
+| Conclusion | **success** | **success** |
+| `quality` job | success | success |
+| `Build, migrate, deploy` | success — every step, including `Run database migrations`, `Run database seed`, `Deploy to Azure App Service` | success — same |
+
+Standalone CI for `a8b2b35`: [32702725400](https://github.com/lukavma/gym-app/actions/runs/32702725400) — **success**.
+
+### Migration status (both runs)
+
+```
+$ drizzle-kit migrate
+[✓] migrations applied successfully!
+```
+
+No new migration was generated or applied — production was already at `0007` from Release 1, as expected for a data-only release.
+
+### Production reconciliation output — run 1 (verbatim)
+
+Seed step, 2026-08-24T07:49:19Z:
+
+```
+taxonomy-v2 reconciliation: users=1 mapped=14 updated=14 noop=0 conflicts=0 customDirectBack=1
+taxonomy-v2 reconciliation: seededDirectBackUnmapped=0
+taxonomy-v2 reconciliation: customDirectBack exercise user=0abca718-cbd3-4c91-bb01-10b09b3ca7f4 exercise=01a0259f-1339-70c6-9002-0444cb68bf01
+Seed complete.
+```
+
+### Production reconciliation output — run 2 (verbatim)
+
+Seed step, 2026-08-24T07:59:32Z:
+
+```
+taxonomy-v2 reconciliation: users=1 mapped=14 updated=0 noop=14 conflicts=0 customDirectBack=1
+taxonomy-v2 reconciliation: seededDirectBackUnmapped=0
+taxonomy-v2 reconciliation: customDirectBack exercise user=0abca718-cbd3-4c91-bb01-10b09b3ca7f4 exercise=01a0259f-1339-70c6-9002-0444cb68bf01
+Seed complete.
+```
+
+### What the two runs prove
+
+- **All 14 mapped rows moved on the first run** (`updated=14 noop=0`) — production held the full 92-slug pre-Release-2 catalog with every mapped `back` row intact.
+- **The second run reports `updated=0 noop=14`** — the acceptance criterion for state-predicated idempotency. The predicate was consumed by the first run's update; nothing was re-applied, re-inserted, or duplicated.
+- **`conflicts=0` on both runs**, and **zero `::warning::` lines anywhere in either run's log** — no conflict was detected, so neither the sticky-conflict nor the conservative-over-report case applies here. There is nothing to classify or reconcile by hand from the mapped set.
+- **`seededDirectBackUnmapped=0` on both runs** — no seeded exercise outside the mapped 14 holds a direct `back` row, so the ADR-010 end-state predicate ("no `back` row on a seeded exercise") is satisfied in production, not merely reported clean (architecture-review M-2's gap is closed and empty).
+
+### Remaining backlog
+
+**`customDirectBack=1`, unchanged across both runs.**
+
+```
+taxonomy-v2 reconciliation: customDirectBack exercise user=0abca718-cbd3-4c91-bb01-10b09b3ca7f4 exercise=01a0259f-1339-70c6-9002-0444cb68bf01
+```
+
+One **user-created** exercise (`is_seeded = false`) still carries a direct `back` contribution. This is working as designed, not a defect: ADR-010 explicitly refuses to infer a leaf on the user's behalf for custom exercises ("Automatic remap of user-created `back` rows by name or pattern — fabrication; replaced by visible Unclassified Back plus manual reclassification"). The row renders as **Unclassified Back** in the library and editor, is counted into `unclassifiedBack` by the Phase 6 aggregation, and preserves `effective(back)` and `raw(back)` exactly either way. It will keep being reported on every deploy until the owner reclassifies it by hand in the editor — that recurrence is expected, not an anomaly.
+
+No conflicts, and no unmapped seeded `back` rows, remain.
+
+### Not claimed here
+
+Manual iPhone acceptance of Release 2 — seeded pulls showing Lats / Upper Back and the editor offering 17 leaves — remains outstanding and is the product owner's step.
