@@ -20,6 +20,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/programs" className="hover:text-slate-200">
           Programs
         </Link>
+        <Link href="/volume" className="hover:text-slate-200">
+          Volume
+        </Link>
       </nav>
       {children}
     </main>

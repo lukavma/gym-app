@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { eq, sql } from "drizzle-orm";
-import { users } from "@/db/schema";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { users, volumePresets } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import { hashPassword, verifyPassword, verifyDummyPassword } from "./argon2";
 import { checkThrottle, recordFailure, resetThrottle } from "./throttle";
@@ -53,9 +53,28 @@ export async function setupAccount(db: AppDb, input: Credentials): Promise<{ id:
     }
 
     const passwordHash = await hashPassword(input.password);
+    // Deploy-time seeding happens before first-run setup on a fresh install.
+    // If RP General is already present, attach it during account creation so
+    // the new account has reference bands immediately. If setup runs before
+    // seeding (for example in a test bootstrap), the seed's null-only update
+    // remains the fallback.
+    const [defaultVolumePreset] = await tx
+      .select({ id: volumePresets.id })
+      .from(volumePresets)
+      .where(
+        and(
+          eq(volumePresets.name, "RP General"),
+          eq(volumePresets.isBuiltin, true),
+          isNull(volumePresets.userId),
+        ),
+      );
     const [row] = await tx
       .insert(users)
-      .values({ email: input.email, passwordHash })
+      .values({
+        email: input.email,
+        passwordHash,
+        defaultVolumePresetId: defaultVolumePreset?.id,
+      })
       .returning({ id: users.id });
     if (!row) {
       throw new Error("Failed to create account");

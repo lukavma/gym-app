@@ -8,8 +8,12 @@ import {
   ThrottledError,
 } from "@/server/auth/service";
 import type { AppDb } from "@/db/client";
+import { users } from "@/db/schema";
+import { seedMuscleGroups } from "@/db/seed";
+import { RP_GENERAL_PRESET_ID, seedVolumePresets } from "@/db/seed/volumePresets";
 import { createTestDb } from "./testDb";
 import { fakeCookieMap } from "./fakeCookieStore";
+import { eq } from "drizzle-orm";
 
 const CREDENTIALS = { email: "athlete@example.com", password: "correct-horse-battery" };
 
@@ -29,6 +33,19 @@ describe("auth service (PGlite integration)", () => {
     const { id } = await setupAccount(db, CREDENTIALS);
     expect(id).toBeTruthy();
     expect(fakeCookieMap.has("gym_app_session")).toBe(true);
+  });
+
+  it("assigns RP General when setup runs after the deploy-time seed", async () => {
+    await seedMuscleGroups(db);
+    await seedVolumePresets(db);
+
+    const { id } = await setupAccount(db, CREDENTIALS);
+    const [user] = await db
+      .select({ defaultVolumePresetId: users.defaultVolumePresetId })
+      .from(users)
+      .where(eq(users.id, id));
+
+    expect(user?.defaultVolumePresetId).toBe(RP_GENERAL_PRESET_ID);
   });
 
   it("reports setup as unavailable once an account exists", async () => {

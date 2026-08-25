@@ -18,7 +18,7 @@ Records genuine contradictions between binding spec documents (not ordinary scop
 
 ## D-02: `blocks.volume_preset_id` FK target (`volume_presets`) doesn't exist yet in Phase 2
 
-**Status:** Resolved — column added without an enforced FK constraint; FK to be added in Phase 6.
+**Status:** Fully closed — Phase 6 (docs/reviews/phase-6-implementation.md) added `volume_presets`, then generated `blocks_volume_preset_id_volume_presets_id_fk FOREIGN KEY (volume_preset_id) REFERENCES volume_presets(id) ON DELETE SET NULL` via ordinary `drizzle-kit generate` (migration `0008`) — no manual constraint patch was needed, since the two tables land in the same generated migration file in dependency order. Verified live against local PostgreSQL 16.
 
 **Conflict:** `data-model.md` §2.9 specifies `blocks.volume_preset_id uuid FK → volume_presets ON DELETE SET NULL, null` as part of the `blocks` table, which `implementation-plan.md`'s Phase 2 section builds. But `volume_presets` (data-model.md §2.16) is not created until Phase 6 (`implementation-plan.md` §Phase 6). A real `REFERENCES volume_presets(id)` constraint in Phase 2's migration is impossible — the target table doesn't exist yet, so the migration would fail outright.
 

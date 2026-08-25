@@ -4,6 +4,8 @@ export * from "./muscleGroups";
 export * from "./exercises";
 export * from "./exerciseMuscleContributions";
 export * from "./exerciseCatalogSeedLog";
+export * from "./volumePresets";
+export * from "./volumeLandmarks";
 export * from "./programs";
 export * from "./workoutTemplates";
 export * from "./exercisePrescriptions";

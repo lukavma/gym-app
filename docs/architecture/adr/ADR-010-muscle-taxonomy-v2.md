@@ -37,7 +37,7 @@ Constraints that shaped the answer:
 
 - `effective(back) = effective(lats) + effective(upper_back) + unclassifiedBack`, where `unclassifiedBack` is the weight contributed by legacy direct `back` rows.
 - `raw(back)` counts a set at most once if it has a primary contribution on any member leaf or directly on the rollup.
-- The UI renders `Back = Lats + Upper Back + Unclassified Back`, hiding the last term when zero. Nothing is persisted; no grand total exists, so no set is counted twice anywhere.
+- The UI renders `Back = Lats + Upper Back + Unclassified Back` for the *effective* series only (architecture-review M-3), hiding the last term when zero. Raw Back is a separately deduplicated per-set count per the rule above and is not additive over raw Lats + raw Upper Back — it may be lower, e.g. when a set is primary on both member leaves. Nothing is persisted; no grand total exists, so no set is counted twice anywhere.
 - RP "Back" landmarks attach to the `back` rollup only. `lats`, `upper_back`, `adductors`, `forearms`, `lower_back` receive no RP landmarks and display without a band or invented range.
 
 ### Sum-preservation invariant

@@ -57,6 +57,13 @@
       "when": 1787510424282,
       "tag": "0007_safe_triathlon",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787573042639,
+      "tag": "0008_great_metal_master",
+      "breakpoints": true
     }
   ]
 }
