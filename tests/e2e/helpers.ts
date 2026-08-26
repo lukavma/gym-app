@@ -169,3 +169,20 @@ export async function waitForServiceWorkerControl(page: Page, timeoutMs = 20_000
 // while `/api/history`, `/api/active-session`, `/api/today-bundle` and a
 // `POST /api/sync` all reject.
 export const OFFLINE_RESOLVER_ARG = "--host-resolver-rules=MAP localhost ~NOTFOUND";
+
+// phase-7-review.md remediation — Phase 7's recovery specs (bodyweightRecovery.spec.ts,
+// phase7Remediation.spec.ts) all share the one persistent e2e account (ADR-004:
+// single-account), running sequentially against the same disposable/dev
+// database. A test that asserts on "today has no recovery entry yet" (the
+// fresh-check-in path) would otherwise be at the mercy of whatever an earlier
+// spec's own cleanup step did or didn't get to run — the same class of
+// cross-test state leak `ensureNoActiveSession` exists to neutralize for
+// workout sessions. Call this at the start of any such test to guarantee a
+// clean slate regardless of run order or a prior test's mid-assertion failure.
+export async function deleteAllRecoveryEntries(page: Page): Promise<void> {
+  const res = await page.request.get("/api/recovery");
+  const { entries } = (await res.json()) as { entries: { id: string }[] };
+  for (const entry of entries) {
+    await page.request.delete(`/api/recovery/${entry.id}`);
+  }
+}

@@ -16,3 +16,5 @@ export * from "./workoutSessions";
 export * from "./sessionExercises";
 export * from "./setLogs";
 export * from "./recommendations";
+export * from "./bodyweightEntries";
+export * from "./recoveryEntries";

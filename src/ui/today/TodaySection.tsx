@@ -9,6 +9,9 @@ import { fetchRemoteActiveSession } from "@/sync/remoteActiveSession";
 import { formatScheme } from "@/domain/schemes/setScheme";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { ACTION_COPY, formatTarget, reasonCopy } from "@/ui/recommendations/copy";
+import { BodyweightQuickLog } from "@/ui/bodyweight/BodyweightQuickLog";
+import { RecoveryCheckIn } from "@/ui/recovery/RecoveryCheckIn";
+import { isRecoveryCheckInDismissed } from "@/ui/recovery/dismissedPreference";
 import type { ActiveSessionDto, TodayBundleDto } from "@/sync/types";
 
 type Status = "loading" | "ready" | "offline" | "error";
@@ -75,10 +78,19 @@ export function TodaySection({ navigate }: TodaySectionProps) {
   // both validate); a scheme that still fails that validation throws instead
   // of leaving "Start workout" to silently re-enable with no feedback.
   const [startError, setStartError] = useState<string | null>(null);
+  // implementation-plan.md Phase 7 — "recovery ... can be dismissed
+  // permanently." Starts hidden and only reveals after the client-only
+  // localStorage check resolves, so a dismissed user's first paint never
+  // flashes the card (and server-rendered/hydrated markup always agrees).
+  const [showRecoveryCheckIn, setShowRecoveryCheckIn] = useState(false);
 
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    setShowRecoveryCheckIn(!isRecoveryCheckInDismissed());
+  }, []);
 
   // Deliberately a second request, not a field of the bundle above: the
   // bundle is cacheable (SW + IndexedDB) and this must never be.
@@ -299,6 +311,18 @@ export function TodaySection({ navigate }: TodaySectionProps) {
       {!hasForeignActive && !inProgress && bundle && (
         <TodayResolutionView bundle={bundle} busy={busy} onStart={handleStart} />
       )}
+
+      {/* phase-7-review.md HIGH-2 — these render *after* the CTA blocks
+          above (foreign-active banner / continue-workout / start-workout),
+          not before, so an optional observational widget never pushes the
+          app's single most important control below the fold. mvp-scope.md
+          F10 — bodyweight logging is still reachable from Today in ≤2
+          interactions (fill the field, tap Save — no navigation); recovery
+          is optional, never blocks the workout flow above, and can be
+          dismissed permanently. Neither reads from nor writes to the
+          workout bundle/session state above them. */}
+      <BodyweightQuickLog />
+      {showRecoveryCheckIn && <RecoveryCheckIn onDismiss={() => setShowRecoveryCheckIn(false)} />}
     </div>
   );
 }
