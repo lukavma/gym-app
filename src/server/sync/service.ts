@@ -2,8 +2,10 @@ import { and, eq } from "drizzle-orm";
 import { recommendations, sessionExercises, setLogs, workoutSessions } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import {
+  bodyweightEntryUpsertPayloadSchema,
   recommendationDecisionUpsertPayloadSchema,
   recommendationUpsertPayloadSchema,
+  recoveryEntryUpsertPayloadSchema,
   sessionExerciseUpsertPayloadSchema,
   setLogDeletePayloadSchema,
   setLogUpsertPayloadSchema,
@@ -20,6 +22,8 @@ import {
   supersedePending,
 } from "@/server/progression/service";
 import type { RecommendationTarget } from "@/domain/progression/engine";
+import { logBodyweight } from "@/server/bodyweight/service";
+import { logRecovery, RecoveryEntryHasNoMetricError } from "@/server/recovery/service";
 
 // pwa-offline-strategy.md §5/§6 — the server side of the single execution-
 // fact write path. Every op is a full-row upsert/delete keyed by its own
@@ -48,7 +52,8 @@ export type SyncRejectReason =
   | "invalid_lifecycle_transition"
   | "unsupported_operation"
   | "recommendation_conflict"
-  | "decision_conflict";
+  | "decision_conflict"
+  | "no_metric";
 
 interface SyncOpResult {
   opId: string;
@@ -133,6 +138,18 @@ function applyOne(db: AppDb, userId: string, op: SyncOpEnvelope): Promise<SyncOp
     }
     return applyRecommendationDecisionUpsert(db, userId, op.opId, op.payload);
   }
+  if (op.entity === "bodyweightEntry") {
+    if (op.operation !== "upsert") {
+      return Promise.resolve(rejected(op.opId, op.entity, "unsupported_operation"));
+    }
+    return applyBodyweightEntryUpsert(db, userId, op.opId, op.payload);
+  }
+  if (op.entity === "recoveryEntry") {
+    if (op.operation !== "upsert") {
+      return Promise.resolve(rejected(op.opId, op.entity, "unsupported_operation"));
+    }
+    return applyRecoveryEntryUpsert(db, userId, op.opId, op.payload);
+  }
   if (op.operation === "upsert") {
     return applySetLogUpsert(db, userId, op.opId, op.payload);
   }
@@ -184,7 +201,7 @@ async function applyWorkoutSessionUpsert(
 
   try {
     return await db.transaction(async (tx) => {
-      const [existing] = await tx
+      let [existing] = await tx
         .select()
         .from(workoutSessions)
         .where(eq(workoutSessions.id, payload.id));
@@ -193,21 +210,50 @@ async function applyWorkoutSessionUpsert(
         if (payload.startedAt === undefined) {
           return rejected(opId, "workoutSession", "missing_required_fields");
         }
-        await tx.insert(workoutSessions).values({
-          id: payload.id,
-          userId,
-          blockId: payload.blockId ?? null,
-          templateId: payload.templateId ?? null,
-          templateName: payload.templateName ?? null,
-          weekIndex: payload.weekIndex ?? null,
-          isDeload: payload.isDeload ?? false,
-          status: payload.status ?? "in_progress",
-          startedAt: new Date(payload.startedAt),
-          completedAt: payload.completedAt ? new Date(payload.completedAt) : null,
-          clientId: payload.clientId ?? null,
-          notes: payload.notes ?? null,
-        });
-        return applied(opId, "workoutSession");
+        // phase-8-review.md B-2 — a lost response (the server actually
+        // applied this exact create, but the client's fetch never saw the
+        // reply — a real reconnect race, not a hypothetical: the app's own
+        // reconnect flow does a full page navigation that can tear down an
+        // in-flight POST client-side while the server keeps processing it)
+        // makes the client resend the identical op. A plain INSERT would
+        // hit this row's own primary key and — before this fix — get
+        // mapped to `session_conflict` exactly like a genuine different-id
+        // conflict, permanently dead-lettering an op that already
+        // succeeded. `onConflictDoNothing` targets the id specifically: a
+        // collision on THIS row's own id quietly no-ops here and falls
+        // through to the ordinary update-or-noop path below (which
+        // converges harmlessly, since it's the same payload); a genuinely
+        // different id claiming the one-in-progress slot still raises the
+        // *other* unique index's violation, uncaught by this narrow
+        // target, and is still mapped to session_conflict by the catch
+        // block below.
+        const inserted = await tx
+          .insert(workoutSessions)
+          .values({
+            id: payload.id,
+            userId,
+            blockId: payload.blockId ?? null,
+            templateId: payload.templateId ?? null,
+            templateName: payload.templateName ?? null,
+            weekIndex: payload.weekIndex ?? null,
+            isDeload: payload.isDeload ?? false,
+            status: payload.status ?? "in_progress",
+            startedAt: new Date(payload.startedAt),
+            completedAt: payload.completedAt ? new Date(payload.completedAt) : null,
+            clientId: payload.clientId ?? null,
+            notes: payload.notes ?? null,
+          })
+          .onConflictDoNothing({ target: workoutSessions.id })
+          .returning();
+        if (inserted.length > 0) return applied(opId, "workoutSession");
+
+        [existing] = await tx
+          .select()
+          .from(workoutSessions)
+          .where(eq(workoutSessions.id, payload.id));
+        if (!existing) {
+          throw new Error("workoutSession insert conflicted but the row was not found");
+        }
       }
 
       // A row with this id exists but isn't this user's — treat identically
@@ -307,15 +353,18 @@ async function applySessionExerciseUpsert(
 
   try {
     return await db.transaction(async (tx) => {
-      const [existingRow] = await tx
-        .select({
-          exercise: sessionExercises,
-          sessionStatus: workoutSessions.status,
-          sessionUserId: workoutSessions.userId,
-        })
-        .from(sessionExercises)
-        .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
-        .where(eq(sessionExercises.id, payload.id));
+      const selectExisting = () =>
+        tx
+          .select({
+            exercise: sessionExercises,
+            sessionStatus: workoutSessions.status,
+            sessionUserId: workoutSessions.userId,
+          })
+          .from(sessionExercises)
+          .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+          .where(eq(sessionExercises.id, payload.id));
+
+      let [existingRow] = await selectExisting();
 
       if (!existingRow) {
         if (
@@ -337,17 +386,32 @@ async function applySessionExerciseUpsert(
           return rejected(opId, "sessionExercise", "session_locked");
         }
 
-        await tx.insert(sessionExercises).values({
-          id: payload.id,
-          sessionId: payload.sessionId,
-          exerciseId: payload.exerciseId,
-          position: payload.position,
-          source: payload.source,
-          prescription: payload.prescription ?? null,
-          skipped: payload.skipped ?? false,
-          notes: payload.notes ?? null,
-        });
-        return applied(opId, "sessionExercise");
+        // phase-8-review.md B-2 — same lost-response contract as
+        // applyWorkoutSessionUpsert above: a retried delivery of THIS
+        // exact id no-ops here and falls through to the update path below;
+        // a different id claiming the same (sessionId, position) slot
+        // still raises that index's own violation, caught below as
+        // position_conflict.
+        const inserted = await tx
+          .insert(sessionExercises)
+          .values({
+            id: payload.id,
+            sessionId: payload.sessionId,
+            exerciseId: payload.exerciseId,
+            position: payload.position,
+            source: payload.source,
+            prescription: payload.prescription ?? null,
+            skipped: payload.skipped ?? false,
+            notes: payload.notes ?? null,
+          })
+          .onConflictDoNothing({ target: sessionExercises.id })
+          .returning();
+        if (inserted.length > 0) return applied(opId, "sessionExercise");
+
+        [existingRow] = await selectExisting();
+        if (!existingRow) {
+          throw new Error("sessionExercise insert conflicted but the row was not found");
+        }
       }
 
       if (existingRow.sessionUserId !== userId)
@@ -421,16 +485,19 @@ async function applySetLogUpsert(
 
   try {
     return await db.transaction(async (tx) => {
-      const [existingRow] = await tx
-        .select({
-          setLog: setLogs,
-          sessionStatus: workoutSessions.status,
-          sessionUserId: workoutSessions.userId,
-        })
-        .from(setLogs)
-        .innerJoin(sessionExercises, eq(setLogs.sessionExerciseId, sessionExercises.id))
-        .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
-        .where(eq(setLogs.id, payload.id));
+      const selectExisting = () =>
+        tx
+          .select({
+            setLog: setLogs,
+            sessionStatus: workoutSessions.status,
+            sessionUserId: workoutSessions.userId,
+          })
+          .from(setLogs)
+          .innerJoin(sessionExercises, eq(setLogs.sessionExerciseId, sessionExercises.id))
+          .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+          .where(eq(setLogs.id, payload.id));
+
+      let [existingRow] = await selectExisting();
 
       if (!existingRow) {
         if (
@@ -455,18 +522,35 @@ async function applySetLogUpsert(
         if (!parent) return rejected(opId, "setLog", "not_found");
         if (parent.status !== "in_progress") return rejected(opId, "setLog", "session_locked");
 
-        await tx.insert(setLogs).values({
-          id: payload.id,
-          sessionExerciseId: payload.sessionExerciseId,
-          setNumber: payload.setNumber,
-          isWarmup: payload.isWarmup ?? false,
-          weightKg: payload.weightKg,
-          reps: payload.reps,
-          rir: payload.rir ?? null,
-          loggedAt: new Date(payload.loggedAt),
-          notes: payload.notes ?? null,
-        });
-        return applied(opId, "setLog");
+        // phase-8-review.md B-2 — same lost-response contract as
+        // applyWorkoutSessionUpsert/applySessionExerciseUpsert above: this is
+        // the exact function the reviewer reproduced the bug against
+        // (`set_number_conflict` permanently dead-lettering an already-applied
+        // create). A retried delivery of THIS id no-ops here and falls
+        // through to the update path below; a different id claiming the same
+        // (sessionExerciseId, setNumber) slot still raises that index's own
+        // violation, caught below as set_number_conflict.
+        const inserted = await tx
+          .insert(setLogs)
+          .values({
+            id: payload.id,
+            sessionExerciseId: payload.sessionExerciseId,
+            setNumber: payload.setNumber,
+            isWarmup: payload.isWarmup ?? false,
+            weightKg: payload.weightKg,
+            reps: payload.reps,
+            rir: payload.rir ?? null,
+            loggedAt: new Date(payload.loggedAt),
+            notes: payload.notes ?? null,
+          })
+          .onConflictDoNothing({ target: setLogs.id })
+          .returning();
+        if (inserted.length > 0) return applied(opId, "setLog");
+
+        [existingRow] = await selectExisting();
+        if (!existingRow) {
+          throw new Error("setLog insert conflicted but the row was not found");
+        }
       }
 
       if (existingRow.sessionUserId !== userId) return rejected(opId, "setLog", "not_found");
@@ -702,4 +786,82 @@ async function applyRecommendationDecisionUpsert(
 
     return rejected(opId, "recommendationDecision", "decision_conflict");
   });
+}
+
+// Phase 8 — reuses logBodyweight (src/server/bodyweight/service.ts) as-is:
+// the day-grain upsert-by-(userId,date), the 20-400kg range check, and
+// ownership are all already correct there. This is a thin adapter, not a
+// parallel write path, per the task's "reuse the existing narrow outbox
+// architecture" instruction. There is no rejection path beyond
+// invalid_payload — logBodyweight has no business-rule rejection of its own
+// (unlike recovery's "at least one metric" constraint below).
+async function applyBodyweightEntryUpsert(
+  db: AppDb,
+  userId: string,
+  opId: string,
+  rawPayload: unknown,
+): Promise<SyncOpResult> {
+  const parsed = bodyweightEntryUpsertPayloadSchema.safeParse(rawPayload);
+  if (!parsed.success) return rejected(opId, "bodyweightEntry", "invalid_payload");
+  const payload = parsed.data;
+
+  await logBodyweight(
+    db,
+    userId,
+    { date: payload.date, weightKg: payload.weightKg, note: payload.note },
+    new Date(),
+    payload.id,
+  );
+  return applied(opId, "bodyweightEntry");
+}
+
+// Phase 8 — same adapter shape as bodyweight above, over logRecovery
+// (src/server/recovery/service.ts): a thin pass-through of this op's own
+// fields, no pre-read.
+//
+// phase-8-review.md HIGH-1 — this used to pre-read today's existing row and
+// backfill every metric field this op doesn't touch, to work around
+// `logRecovery`'s single-statement upsert eagerly validating
+// `ck_recovery_entries_has_metric` against the PROPOSED INSERT TUPLE rather
+// than the real post-merge row (verified against Postgres 16). That backfill
+// opened exactly the lost-update window it was trying to avoid: real-Postgres
+// concurrency testing showed 5/6 concurrent partial-update pairs on
+// DIFFERENT metrics lost one of them, because each call's stale pre-read
+// clobbered whatever the other had just committed. `logRecovery` now handles
+// the false-rejection case itself (catch-and-retry as a single atomic plain
+// UPDATE, which Postgres validates against the true row) — see its own
+// comment — so this adapter needs no read of its own and no longer risks
+// racing anything.
+async function applyRecoveryEntryUpsert(
+  db: AppDb,
+  userId: string,
+  opId: string,
+  rawPayload: unknown,
+): Promise<SyncOpResult> {
+  const parsed = recoveryEntryUpsertPayloadSchema.safeParse(rawPayload);
+  if (!parsed.success) return rejected(opId, "recoveryEntry", "invalid_payload");
+  const payload = parsed.data;
+
+  try {
+    await logRecovery(
+      db,
+      userId,
+      {
+        date: payload.date,
+        sleepHours: payload.sleepHours,
+        sleepQuality: payload.sleepQuality,
+        readiness: payload.readiness,
+        soreness: payload.soreness,
+        note: payload.note,
+      },
+      new Date(),
+      payload.id,
+    );
+    return applied(opId, "recoveryEntry");
+  } catch (err) {
+    if (err instanceof RecoveryEntryHasNoMetricError) {
+      return rejected(opId, "recoveryEntry", "no_metric");
+    }
+    throw err;
+  }
 }

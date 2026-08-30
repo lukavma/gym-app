@@ -21,6 +21,27 @@ const IDLE_RESULT: FlushResult = { attempted: 0, applied: 0, rejected: 0 };
 let flushing = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
+// phase-8-review.md B-1 — backoff is now a property of the QUEUE, not of
+// any individual op: `queueTries` counts consecutive whole-batch failures
+// (network throw, non-2xx, or the server leaving some op unclassified) and
+// `nextFlushAllowedAt` is the single deadline every trigger (interval,
+// `online`, mutation, manual) is gated on — checked once, at the very top
+// of this function, before `listPendingOps` is even called. This makes
+// "which ops are eligible" purely a function of FIFO order (oldest first,
+// no per-op filtering), so a batch either goes out complete and in order or
+// not at all; there is no way for a later op to become independently
+// eligible while an earlier one is still backing off. A success (any
+// response the server actually classified) resets the counter — the
+// exponential delay only ever grows across genuinely consecutive failures.
+let queueTries = 0;
+let nextFlushAllowedAt = 0;
+
+function backOffQueue(delayMs: number): void {
+  queueTries += 1;
+  nextFlushAllowedAt = Date.now() + delayMs;
+  scheduleRetry(delayMs);
+}
+
 interface SyncApiResponse {
   applied: string[];
   rejected: { opId: string; entity: string; reason: string }[];
@@ -33,6 +54,7 @@ interface SyncApiResponse {
 export async function flushOutbox(): Promise<FlushResult> {
   if (flushing) return IDLE_RESULT;
   if (typeof navigator !== "undefined" && navigator.onLine === false) return IDLE_RESULT;
+  if (Date.now() < nextFlushAllowedAt) return IDLE_RESULT;
 
   flushing = true;
   try {
@@ -54,8 +76,10 @@ export async function flushOutbox(): Promise<FlushResult> {
         body: JSON.stringify({ ops }),
       });
     } catch {
+      // Informational only (see markTried's own comment) — never used to
+      // decide what's sent or when; the whole BATCH backs off together.
       await Promise.all(pending.map((op) => markTried(op.opId)));
-      scheduleRetry(nextBackoffDelayMs(pending[0]!.tries + 1));
+      backOffQueue(nextBackoffDelayMs(queueTries + 1));
       return { attempted: pending.length, applied: 0, rejected: 0 };
     }
 
@@ -63,7 +87,10 @@ export async function flushOutbox(): Promise<FlushResult> {
       // Auth expired: ops stay queued exactly as-is until re-auth
       // (pwa-offline-strategy.md §7) — do not mark tried, do not dead-letter.
       // MEDIUM-7: surface this so the UI can show "sign in to sync" instead
-      // of silently retrying every 30s with no visible state.
+      // of silently retrying every 30s with no visible state. A fixed
+      // interval, not the exponential queue backoff — this isn't a failure
+      // streak, it's "come back once the user has logged in".
+      nextFlushAllowedAt = Date.now() + 30_000;
       scheduleRetry(30_000);
       useSyncStatusStore.getState().setAuthRequired(true);
       return { attempted: pending.length, applied: 0, rejected: 0 };
@@ -71,7 +98,7 @@ export async function flushOutbox(): Promise<FlushResult> {
 
     if (!response.ok) {
       await Promise.all(pending.map((op) => markTried(op.opId)));
-      scheduleRetry(nextBackoffDelayMs(1));
+      backOffQueue(nextBackoffDelayMs(queueTries + 1));
       return { attempted: pending.length, applied: 0, rejected: 0 };
     }
 
@@ -87,9 +114,18 @@ export async function flushOutbox(): Promise<FlushResult> {
 
     const handledIds = new Set([...result.applied, ...result.rejected.map((r) => r.opId)]);
     const untouched = pending.filter((op) => !handledIds.has(op.opId));
-    await Promise.all(untouched.map((op) => markTried(op.opId)));
 
-    if (pending.length === BATCH_SIZE || untouched.length > 0) scheduleRetry(0);
+    if (untouched.length > 0) {
+      // The server responded but left some op unclassified — a genuine
+      // anomaly, treated the same as any other whole-batch failure: back
+      // off together rather than let the classified ops' success mask it.
+      await Promise.all(untouched.map((op) => markTried(op.opId)));
+      backOffQueue(nextBackoffDelayMs(queueTries + 1));
+    } else {
+      queueTries = 0;
+      nextFlushAllowedAt = 0;
+      if (pending.length === BATCH_SIZE) scheduleRetry(0);
+    }
 
     return {
       attempted: pending.length,

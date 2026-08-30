@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
+import { logBodyweightToday, UnknownAccountTimezoneError } from "@/sync/dailyLogs";
 import type { BodyweightEntryDto } from "./types";
 
 interface BodyweightQuickLogProps {
@@ -9,9 +10,15 @@ interface BodyweightQuickLogProps {
 }
 
 // mvp-scope.md F10 — "Logging bodyweight is ≤2 interactions from Today."
-// This form is embedded directly on Today (TodaySection.tsx): tap the input,
-// tap Save. POST /api/bodyweight always upserts today's user-local date
-// (data-model.md §2.18 uq_bodyweight_day) — there is no date field here.
+// This form is embedded directly on Today (TodaySection.tsx) and reused on
+// /bodyweight (BodyweightScreen.tsx). Phase 8: goes through the offline
+// outbox (src/sync/dailyLogs.ts) instead of a bare fetch — the day-grain
+// upsert semantics (data-model.md §2.18 uq_bodyweight_day) are unchanged,
+// just applied by the sync-apply path once synced instead of immediately.
+// Unlike RecoveryCheckIn, there's no read-before-write ambiguity to resolve
+// here: a bodyweight log is always a single required field the user just
+// typed, so an offline "second log today" is a deliberate correction either
+// way, online or off — never a fabricated/guessed value.
 export function BodyweightQuickLog({ onLogged }: BodyweightQuickLogProps) {
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -28,21 +35,16 @@ export function BodyweightQuickLog({ onLogged }: BodyweightQuickLogProps) {
 
     setSaving(true);
     try {
-      const res = await fetch("/api/bodyweight", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ weightKg }),
-      });
-      if (!res.ok) {
-        setError("Couldn't save — try again.");
-        return;
-      }
-      const data: { entry: BodyweightEntryDto } = await res.json();
+      const { id, date } = await logBodyweightToday({ weightKg });
       setDraft("");
       setSavedAt(Date.now());
-      onLogged?.(data.entry);
-    } catch {
-      setError("Couldn't save — try again.");
+      onLogged?.({ id, date, weightKg, note: null });
+    } catch (err) {
+      setError(
+        err instanceof UnknownAccountTimezoneError
+          ? "Can't save yet — this device hasn't learned the account's timezone. Connect online once, then try again."
+          : "Couldn't save — try again.",
+      );
     } finally {
       setSaving(false);
     }

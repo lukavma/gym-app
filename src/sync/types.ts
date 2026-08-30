@@ -141,6 +141,22 @@ export interface ActiveSessionDto {
   exercises: ActiveSessionExerciseDto[];
 }
 
+// Phase 8 — mirrors src/ui/recovery/types.ts's RecoveryEntryDto by the same
+// contract-mirroring convention noted at the top of this file (`sync` can't
+// import `ui`, per eslint.config.mjs boundaries). Used only by
+// src/sync/dailyLogs.ts's dailyLogCache read/write, not by the sync
+// envelope itself (that's recoveryEntryUpsertPayloadSchema in
+// @/domain/sync/schema).
+export interface RecoveryEntrySnapshot {
+  id: string;
+  date: string;
+  sleepHours: number | null;
+  sleepQuality: number | null;
+  readiness: number | null;
+  soreness: number | null;
+  note: string | null;
+}
+
 export type TodayResolutionDto =
   | {
       kind: "scheduled";
@@ -171,4 +187,7 @@ export interface TodayBundleDto {
   // NetworkFirst/3s strategy for `/api/today-bundle` can resolve 200 from
   // its own cache without the fetch ever throwing.
   generatedAt: string;
+  // phase-8-review.md B-3 — the account's `users.timezone`, server-resolved.
+  // See src/sync/accountTimezone.ts for how quick-logs consume it.
+  timezone: string;
 }

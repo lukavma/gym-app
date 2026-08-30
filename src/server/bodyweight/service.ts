@@ -60,18 +60,27 @@ export async function listBodyweightEntries(
 // day must update the existing entry rather than create a duplicate or
 // return a conflict"). `date` defaults to today in the user's timezone when
 // the caller doesn't supply one (the quick-log path never does).
+//
+// `id` — Phase 8: the offline outbox sync-apply path
+// (src/server/sync/service.ts) passes a client-generated UUIDv7 here so a
+// brand-new row gets a stable id the client already knows. It's honored
+// only on insert: the row's real identity is (userId, date), never `id`, so
+// a stale/duplicate id on a replay (or the two existing plain-REST call
+// sites, which never pass one) is harmless — the `SET` clause below never
+// touches the `id` column.
 export async function logBodyweight(
   db: AppDb,
   userId: string,
   input: LogBodyweightInput,
   now: Date = new Date(),
+  id: string = newId(),
 ): Promise<BodyweightEntryRecord> {
   const date = input.date ?? userLocalDateString(await resolveUserTimezone(db, userId), now);
   const note = input.note ?? null;
 
   const [row] = await db
     .insert(bodyweightEntries)
-    .values({ id: newId(), userId, date, weightKg: input.weightKg, note })
+    .values({ id, userId, date, weightKg: input.weightKg, note })
     .onConflictDoUpdate({
       target: [bodyweightEntries.userId, bodyweightEntries.date],
       set: { weightKg: input.weightKg, note, updatedAt: new Date() },

@@ -50,7 +50,7 @@ export function ServiceWorkerUpdater() {
   if (!waitingWorker) return null;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-4">
+    <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <button
         type="button"
         onClick={() => waitingWorker.postMessage({ type: "SKIP_WAITING" })}

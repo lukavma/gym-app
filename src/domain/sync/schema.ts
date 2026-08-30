@@ -11,6 +11,8 @@ import {
   DECISION_SOURCES,
 } from "../schemas/recommendation";
 import { strategyIdSchema } from "../progression/registry";
+import { dateOnlySchema, bodyweightWeightKgSchema } from "../bodyweight/schema";
+import { sleepHoursSchema, recoveryFiveScaleSchema } from "../recovery/schema";
 
 // pwa-offline-strategy.md — the single write path for execution facts.
 // Every session/session-exercise/set-log mutation, online or offline, goes
@@ -26,6 +28,8 @@ export const SYNC_ENTITIES = [
   "setLog",
   "recommendation",
   "recommendationDecision",
+  "bodyweightEntry",
+  "recoveryEntry",
 ] as const;
 export type SyncEntity = (typeof SYNC_ENTITIES)[number];
 
@@ -156,3 +160,44 @@ export const recommendationDecisionUpsertPayloadSchema = z
 export type RecommendationDecisionUpsertPayload = z.infer<
   typeof recommendationDecisionUpsertPayloadSchema
 >;
+
+// Phase 8 — bodyweight/recovery quick-logs join the outbox (capability
+// matrix, pwa-offline-strategy.md §2), reusing the day-grain upsert already
+// built for Phase 7 (`logBodyweight`/`logRecovery`) rather than a new write
+// path. `date` is always supplied by the client (never server-defaulted, per
+// pwa-offline-strategy.md §5's "trusts client event time" posture — there's
+// no other way to know which user-local day an offline log belongs to). `id`
+// is a client-generated UUIDv7 honored only on first insert: the row's real
+// identity is (userId, date), so a stale/duplicate id on a replay is
+// harmless — see src/server/bodyweight/service.ts and
+// src/server/recovery/service.ts.
+export const bodyweightEntryUpsertPayloadSchema = z
+  .object({
+    id: uuidv7Schema,
+    date: dateOnlySchema,
+    weightKg: bodyweightWeightKgSchema,
+    note: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type BodyweightEntryUpsertPayload = z.infer<typeof bodyweightEntryUpsertPayloadSchema>;
+
+// Every metric is optional/nullable — the client only includes a field it
+// actually touched (undefined = omit/preserve whatever the day's row already
+// holds; null = an explicit clear), mirroring logRecoveryInputSchema's
+// presence-aware contract. Unlike that online schema, there's no
+// `hasAnyMetricValue` refine here: whether an all-omitted-metrics op is
+// valid depends on whether a row for this day already has a metric, which
+// only the server (src/server/recovery/service.ts, backed by
+// ck_recovery_entries_has_metric) can know at apply time.
+export const recoveryEntryUpsertPayloadSchema = z
+  .object({
+    id: uuidv7Schema,
+    date: dateOnlySchema,
+    sleepHours: sleepHoursSchema.nullable().optional(),
+    sleepQuality: recoveryFiveScaleSchema.nullable().optional(),
+    readiness: recoveryFiveScaleSchema.nullable().optional(),
+    soreness: recoveryFiveScaleSchema.nullable().optional(),
+    note: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict();
+export type RecoveryEntryUpsertPayload = z.infer<typeof recoveryEntryUpsertPayloadSchema>;

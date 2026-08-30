@@ -8,3 +8,17 @@ html,
 body {
   height: 100%;
 }
+
+/* pwa-offline-strategy.md §8 / Phase 8 — `viewport.viewportFit: "cover"`
+   (src/app/layout.tsx) lets the page draw under the iPhone notch/home
+   indicator but does nothing on its own; without this, content sits flush
+   against those safe areas in standalone mode. Applied on `body` so every
+   route gets it by default — `fixed`-positioned elements (e.g.
+   ServiceWorkerUpdater's update toast) sit outside body's padding box and
+   add their own env(safe-area-inset-*) where needed. */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}

@@ -6,9 +6,12 @@ on:
   pull_request:
   workflow_call:
 
-# Phase 0 quality gates (implementation-plan.md). Playwright is intentionally
-# NOT run here — the e2e smoke spec is a local-only harness that needs a real
-# Postgres instance CI does not provide.
+# Phase 0 quality gates (implementation-plan.md). The broader e2e suite
+# (tests/e2e/*.spec.ts, ~50 specs) is intentionally NOT run here — most of it
+# is a local-only harness with visual/manual assumptions. Phase 8 requires
+# CI to run the narrower, deterministic offline/PWA subset specifically
+# (pwa-offline-strategy.md §12) — that's the `offline-e2e` job below, which
+# provisions its own disposable Postgres via a service container.
 jobs:
   quality:
     name: Lint, boundaries, typecheck, tests, build
@@ -50,3 +53,101 @@ jobs:
 
       - name: Production build
         run: pnpm build
+
+  offline-e2e:
+    name: Deterministic offline/PWA Playwright suite (Phase 8)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gymapp
+          POSTGRES_PASSWORD: gymapp
+          POSTGRES_DB: gymapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gymapp -d gymapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SESSION_SECRET: ci-session-secret-placeholder-not-real-32b
+      DATABASE_URL: postgresql://gymapp:gymapp@localhost:5432/gymapp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright's Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Apply migrations
+        run: pnpm db:migrate
+
+      # The deploy-time seed's exercise-catalog import
+      # (seedExerciseCatalogForAllUsers) only seeds catalogs for users that
+      # already exist, so this first pass (no account yet) only seeds
+      # muscle groups and volume presets — it runs again after the account
+      # is created below, matching the documented
+      # `db:migrate -> db:seed -> app deploy` pipeline order
+      # (implementation-plan.md §1.4).
+      - name: Deploy-time seed (muscle groups, volume presets)
+        run: pnpm db:seed
+
+      # `pnpm build && pnpm start` — playwright.config.ts's own webServer
+      # command — but started here, once, in the background: several
+      # `playwright test` invocations follow (bootstrapping the account
+      # requires a real HTTP round-trip through the running app, not a bare
+      # script — see the next step's comment), and `reuseExistingServer:
+      # true` only skips a redundant rebuild when a server it didn't start
+      # is already answering the health check.
+      - name: Production build
+        run: pnpm build
+
+      - name: Start production server (backgrounded, service-worker enabled)
+        run: |
+          pnpm start &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/api/health && exit 0
+            sleep 2
+          done
+          echo "server did not become healthy in time" >&2
+          exit 1
+
+      # `tests/e2e/seed.ts`'s own account-creation path calls
+      # `setupAccount` -> `createUserSession` -> `next/headers`'s
+      # `cookies()`, which throws outside an actual Next.js request scope
+      # (fine when Playwright drives the real /setup page through the
+      # running server, not fine invoked from a bare script). The one
+      # allowed account (ADR-004) is created for real here first.
+      - name: Bootstrap the one allowed account via the real app
+        run: pnpm exec playwright test tests/e2e/smoke.spec.ts
+
+      - name: Re-run deploy-time seed to import this account's exercise catalog
+        run: pnpm db:seed
+
+      - name: Seed the Phase 3 program/template/block fixture
+        run: pnpm tsx tests/e2e/seed.ts
+
+      # The deterministic, headless offline/PWA suite (pwa-offline-
+      # strategy.md §12 + Phase 8's takeover/dead-letter/auth-expiry/
+      # duplicate-replay/network-flap additions) — explicit file list, not
+      # the whole tests/e2e/ directory, which also holds specs kept
+      # local-only for unrelated reasons (visual/manual assumptions).
+      # Shares the definition in package.json's `test:e2e:offline` script so
+      # CI and a local run of the same gate never drift apart.
+      - name: Offline/PWA Playwright suite
+        run: pnpm test:e2e:offline

@@ -154,6 +154,13 @@ export interface TodayBundle {
   today: TodayResolutionDto;
   activeSession: ActiveSessionDto | null;
   generatedAt: string;
+  // phase-8-review.md B-3 — the account's `users.timezone`, already fetched
+  // below for this function's own day resolution. Exposing it here gives
+  // offline quick-logs (bodyweight, recovery) a server-authoritative
+  // timezone to cache and day-key against, instead of falling back to the
+  // device's own resolved zone — which can select the wrong calendar day
+  // whenever the two disagree (src/domain/time/localDate.ts).
+  timezone: string;
 }
 
 interface HistorySessionExerciseRow {
@@ -532,5 +539,5 @@ export async function buildTodayBundle(
 
   const activeSession = await getActiveSession(db, userId);
 
-  return { today: todayDto, activeSession, generatedAt: now.toISOString() };
+  return { today: todayDto, activeSession, generatedAt: now.toISOString(), timezone };
 }

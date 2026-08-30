@@ -1,6 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { userLocalDateString } from "@/domain/time/localDate";
+import { getAccountTimezone } from "@/sync/accountTimezone";
+import {
+  logRecoveryToday,
+  getCachedRecoveryToday,
+  setCachedRecoveryToday,
+  UnknownAccountTimezoneError,
+} from "@/sync/dailyLogs";
 import { dismissRecoveryCheckInForever } from "./dismissedPreference";
 import { NullableSliderField } from "./NullableSliderField";
 import type { RecoveryEntryDto } from "./types";
@@ -17,7 +25,23 @@ const NEUTRAL = 3;
 type Phase =
   | { kind: "loading" }
   | { kind: "summary"; entry: RecoveryEntryDto }
-  | { kind: "form"; entry: RecoveryEntryDto | null };
+  | { kind: "form"; entry: RecoveryEntryDto | null }
+  // Phase 8 — offline, and no confirmed same-day read exists yet (neither a
+  // live fetch nor a same-day dailyLogCache hit): we genuinely don't know
+  // whether today already has an entry. Rendered by
+  // RecoveryCheckInUnknownOfflineForm below, which never guesses a full row
+  // — see its own comment for why. The account's timezone IS known in this
+  // phase (see unknown-timezone below for the strictly worse case) — "today"
+  // itself is a settled, correct value; only whether it already has an
+  // entry is unknown.
+  | { kind: "unknown-offline" }
+  // phase-8-review.md B-3 — strictly worse than unknown-offline: this
+  // device has no authoritative account timezone at all (never successfully
+  // loaded Today, and no network available to ask now), so it cannot even
+  // compute which calendar day "today" is. Rendered by
+  // RecoveryCheckInUnknownTimezoneForm below, which offers no inputs at all
+  // — there is no safe day to write a touched-only merge against either.
+  | { kind: "unknown-timezone" };
 
 // phase-7-review.md HIGH-1 — this card used to initialise every slider to a
 // hardcoded neutral midpoint and submit wholesale on every save, with no
@@ -30,27 +54,61 @@ type Phase =
 // already-logged day renders as a read-only summary of the *actual* stored
 // values, with an explicit "Edit" tap required before any slider becomes
 // editable — and editing pre-fills from the real entry, never from 3/3/3.
+//
+// Phase 8 — offline hardening: the GET above can now fail (no connectivity)
+// without leaving the card stuck forever ("Couldn't check..." was a
+// dead end). A failed fetch falls back to dailyLogCache's last CONFIRMED
+// same-day read; only when neither source has an answer does it fall
+// through to the unknown-offline form, which is deliberately built so it
+// can never fabricate or overwrite a hidden real value (see that
+// component's comment).
 export function RecoveryCheckIn({ onDismiss, onLogged }: RecoveryCheckInProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
-  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/recovery/today")
-      .then((res) => {
-        if (!res.ok) throw new Error("request failed");
-        return res.json() as Promise<{ entry: RecoveryEntryDto | null }>;
-      })
-      .then((data) => {
-        if (cancelled) return;
-        setPhase(
-          data.entry ? { kind: "summary", entry: data.entry } : { kind: "form", entry: null },
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLoadError(true);
-      });
+
+    void (async () => {
+      // phase-8-review.md B-3 — "today" is the account's timezone, resolved
+      // from the cached (or, failing that, freshly fetched) Today bundle,
+      // never the device's own zone. If neither source has an answer, we
+      // cannot safely compute today's date at all — not even for the
+      // touched-only merge form, which still needs to know which day to
+      // write to.
+      const timezone = await getAccountTimezone();
+      if (cancelled) return;
+      if (timezone === null) {
+        setPhase({ kind: "unknown-timezone" });
+        return;
+      }
+      const today = userLocalDateString(timezone);
+
+      fetch("/api/recovery/today")
+        .then((res) => {
+          if (!res.ok) throw new Error("request failed");
+          return res.json() as Promise<{ entry: RecoveryEntryDto | null }>;
+        })
+        .then((data) => {
+          if (cancelled) return;
+          void setCachedRecoveryToday(data.entry?.date ?? today, data.entry);
+          setPhase(
+            data.entry ? { kind: "summary", entry: data.entry } : { kind: "form", entry: null },
+          );
+        })
+        .catch(() => {
+          if (cancelled) return;
+          void (async () => {
+            const cached = await getCachedRecoveryToday(today);
+            if (cancelled) return;
+            if (cached === undefined) {
+              setPhase({ kind: "unknown-offline" });
+            } else {
+              setPhase(cached ? { kind: "summary", entry: cached } : { kind: "form", entry: null });
+            }
+          })();
+        });
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -76,13 +134,17 @@ export function RecoveryCheckIn({ onDismiss, onLogged }: RecoveryCheckInProps) {
     return (
       <div className="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900 px-4 py-4">
         {header}
-        {loadError ? (
-          <p className="text-xs text-red-400">Couldn&apos;t check today&apos;s recovery entry.</p>
-        ) : (
-          <p className="text-xs text-slate-400">Checking today&apos;s entry…</p>
-        )}
+        <p className="text-xs text-slate-400">Checking today&apos;s entry…</p>
       </div>
     );
+  }
+
+  if (phase.kind === "unknown-timezone") {
+    return <RecoveryCheckInUnknownTimezoneForm header={header} />;
+  }
+
+  if (phase.kind === "unknown-offline") {
+    return <RecoveryCheckInUnknownOfflineForm header={header} />;
   }
 
   if (phase.kind === "summary") {
@@ -172,52 +234,49 @@ function RecoveryCheckInForm({
 
     setSaving(true);
     try {
-      const body = JSON.stringify({
+      // Phase 8 — goes through the offline outbox (src/sync/dailyLogs.ts)
+      // instead of fetch(/api/recovery). `sleepQuality`/`readiness`/
+      // `soreness`/`note` are always sent explicitly here (never omitted) —
+      // same as the pre-Phase-8 behavior this preserves — because this
+      // code path only ever runs from a CONFIRMED known state (a live GET,
+      // or a same-day dailyLogCache hit), so there's no hidden-row risk to
+      // guard against; that guard lives in the unknown-offline form below.
+      const noteValue = note.trim() === "" ? null : note.trim();
+      const { id: generatedId, date } = await logRecoveryToday({
         sleepQuality,
         readiness,
         soreness,
-        // Always sent explicitly (never omitted) — this card fully
-        // controls the note field, so an emptied field is a deliberate
-        // clear, not "leave whatever's there". `sleepHours` is never
-        // included here — this card has no control for it, and omitting
-        // the key preserves whatever value the entry already has instead
-        // of nulling it (POST) or leaving it untouched (PATCH).
-        note: note.trim() === "" ? null : note.trim(),
+        note: noteValue,
       });
-      // A brand-new day-log still goes through the day-upsert (POST,
-      // create-or-update-by-date). Editing an existing entry goes through
-      // PATCH-by-id instead of the day-upsert: `logRecoveryInputSchema`
-      // requires at least one *numeric* metric in every POST payload (no
-      // prior row to merge into on that path), which a clears-only edit —
-      // e.g. every slider this card shows explicitly nulled, relying on an
-      // already-preserved sleepHours to satisfy the DB constraint — would
-      // fail even though the resulting row is valid. PATCH's own service
-      // fetches the existing row and validates the *merged* result instead,
-      // which is exactly what an edit of an already-existing entry needs.
-      const res = isNew
-        ? await fetch("/api/recovery", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
-          })
-        : await fetch(`/api/recovery/${entry.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body,
-          });
-      if (!res.ok) {
-        const data: { error?: string } = await res.json().catch(() => ({}));
-        setError(
-          data.error === "no_metric"
-            ? "At least one of sleep hours, sleep quality, readiness, or soreness is required."
-            : "Couldn't save — try again.",
-        );
-        return;
-      }
-      const data: { entry: RecoveryEntryDto } = await res.json();
-      onSaved(data.entry);
-    } catch {
-      setError("Couldn't save — try again.");
+      const savedEntry: RecoveryEntryDto = {
+        id: isNew ? generatedId : entry.id,
+        date: isNew ? date : entry.date,
+        sleepHours: isNew ? null : entry.sleepHours,
+        sleepQuality,
+        readiness,
+        soreness,
+        note: noteValue,
+      };
+      // phase-8-review.md MEDIUM-3 — dailyLogCache's own contract
+      // (src/sync/db.ts) is CONFIRMED state only, never a guess. This op has
+      // only been enqueued, not yet applied server-side (the outbox may not
+      // even have flushed it yet, offline) — so it is not confirmed, and
+      // `id: generatedId` for the isNew case is a speculative client id the
+      // server only honors if this row doesn't already exist elsewhere
+      // (e.g. logged from another device in the interim). Caching it now
+      // would risk stamping a wrong id/state as if verified. `onSaved`
+      // still updates THIS component's own in-memory phase immediately —
+      // that's the optimistic view, held only for this render lifetime,
+      // never persisted as confirmed — and the next successful read (a
+      // fresh mount, or reconnect) repopulates the durable cache with the
+      // real server-confirmed row.
+      onSaved(savedEntry);
+    } catch (err) {
+      setError(
+        err instanceof UnknownAccountTimezoneError
+          ? "Can't save yet — this device hasn't learned the account's timezone. Connect online once, then try again."
+          : "Couldn't save — try again.",
+      );
     } finally {
       setSaving(false);
     }
@@ -282,6 +341,152 @@ function RecoveryCheckInForm({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// phase-8-review.md B-3 — strictly worse than the unknown-offline case
+// below: this device has no authoritative account timezone at all, so it
+// cannot compute which calendar day "today" even is. Offers no inputs and no
+// save action — there is no day it would be safe to write a touched-only
+// merge against either, and `logRecoveryToday` would just reject with
+// UnknownAccountTimezoneError regardless of what was entered. Resolves on
+// its own the next time this component mounts with connectivity (a fresh
+// Today bundle fetch caches the account's timezone) or once any other part
+// of the app has successfully loaded Today.
+function RecoveryCheckInUnknownTimezoneForm({ header }: { header: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900 px-4 py-4">
+      {header}
+      <p className="text-xs text-amber-400">
+        Can&apos;t check in yet — this device hasn&apos;t learned the account&apos;s timezone.
+        Connect online once (opening Today is enough), then come back.
+      </p>
+    </div>
+  );
+}
+
+type TouchedMetric = "sleepQuality" | "readiness" | "soreness";
+
+// Phase 8 — the true offline-cold-start case: no live read, no same-day
+// cache. We do not know whether today already has an entry, so we can never
+// safely assume either "no entry" (would fabricate a full row of defaults
+// on top of real hidden values) or "an entry with these fields null" (would
+// silently drop real hidden values by explicitly clearing them). The one
+// safe move is to track which fields the user actually *touched* this
+// session and send only those — the server's presence-aware upsert
+// (logRecovery, src/server/recovery/service.ts) leaves every other field
+// exactly as it already is, whatever that turns out to be. This is why
+// every slider here is the nullable variant seeded at null (not the
+// NEUTRAL=3 default the definitely-new form above uses) — "not set" here
+// means "not sent", not "confirmed absent".
+function RecoveryCheckInUnknownOfflineForm({ header }: { header: React.ReactNode }) {
+  const [sleepQuality, setSleepQuality] = useState<number | null>(null);
+  const [readiness, setReadiness] = useState<number | null>(null);
+  const [soreness, setSoreness] = useState<number | null>(null);
+  const [touched, setTouched] = useState<Record<TouchedMetric, boolean>>({
+    sleepQuality: false,
+    readiness: false,
+    soreness: false,
+  });
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  function touch<T extends TouchedMetric>(
+    metric: T,
+    setter: (value: number | null) => void,
+  ): (value: number | null) => void {
+    return (value) => {
+      setTouched((t) => ({ ...t, [metric]: true }));
+      setter(value);
+      setSaved(false);
+    };
+  }
+
+  const hasTouchedMetric = touched.sleepQuality || touched.readiness || touched.soreness;
+
+  async function save() {
+    setError(null);
+    if (!hasTouchedMetric) {
+      setError("Set at least one of sleep quality, readiness, or soreness first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const noteValue = note.trim();
+      await logRecoveryToday({
+        ...(touched.sleepQuality ? { sleepQuality } : {}),
+        ...(touched.readiness ? { readiness } : {}),
+        ...(touched.soreness ? { soreness } : {}),
+        ...(noteValue !== "" ? { note: noteValue } : {}),
+      });
+      // Deliberately not written to dailyLogCache and not surfaced as a
+      // confirmed summary — untouched fields may still hold a real value
+      // this device can't see yet. The true state becomes visible (and
+      // this card switches to the normal summary/edit flow) the next time
+      // a read succeeds, online or from that read's own cache write.
+      setSaved(true);
+    } catch {
+      setError("Couldn't save — try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900 px-4 py-4">
+      {header}
+      <p className="text-xs text-amber-400">
+        Offline — can&apos;t verify today&apos;s check-in yet. Only what you set below will be
+        saved; it&apos;ll be merged with today&apos;s entry once you&apos;re back online.
+      </p>
+
+      <NullableSliderField
+        label="Sleep quality"
+        value={sleepQuality}
+        onChange={touch("sleepQuality", setSleepQuality)}
+      />
+      <NullableSliderField
+        label="Readiness"
+        value={readiness}
+        onChange={touch("readiness", setReadiness)}
+      />
+      <NullableSliderField
+        label="Soreness"
+        value={soreness}
+        onChange={touch("soreness", setSoreness)}
+      />
+
+      <input
+        type="text"
+        placeholder="Note (optional)"
+        value={note}
+        onChange={(e) => {
+          setNote(e.target.value);
+          setSaved(false);
+        }}
+        className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-slate-400"
+      />
+
+      {error && (
+        <p role="alert" className="text-xs text-red-400">
+          {error}
+        </p>
+      )}
+      {saved && !error && (
+        <p className="text-xs text-emerald-400">Saved — will finish syncing when back online.</p>
+      )}
+
+      <button
+        type="button"
+        onClick={() => void save()}
+        disabled={saving}
+        className="w-full rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-50"
+      >
+        {saving ? "Saving…" : "Save check-in"}
+      </button>
     </div>
   );
 }

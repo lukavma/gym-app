@@ -35,15 +35,24 @@ export async function enqueueOps(inputs: readonly OutboxOpInput[]): Promise<void
 }
 
 // FIFO — `byCreatedAt` index returns rows in ascending creation order,
-// matching pwa-offline-strategy.md §5's ordering requirement. MEDIUM-2:
-// backoff is only meaningful if respected here — a pending op whose
-// nextAttemptAt is still in the future must not be returned, or the
-// exponential delay markTried() computes is never actually enforced.
+// matching pwa-offline-strategy.md §5's ordering requirement.
+//
+// phase-8-review.md B-1 — this used to ALSO filter on a per-op
+// `nextAttemptAt`, so after any failed flush the "pending" set became
+// whichever ops' own independently-jittered deadlines happened to have
+// elapsed: a later op could become eligible while an earlier one was still
+// backing off, and since every op is a full-row upsert or an
+// idempotent-by-absence delete, sending them out of order is not
+// idempotent — an insert arriving after its own edit reverts the edit; a
+// delete arriving before its insert lets the insert resurrect it. Backoff
+// is now enforced at the BATCH level instead (src/sync/flush.ts's
+// `nextFlushAllowedAt` gate, checked before this function is ever called),
+// so this function has exactly one job — return every pending op, oldest
+// first — and never reorders or drops a subset of them.
 export async function listPendingOps(limit = 50): Promise<OutboxOpRecord[]> {
   const db = await getIdb();
   const all = await db.getAllFromIndex("outbox", "byCreatedAt");
-  const now = new Date().toISOString();
-  return all.filter((op) => op.status === "pending" && op.nextAttemptAt <= now).slice(0, limit);
+  return all.filter((op) => op.status === "pending").slice(0, limit);
 }
 
 export async function listDeadLetterOps(): Promise<OutboxOpRecord[]> {
@@ -79,11 +88,38 @@ export async function discardDeadLetter(opId: string): Promise<void> {
   await db.delete("outbox", opId);
 }
 
+// Phase 8 sync-issues screen — "retry without altering its payload":
+// flips the op back to pending, touching nothing else. `payload` is never
+// rewritten here, and `tries` is deliberately left as-is (not reset to 0)
+// — it's a record of how many times this exact op has already failed, which
+// resetting it on every manual retry would quietly erase. `createdAt` is
+// also left as-is: FIFO position is meaningful for ops still in the normal
+// flow, but a dead-lettered op already left that flow (it was rejected, not
+// merely delayed) — re-queuing it at its original chronological position is
+// a deliberate, narrow exception the batch-level FIFO gate in flush.ts
+// doesn't need to reason about, since a manual retry is a rare, explicit
+// user action, not part of the automatic flush cycle.
+export async function retryDeadLetterOp(opId: string): Promise<void> {
+  const db = await getIdb();
+  const existing = await db.get("outbox", opId);
+  if (!existing) return;
+  await db.put("outbox", {
+    opId: existing.opId,
+    entity: existing.entity,
+    operation: existing.operation,
+    payload: existing.payload,
+    createdAt: existing.createdAt,
+    tries: existing.tries,
+    status: "pending",
+  });
+}
+
+// Purely informational (shown as "N attempts" on the dead-letter screen) —
+// see the B-1 comment on OutboxOpInput in db.ts for why this no longer
+// computes a per-op retry deadline.
 export async function markTried(opId: string): Promise<void> {
   const db = await getIdb();
   const existing = await db.get("outbox", opId);
   if (!existing) return;
-  const tries = existing.tries + 1;
-  const nextAttemptAt = new Date(Date.now() + nextBackoffDelayMs(tries)).toISOString();
-  await db.put("outbox", { ...existing, tries, nextAttemptAt });
+  await db.put("outbox", { ...existing, tries: existing.tries + 1 });
 }

@@ -102,8 +102,25 @@ export interface WalkResult {
   // Every file reached, including the roots themselves.
   visited: Set<string>;
   // file -> the first file that imported it (or "(root)"), for readable
-  // failure messages (a path trace back to a root).
+  // failure messages (a path trace back to a root) — traceTo's input.
   reachedFrom: Map<string, string>;
+  // phase-8-review.md HIGH-2 — file -> EVERY file with a real edge into it,
+  // across the whole graph, regardless of BFS discovery order. `reachedFrom`
+  // above only ever keeps the first; a check built on it alone can miss a
+  // second, genuinely forbidden edge into a file the walk happened to reach
+  // by an approved path first. Boundary checks that need "is this file
+  // reachable ONLY via approved edges" must use this, not `reachedFrom`.
+  allParents: Map<string, Set<string>>;
+}
+
+// A non-real edge to fold into the walk as if it existed, without touching
+// any file on disk — lets a test prove "if this forbidden import existed,
+// would the boundary check catch it" against the actual detection logic,
+// for an edge that must never legitimately exist in real source (so writing
+// it to a real file, even temporarily, isn't an option).
+export interface SyntheticEdge {
+  from: string;
+  to: string;
 }
 
 // Transitive closure over the real import graph (BFS), starting from
@@ -111,12 +128,33 @@ export interface WalkResult {
 // cannot reach bodyweight/recovery" a genuinely transitive claim rather
 // than a one-hop grep — a forbidden module reached through several levels
 // of re-exporting barrels is exactly as detectable as a direct import.
-export function walkImportGraph(roots: string[]): WalkResult {
+export function walkImportGraph(
+  roots: string[],
+  options: { extraEdges?: SyntheticEdge[] } = {},
+): WalkResult {
   const visited = new Set<string>();
   const reachedFrom = new Map<string, string>();
+  const allParents = new Map<string, Set<string>>();
   const queue: string[] = [];
 
+  const extraEdgesByFile = new Map<string, string[]>();
+  for (const edge of options.extraEdges ?? []) {
+    const list = extraEdgesByFile.get(edge.from) ?? [];
+    list.push(edge.to);
+    extraEdgesByFile.set(edge.from, list);
+  }
+
+  function recordEdge(file: string, parent: string): void {
+    let parents = allParents.get(file);
+    if (!parents) {
+      parents = new Set();
+      allParents.set(file, parents);
+    }
+    parents.add(parent);
+  }
+
   for (const root of roots) {
+    recordEdge(root, "(root)");
     if (!reachedFrom.has(root)) {
       reachedFrom.set(root, "(root)");
       queue.push(root);
@@ -128,22 +166,27 @@ export function walkImportGraph(roots: string[]): WalkResult {
     if (!file || visited.has(file)) continue;
     visited.add(file);
 
-    let source: string;
+    let source = "";
     try {
       source = readFileSync(file, "utf8");
     } catch {
-      continue;
+      // A synthetic-only node (never a real file) has nothing to read but
+      // may still have its own outgoing synthetic edges below.
     }
 
-    for (const { text } of extractModuleSpecifiers(source, file)) {
-      const resolved = resolveSpecifier(file, text);
-      if (!resolved || visited.has(resolved)) continue;
+    const targets = extractModuleSpecifiers(source, file)
+      .map(({ text }) => resolveSpecifier(file, text))
+      .filter((resolved): resolved is string => resolved !== null);
+    targets.push(...(extraEdgesByFile.get(file) ?? []));
+
+    for (const resolved of targets) {
+      recordEdge(resolved, file);
       if (!reachedFrom.has(resolved)) reachedFrom.set(resolved, file);
-      queue.push(resolved);
+      if (!visited.has(resolved)) queue.push(resolved);
     }
   }
 
-  return { visited, reachedFrom };
+  return { visited, reachedFrom, allParents };
 }
 
 // Human-readable root -> ... -> target trace, for failure messages.

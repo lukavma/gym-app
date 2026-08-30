@@ -129,11 +129,15 @@ export async function getTodayRecoveryEntry(
 // theoretical risk of any pre-read validation (two concurrent calls that
 // would each individually clear the last metric): whichever commits second
 // is the one Postgres actually rejects, not a stale in-memory guess.
+// `id` — Phase 8: same client-generated-id-honored-only-on-insert contract
+// as logBodyweight above (src/server/bodyweight/service.ts), for the
+// offline outbox sync-apply path.
 export async function logRecovery(
   db: AppDb,
   userId: string,
   input: LogRecoveryInput,
   now: Date = new Date(),
+  id: string = newId(),
 ): Promise<RecoveryEntryRecord> {
   const date = input.date ?? userLocalDateString(await resolveUserTimezone(db, userId), now);
 
@@ -158,7 +162,7 @@ export async function logRecovery(
   try {
     const [row] = await db
       .insert(recoveryEntries)
-      .values({ id: newId(), userId, date, ...insertValues })
+      .values({ id, userId, date, ...insertValues })
       .onConflictDoUpdate({
         target: [recoveryEntries.userId, recoveryEntries.date],
         set: updateSet,
@@ -167,8 +171,41 @@ export async function logRecovery(
     if (!row) throw new Error("Failed to log recovery entry");
     return toRecord(row);
   } catch (err) {
-    if (isPostgresErrorCode(err, CHECK_VIOLATION)) throw new RecoveryEntryHasNoMetricError();
-    throw err;
+    if (!isPostgresErrorCode(err, CHECK_VIOLATION)) throw err;
+
+    // phase-8-review.md HIGH-1 — a note-only or explicit-clear-only op
+    // (every metric field this call actually touches is null/omitted) makes
+    // the single-statement upsert's PROPOSED INSERT TUPLE all-null, and
+    // Postgres validates ck_recovery_entries_has_metric against that
+    // proposed tuple even when the DO UPDATE branch is what runs
+    // (independently verified against Postgres 16) — a false rejection when
+    // the row's OTHER, untouched metrics are what actually keep it valid. A
+    // plain UPDATE has no proposed-tuple check: Postgres validates it against
+    // the real post-merge row, so retrying as one here — instead of
+    // pre-reading and backfilling the whole insert tuple, which reopens a
+    // read-then-write window — gets the correct result in one atomic
+    // statement, using the SAME presence-aware `updateSet` built above (only
+    // this call's own touched fields, so it can't clobber a concurrent
+    // update to a different metric). Zero rows affected means there was no
+    // existing row to merge onto (a genuinely empty fresh day); a second
+    // CHECK_VIOLATION here means this row's other metrics really were
+    // already all null, i.e. this op would clear the last one — both are
+    // real rejections, not artifacts of the retry, and neither leaves the
+    // row modified.
+    let updated: RecoveryEntryRow | undefined;
+    try {
+      [updated] = await db
+        .update(recoveryEntries)
+        .set(updateSet)
+        .where(and(eq(recoveryEntries.userId, userId), eq(recoveryEntries.date, date)))
+        .returning();
+    } catch (updateErr) {
+      if (isPostgresErrorCode(updateErr, CHECK_VIOLATION))
+        throw new RecoveryEntryHasNoMetricError();
+      throw updateErr;
+    }
+    if (!updated) throw new RecoveryEntryHasNoMetricError();
+    return toRecord(updated);
   }
 }
 

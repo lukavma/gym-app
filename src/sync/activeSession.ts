@@ -40,6 +40,29 @@ import type {
 // full-row upserts, not partial diffs; BLOCKER-1 — parent FKs can't be
 // omitted, it's a compile error to try). Sync itself (the flushOutbox() kick
 // at the end) is fire-and-forget bookkeeping, online or not.
+//
+// Phase 8 — that same shape is a read-modify-write of the ENTIRE aggregate
+// (requireLocalSession() re-reads from IndexedDB every call; nothing caches
+// it in memory), which is only safe if calls are strictly sequential. The UI
+// invokes every mutator fire-and-forget (`void editSet(...)`) with no
+// per-row disabling while the async call is in flight, so two realistic,
+// rapid interactions — edit one set, then immediately delete another —
+// could interleave: the second call's read races ahead of the first call's
+// write, and its own write silently reverts what the first call had just
+// committed. `serialize()` below queues every mutator's body so each one's
+// read is guaranteed to see the fully-committed result of whichever call
+// was invoked immediately before it, no matter how close together the UI
+// fires them. Found via offline-set-edit-delete.spec.ts intermittently
+// losing an edit when run back-to-back with other specs.
+let mutationQueue: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const result = mutationQueue.then(fn, fn);
+  mutationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
 
 export async function getLocalActiveSession(): Promise<ActiveSessionDto | null> {
   const db = await getIdb();
@@ -62,12 +85,14 @@ export async function clearLocalSession(): Promise<void> {
 // subsequent op the server rejects as `session_locked`, which is what the
 // device actually did. Callers must revalidate against
 // src/sync/remoteActiveSession.ts first; this refuses anything else outright.
-export async function hydrateFromServer(remote: ActiveSessionDto): Promise<void> {
-  if (remote.status !== "in_progress") {
-    throw new Error(`Refusing to hydrate a session with status "${remote.status}"`);
-  }
-  const db = await getIdb();
-  await db.put("activeSession", remote, ACTIVE_SESSION_KEY);
+export function hydrateFromServer(remote: ActiveSessionDto): Promise<void> {
+  return serialize(async () => {
+    if (remote.status !== "in_progress") {
+      throw new Error(`Refusing to hydrate a session with status "${remote.status}"`);
+    }
+    const db = await getIdb();
+    await db.put("activeSession", remote, ACTIVE_SESSION_KEY);
+  });
 }
 
 async function requireLocalSession(): Promise<ActiveSessionDto> {
@@ -211,117 +236,125 @@ export interface StartSessionInput {
 // Snapshot-on-use, exactly once: every scheduled exercise's
 // PrescriptionSnapshot is frozen right here, at session creation — never
 // lazily per-exercise as the workout progresses (ADR-007).
-export async function startSession(input: StartSessionInput): Promise<ActiveSessionDto> {
-  const sessionId = newId();
-  const startedAt = new Date().toISOString();
+export function startSession(input: StartSessionInput): Promise<ActiveSessionDto> {
+  return serialize(async () => {
+    const sessionId = newId();
+    const startedAt = new Date().toISOString();
 
-  const exercises: ActiveSessionExerciseDto[] = input.exercises.map((entry, index) => ({
-    id: newId(),
-    exerciseId: entry.exerciseId,
-    exerciseName: entry.exerciseName,
-    position: index,
-    source: "template" as const,
-    prescription: buildSnapshotFromBundleEntry(entry),
-    skipped: false,
-    notes: null,
-    loadStepKg: entry.loadStepKg,
-    // The pending recommendation rides into the session verbatim — it is
-    // decided here (explicitly, or implicitly via the first work set), never
-    // re-frozen into the snapshot (progression-engine.md §7).
-    //
-    // H-1 remediation — buildTodayBundle already omits pendingRecommendation
-    // for a deload week, but a bundle served from the offline cache
-    // (bundleCache.ts) can be a stale pre-fix copy that still carries one;
-    // recommendationForDeload is the defensive backstop that keeps a deload
-    // session decision-free regardless of what the bundle entry claims.
-    recommendation: recommendationForDeload(input.isDeload, entry.pendingRecommendation),
-    sets: [],
-  }));
+    const exercises: ActiveSessionExerciseDto[] = input.exercises.map((entry, index) => ({
+      id: newId(),
+      exerciseId: entry.exerciseId,
+      exerciseName: entry.exerciseName,
+      position: index,
+      source: "template" as const,
+      prescription: buildSnapshotFromBundleEntry(entry),
+      skipped: false,
+      notes: null,
+      loadStepKg: entry.loadStepKg,
+      // The pending recommendation rides into the session verbatim — it is
+      // decided here (explicitly, or implicitly via the first work set), never
+      // re-frozen into the snapshot (progression-engine.md §7).
+      //
+      // H-1 remediation — buildTodayBundle already omits pendingRecommendation
+      // for a deload week, but a bundle served from the offline cache
+      // (bundleCache.ts) can be a stale pre-fix copy that still carries one;
+      // recommendationForDeload is the defensive backstop that keeps a deload
+      // session decision-free regardless of what the bundle entry claims.
+      recommendation: recommendationForDeload(input.isDeload, entry.pendingRecommendation),
+      sets: [],
+    }));
 
-  const session: ActiveSessionDto = {
-    id: sessionId,
-    blockId: input.blockId,
-    templateId: input.templateId,
-    templateName: input.templateName,
-    weekIndex: input.weekIndex,
-    isDeload: input.isDeload,
-    status: "in_progress",
-    startedAt,
-    clientId: null,
-    notes: null,
-    exercises,
-  };
+    const session: ActiveSessionDto = {
+      id: sessionId,
+      blockId: input.blockId,
+      templateId: input.templateId,
+      templateName: input.templateName,
+      weekIndex: input.weekIndex,
+      isDeload: input.isDeload,
+      status: "in_progress",
+      startedAt,
+      clientId: null,
+      notes: null,
+      exercises,
+    };
 
-  const ops: OutboxOpInput[] = [
-    workoutSessionFullRowOp(session),
-    ...exercises.map((ex) => sessionExerciseFullRowOp(sessionId, ex)),
-  ];
+    const ops: OutboxOpInput[] = [
+      workoutSessionFullRowOp(session),
+      ...exercises.map((ex) => sessionExerciseFullRowOp(sessionId, ex)),
+    ];
 
-  await commitSessionMutation({ session, ops });
-  void flushOutbox();
-  return session;
+    await commitSessionMutation({ session, ops });
+    void flushOutbox();
+    return session;
+  });
 }
 
-export async function addAdhocExercise(
+export function addAdhocExercise(
   exerciseId: string,
   exerciseName: string,
 ): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const id = newId();
-  const position = session.exercises.length;
-  const exercise: ActiveSessionExerciseDto = {
-    id,
-    exerciseId,
-    exerciseName,
-    position,
-    source: "adhoc",
-    prescription: null,
-    skipped: false,
-    notes: null,
-    loadStepKg: null,
-    recommendation: null,
-    sets: [],
-  };
-  session.exercises.push(exercise);
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const id = newId();
+    const position = session.exercises.length;
+    const exercise: ActiveSessionExerciseDto = {
+      id,
+      exerciseId,
+      exerciseName,
+      position,
+      source: "adhoc",
+      prescription: null,
+      skipped: false,
+      notes: null,
+      loadStepKg: null,
+      recommendation: null,
+      sets: [],
+    };
+    session.exercises.push(exercise);
 
-  await commitSessionMutation({
-    session,
-    ops: [sessionExerciseFullRowOp(session.id, exercise)],
+    await commitSessionMutation({
+      session,
+      ops: [sessionExerciseFullRowOp(session.id, exercise)],
+    });
+    void flushOutbox();
+    return session;
   });
-  void flushOutbox();
-  return session;
 }
 
-export async function setExerciseSkipped(
+export function setExerciseSkipped(
   sessionExerciseId: string,
   skipped: boolean,
 ): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const exercise = findExercise(session, sessionExerciseId);
-  exercise.skipped = skipped;
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const exercise = findExercise(session, sessionExerciseId);
+    exercise.skipped = skipped;
 
-  await commitSessionMutation({
-    session,
-    ops: [sessionExerciseFullRowOp(session.id, exercise)],
+    await commitSessionMutation({
+      session,
+      ops: [sessionExerciseFullRowOp(session.id, exercise)],
+    });
+    void flushOutbox();
+    return session;
   });
-  void flushOutbox();
-  return session;
 }
 
-export async function setExerciseNotes(
+export function setExerciseNotes(
   sessionExerciseId: string,
   notes: string | null,
 ): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const exercise = findExercise(session, sessionExerciseId);
-  exercise.notes = notes;
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const exercise = findExercise(session, sessionExerciseId);
+    exercise.notes = notes;
 
-  await commitSessionMutation({
-    session,
-    ops: [sessionExerciseFullRowOp(session.id, exercise)],
+    await commitSessionMutation({
+      session,
+      ops: [sessionExerciseFullRowOp(session.id, exercise)],
+    });
+    void flushOutbox();
+    return session;
   });
-  void flushOutbox();
-  return session;
 }
 
 export interface LogSetInput {
@@ -333,63 +366,65 @@ export interface LogSetInput {
   notes?: string | null;
 }
 
-export async function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const exercise = findExercise(session, input.sessionExerciseId);
-  const setId = newId();
-  const loggedAt = new Date().toISOString();
-  const set: ActiveSessionSetDto = {
-    id: setId,
-    setNumber: nextSetNumber(exercise),
-    isWarmup: input.isWarmup ?? false,
-    weightKg: input.weightKg,
-    reps: input.reps,
-    rir: input.rir,
-    loggedAt,
-    notes: input.notes ?? null,
-  };
-  exercise.sets.push(set);
+export function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const exercise = findExercise(session, input.sessionExerciseId);
+    const setId = newId();
+    const loggedAt = new Date().toISOString();
+    const set: ActiveSessionSetDto = {
+      id: setId,
+      setNumber: nextSetNumber(exercise),
+      isWarmup: input.isWarmup ?? false,
+      weightKg: input.weightKg,
+      reps: input.reps,
+      rir: input.rir,
+      loggedAt,
+      notes: input.notes ?? null,
+    };
+    exercise.sets.push(set);
 
-  const ops: OutboxOpInput[] = [setLogFullRowOp(exercise.id, set)];
+    const ops: OutboxOpInput[] = [setLogFullRowOp(exercise.id, set)];
 
-  // progression-engine.md §7 — the implicit decision: the FIRST work set
-  // resolves a still-pending recommendation. Committed in the same IndexedDB
-  // transaction as the set itself, so the queue can never hold the set
-  // without the decision it implied.
-  //
-  // H-1 remediation — gated through recommendationForDeload so a deload
-  // session can never enqueue an implicit decision, even a resumed session
-  // hydrated before this fix that still carries `exercise.recommendation`.
-  const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
-  if (!set.isWarmup && rec && rec.decision.status === "pending") {
-    const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
-    if (isFirstWorkSet) {
-      const implicit = resolveImplicitDecision(
-        { action: rec.action, target: rec.target },
-        { weightKg: set.weightKg },
-        // Engine targets are already rounded to loadStepKg; 0 degrades the
-        // comparison to exact-value equality, which is then still correct.
-        exercise.loadStepKg ?? 0,
-      );
-      if (implicit) {
-        const decision: DecisionFields = {
-          status: implicit.status,
-          chosen: implicit.chosen,
-          decidedAt: loggedAt,
-          source: implicit.source,
-        };
-        exercise.recommendation = {
-          ...rec,
-          decision: { ...decision },
-        };
-        ops.push(recommendationDecisionOp(rec.id, decision));
+    // progression-engine.md §7 — the implicit decision: the FIRST work set
+    // resolves a still-pending recommendation. Committed in the same IndexedDB
+    // transaction as the set itself, so the queue can never hold the set
+    // without the decision it implied.
+    //
+    // H-1 remediation — gated through recommendationForDeload so a deload
+    // session can never enqueue an implicit decision, even a resumed session
+    // hydrated before this fix that still carries `exercise.recommendation`.
+    const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
+    if (!set.isWarmup && rec && rec.decision.status === "pending") {
+      const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
+      if (isFirstWorkSet) {
+        const implicit = resolveImplicitDecision(
+          { action: rec.action, target: rec.target },
+          { weightKg: set.weightKg },
+          // Engine targets are already rounded to loadStepKg; 0 degrades the
+          // comparison to exact-value equality, which is then still correct.
+          exercise.loadStepKg ?? 0,
+        );
+        if (implicit) {
+          const decision: DecisionFields = {
+            status: implicit.status,
+            chosen: implicit.chosen,
+            decidedAt: loggedAt,
+            source: implicit.source,
+          };
+          exercise.recommendation = {
+            ...rec,
+            decision: { ...decision },
+          };
+          ops.push(recommendationDecisionOp(rec.id, decision));
+        }
       }
     }
-  }
 
-  await commitSessionMutation({ session, ops });
-  void flushOutbox();
-  return session;
+    await commitSessionMutation({ session, ops });
+    void flushOutbox();
+    return session;
+  });
 }
 
 export type ExplicitDecisionInput =
@@ -401,43 +436,45 @@ export type ExplicitDecisionInput =
 // Custom (modify) from the recommendation card. One-time: only a pending
 // recommendation can be decided; the local state flips immediately and the
 // decision op rides the same outbox path as every other execution fact.
-export async function decideRecommendation(
+export function decideRecommendation(
   sessionExerciseId: string,
   input: ExplicitDecisionInput,
 ): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const exercise = findExercise(session, sessionExerciseId);
-  // H-1 remediation — a deload session has nothing to decide, even if a
-  // stale pre-fix local session still carries `exercise.recommendation`
-  // (the RecommendationCard is never rendered for one either — see
-  // ExerciseCard.tsx — so this is a defensive backstop, not the primary gate).
-  const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
-  if (!rec || rec.decision.status !== "pending") {
-    throw new Error("No pending recommendation to decide");
-  }
-  const chosen: RecommendationTarget | null =
-    input.status === "accepted"
-      ? (rec.target ?? null)
-      : input.status === "modified"
-        ? input.chosen
-        : null;
-  if (input.status === "accepted" && chosen === null) {
-    throw new Error("Recommendation has no target to accept");
-  }
-  const decision: DecisionFields = {
-    status: input.status,
-    chosen,
-    decidedAt: new Date().toISOString(),
-    source: "explicit",
-  };
-  exercise.recommendation = { ...rec, decision: { ...decision } };
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const exercise = findExercise(session, sessionExerciseId);
+    // H-1 remediation — a deload session has nothing to decide, even if a
+    // stale pre-fix local session still carries `exercise.recommendation`
+    // (the RecommendationCard is never rendered for one either — see
+    // ExerciseCard.tsx — so this is a defensive backstop, not the primary gate).
+    const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
+    if (!rec || rec.decision.status !== "pending") {
+      throw new Error("No pending recommendation to decide");
+    }
+    const chosen: RecommendationTarget | null =
+      input.status === "accepted"
+        ? (rec.target ?? null)
+        : input.status === "modified"
+          ? input.chosen
+          : null;
+    if (input.status === "accepted" && chosen === null) {
+      throw new Error("Recommendation has no target to accept");
+    }
+    const decision: DecisionFields = {
+      status: input.status,
+      chosen,
+      decidedAt: new Date().toISOString(),
+      source: "explicit",
+    };
+    exercise.recommendation = { ...rec, decision: { ...decision } };
 
-  await commitSessionMutation({
-    session,
-    ops: [recommendationDecisionOp(rec.id, decision)],
+    await commitSessionMutation({
+      session,
+      ops: [recommendationDecisionOp(rec.id, decision)],
+    });
+    void flushOutbox();
+    return session;
   });
-  void flushOutbox();
-  return session;
 }
 
 export type EditSetPatch = Partial<
@@ -450,23 +487,25 @@ export type EditSetPatch = Partial<
 // that here since it only ever mutates its OWN locally-held activeSession,
 // which by definition is still in_progress. Post-completion corrections go
 // through the history UI instead (src/server/history + a dedicated route).
-export async function editSet(
+export function editSet(
   sessionExerciseId: string,
   setId: string,
   patch: EditSetPatch,
 ): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const exercise = findExercise(session, sessionExerciseId);
-  const set = exercise.sets.find((s) => s.id === setId);
-  if (!set) throw new Error("Set not found");
-  Object.assign(set, patch);
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const exercise = findExercise(session, sessionExerciseId);
+    const set = exercise.sets.find((s) => s.id === setId);
+    if (!set) throw new Error("Set not found");
+    Object.assign(set, patch);
 
-  await commitSessionMutation({
-    session,
-    ops: [setLogFullRowOp(exercise.id, set)],
+    await commitSessionMutation({
+      session,
+      ops: [setLogFullRowOp(exercise.id, set)],
+    });
+    void flushOutbox();
+    return session;
   });
-  void flushOutbox();
-  return session;
 }
 
 // Finding D — deleting a set renumbers the survivors to a contiguous 1..n.
@@ -475,37 +514,38 @@ export async function editSet(
 // already provides (HIGH-1), so the device can never end up having deleted a
 // set without having queued the renumbering that goes with it. Op order
 // inside the batch is significant — see planSetDeletion.
-export async function deleteSet(
-  sessionExerciseId: string,
-  setId: string,
-): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  const exercise = findExercise(session, sessionExerciseId);
-  const { deleted, remaining, ops } = buildSetDeletionOps({
-    sessionExerciseId: exercise.id,
-    setId,
-    sets: exercise.sets,
-  });
-  // Already gone — emitting a delete op would be harmless, but a renumbering
-  // pass over rows we have no reason to touch would not be.
-  if (!deleted) return session;
-  exercise.sets = remaining;
+export function deleteSet(sessionExerciseId: string, setId: string): Promise<ActiveSessionDto> {
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const exercise = findExercise(session, sessionExerciseId);
+    const { deleted, remaining, ops } = buildSetDeletionOps({
+      sessionExerciseId: exercise.id,
+      setId,
+      sets: exercise.sets,
+    });
+    // Already gone — emitting a delete op would be harmless, but a renumbering
+    // pass over rows we have no reason to touch would not be.
+    if (!deleted) return session;
+    exercise.sets = remaining;
 
-  await commitSessionMutation({ session, ops });
-  void flushOutbox();
-  return session;
+    await commitSessionMutation({ session, ops });
+    void flushOutbox();
+    return session;
+  });
 }
 
-export async function setSessionNotes(notes: string | null): Promise<ActiveSessionDto> {
-  const session = await requireLocalSession();
-  session.notes = notes;
+export function setSessionNotes(notes: string | null): Promise<ActiveSessionDto> {
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    session.notes = notes;
 
-  await commitSessionMutation({
-    session,
-    ops: [workoutSessionFullRowOp(session)],
+    await commitSessionMutation({
+      session,
+      ops: [workoutSessionFullRowOp(session)],
+    });
+    void flushOutbox();
+    return session;
   });
-  void flushOutbox();
-  return session;
 }
 
 // pwa-offline-strategy.md §2/§10 — "(if completing offline) client-computed
@@ -612,21 +652,23 @@ async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<
   }));
 }
 
-export async function completeSession(): Promise<void> {
-  const session = await requireLocalSession();
-  const completedAt = new Date().toISOString();
+export function completeSession(): Promise<void> {
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    const completedAt = new Date().toISOString();
 
-  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-  const recommendationOps = offline ? await buildClientRecommendationOps(session) : [];
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+    const recommendationOps = offline ? await buildClientRecommendationOps(session) : [];
 
-  await commitSessionMutation({
-    session: null,
-    ops: [
-      ...recommendationOps,
-      workoutSessionFullRowOp(session, { status: "completed", completedAt }),
-    ],
+    await commitSessionMutation({
+      session: null,
+      ops: [
+        ...recommendationOps,
+        workoutSessionFullRowOp(session, { status: "completed", completedAt }),
+      ],
+    });
+    void flushOutbox();
   });
-  void flushOutbox();
 }
 
 // Discards a session by id — defaults to the local session (normal
@@ -637,28 +679,30 @@ export async function completeSession(): Promise<void> {
 // the id + status are sent — the server-side schema allows that (every
 // field but id is optional) and there is nothing else this device could
 // possibly know about that row.
-export async function discardSession(sessionId?: string): Promise<void> {
-  const local = await getLocalActiveSession();
-  const id = sessionId ?? local?.id;
-  if (!id) throw new Error("No active session");
+export function discardSession(sessionId?: string): Promise<void> {
+  return serialize(async () => {
+    const local = await getLocalActiveSession();
+    const id = sessionId ?? local?.id;
+    if (!id) throw new Error("No active session");
 
-  if (local && local.id === id) {
-    await commitSessionMutation({
-      session: null,
-      ops: [workoutSessionFullRowOp(local, { status: "discarded" })],
-    });
-  } else {
-    await commitSessionMutation({
-      session: undefined,
-      ops: [
-        {
-          opId: newId(),
-          entity: "workoutSession",
-          operation: "upsert",
-          payload: buildWorkoutSessionUpsertPayload({ id, status: "discarded" }),
-        },
-      ],
-    });
-  }
-  void flushOutbox();
+    if (local && local.id === id) {
+      await commitSessionMutation({
+        session: null,
+        ops: [workoutSessionFullRowOp(local, { status: "discarded" })],
+      });
+    } else {
+      await commitSessionMutation({
+        session: undefined,
+        ops: [
+          {
+            opId: newId(),
+            entity: "workoutSession",
+            operation: "upsert",
+            payload: buildWorkoutSessionUpsertPayload({ id, status: "discarded" }),
+          },
+        ],
+      });
+    }
+    void flushOutbox();
+  });
 }

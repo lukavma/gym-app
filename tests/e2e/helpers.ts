@@ -65,28 +65,48 @@ export async function ensureNoActiveSession(page: Page): Promise<void> {
   }
 }
 
-async function readOutboxStatusCounts(page: Page): Promise<{ pending: number; dead: number }> {
-  return page.evaluate(async () => {
-    const req = indexedDB.open("gym-app");
-    const db: IDBDatabase = await new Promise((resolve, reject) => {
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error as unknown as Error);
-    });
-    try {
-      const tx = db.transaction("outbox", "readonly");
-      const all: { status: string }[] = await new Promise((resolve, reject) => {
-        const r = tx.objectStore("outbox").getAll();
-        r.onsuccess = () => resolve(r.result as { status: string }[]);
-        r.onerror = () => reject(r.error as unknown as Error);
+// A sentinel that can never equal the real `{pending:0, dead:0}` target —
+// returned instead of letting a transient navigation-related failure escape
+// and abort the whole poll below (Phase 8 hardening: an app-driven
+// navigation — e.g. a background Link prefetch failing offline and Next.js
+// recovering with its own re-navigation of the current route — can tear
+// down the execution context mid-evaluate; that's a timing accident, not a
+// reason to fail a poll that would otherwise have converged on the next
+// tick).
+const TRANSIENT_READ_FAILURE = { pending: -1, dead: -1 };
+
+export async function readOutboxStatusCounts(
+  page: Page,
+): Promise<{ pending: number; dead: number }> {
+  try {
+    return await page.evaluate(async () => {
+      const req = indexedDB.open("gym-app");
+      const db: IDBDatabase = await new Promise((resolve, reject) => {
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error as unknown as Error);
       });
-      return {
-        pending: all.filter((op) => op.status === "pending").length,
-        dead: all.filter((op) => op.status === "dead").length,
-      };
-    } finally {
-      db.close();
+      try {
+        const tx = db.transaction("outbox", "readonly");
+        const all: { status: string }[] = await new Promise((resolve, reject) => {
+          const r = tx.objectStore("outbox").getAll();
+          r.onsuccess = () => resolve(r.result as { status: string }[]);
+          r.onerror = () => reject(r.error as unknown as Error);
+        });
+        return {
+          pending: all.filter((op) => op.status === "pending").length,
+          dead: all.filter((op) => op.status === "dead").length,
+        };
+      } finally {
+        db.close();
+      }
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("Execution context was destroyed") || message.includes("Target closed")) {
+      return TRANSIENT_READ_FAILURE;
     }
-  });
+    throw err;
+  }
 }
 
 // HIGH-2 — polls the client's IndexedDB outbox directly (pwa-offline-

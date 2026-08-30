@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SRC_ROOT, extractModuleSpecifiers, traceTo, walkImportGraph } from "./importGraphWalker";
+import type { SyntheticEdge } from "./importGraphWalker";
 
 function listSourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -22,6 +23,64 @@ const FORBIDDEN_DIRS = [
 
 function isForbidden(file: string): boolean {
   return FORBIDDEN_DIRS.some((dir) => file === dir || file.startsWith(dir + path.sep));
+}
+
+// Phase 8 — bodyweight/recovery quick-logs joined the offline outbox
+// (pwa-offline-strategy.md §2 capability matrix), so `app/api/sync/route.ts`
+// (a root above, as a place progression evaluation gets triggered) now also
+// legitimately reaches these four files as plain sync-transport
+// co-location — the same "shared registry, not a read path" shape already
+// carved out for `db/schema/index.ts` above, just one layer further in.
+// `server/bodyweight/service.ts`/`server/recovery/service.ts` have no
+// import of anything progression-related (verified directly: they import
+// only `@/db/schema`, `@/domain/ids/uuidv7`, their own domain schema, and
+// `@/server/time/userLocalDate`), and the two domain schema files are pure
+// leaf Zod schemas. This is not a blind allowlist: the check below still
+// requires EVERY edge into one of these four files — not just the first one
+// the BFS happened to record — to come from the sync transport
+// (`domain/sync/schema.ts` or `server/sync/service.ts`). A forbidden edge
+// arriving by any OTHER path (progression code itself, volume, history, a
+// barrel, or a future new file), whether discovered before or after the
+// legitimate transport edge, still fails.
+//
+// phase-8-review.md HIGH-2 — this used to check only `reachedFrom`'s single
+// first-recorded parent, so once any of these four files was first reached
+// via the sync transport (an accident of BFS queue order — which root gets
+// walked first, which of a file's several imports gets visited first), a
+// second, genuinely forbidden edge into the SAME file from anywhere else
+// was invisible: the check never looked past that first parent. Checking
+// every recorded parent (`allParents`, tests/unit/importGraphWalker.ts)
+// makes this edge-specific and immune to traversal order — see the
+// "closes HIGH-2's exact bypasses" describe block below for the reviewer's
+// two concrete cases this now catches.
+const SYNC_TRANSPORT_EXCEPTIONS = [
+  path.join(SRC_ROOT, "domain", "bodyweight", "schema.ts"),
+  path.join(SRC_ROOT, "domain", "recovery", "schema.ts"),
+  path.join(SRC_ROOT, "server", "bodyweight", "service.ts"),
+  path.join(SRC_ROOT, "server", "recovery", "service.ts"),
+];
+const SYNC_TRANSPORT_FILES = [
+  path.join(SRC_ROOT, "domain", "sync", "schema.ts"),
+  path.join(SRC_ROOT, "server", "sync", "service.ts"),
+];
+
+// The two real transport files, plus the four exception files themselves —
+// `domain/recovery/schema.ts` genuinely (and harmlessly) imports a shared
+// `dateOnlySchema` straight from `domain/bodyweight/schema.ts`, and
+// `server/bodyweight/service.ts` imports its own domain schema types, so
+// intra-cluster edges between these six co-located files are expected, not
+// a bypass. A parent from ANYWHERE else — progression, volume, history, a
+// barrel, or a future new file — is still rejected.
+const APPROVED_SYNC_TRANSPORT_PARENTS = new Set([
+  ...SYNC_TRANSPORT_FILES,
+  ...SYNC_TRANSPORT_EXCEPTIONS,
+]);
+
+function isSyncTransportException(file: string, allParents: Map<string, Set<string>>): boolean {
+  if (!SYNC_TRANSPORT_EXCEPTIONS.includes(file)) return false;
+  const parents = allParents.get(file);
+  if (!parents || parents.size === 0) return false;
+  return [...parents].every((parent) => APPROVED_SYNC_TRANSPORT_PARENTS.has(parent));
 }
 
 // implementation-plan.md Phase 7 / mvp-scope.md F10 — "a code-level check
@@ -63,7 +122,7 @@ describe("progression engine — non-consumption of bodyweight/recovery (Phase 7
   });
 
   it("the real progression/server assembly graph never transitively reaches bodyweight or recovery modules", () => {
-    const { visited, reachedFrom } = walkImportGraph(ROOTS);
+    const { visited, reachedFrom, allParents } = walkImportGraph(ROOTS);
 
     // Sanity: the walk must actually traverse beyond the roots themselves —
     // a resolver bug that silently failed to resolve any edge would make
@@ -80,12 +139,63 @@ describe("progression engine — non-consumption of bodyweight/recovery (Phase 7
     );
     expect(visited.size).toBeGreaterThan(30);
 
-    const offenders = [...visited].filter(isForbidden);
+    const offenders = [...visited]
+      .filter(isForbidden)
+      .filter((f) => !isSyncTransportException(f, allParents));
     if (offenders.length > 0) {
       const traces = offenders.map((f) => traceTo(reachedFrom, f)).join("\n");
       throw new Error(`Forbidden import edge(s) detected:\n${traces}`);
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("the sync-transport exception is exactly the four known co-location files, reached only via the sync transport", () => {
+    const { allParents } = walkImportGraph(ROOTS);
+    for (const file of SYNC_TRANSPORT_EXCEPTIONS) {
+      expect(
+        isSyncTransportException(file, allParents),
+        `expected ${path.relative(SRC_ROOT, file)} to be reached via the sync transport`,
+      ).toBe(true);
+    }
+  });
+
+  // phase-8-review.md HIGH-2 — closes the reviewer's exact two bypasses.
+  // These inject a SYNTHETIC edge (importGraphWalker.ts's extraEdges — no
+  // real file is ever touched, since the edge must never legitimately
+  // exist in production source) from a real, already-visited root-graph
+  // node straight to a sync-transport-exception file, and assert the
+  // boundary check now flags it regardless of which of the file's other,
+  // legitimate parents the BFS happened to discover first.
+  describe("closes HIGH-2's exact bypasses — a forbidden edge is caught no matter what else reaches the same file first", () => {
+    const recoveryService = path.join(SRC_ROOT, "server", "recovery", "service.ts");
+
+    it("a forbidden edge from server/volume/service.ts is detected (previously invisible: recovery was reached via the sync transport FIRST)", () => {
+      const volumeService = path.join(SRC_ROOT, "server", "volume", "service.ts");
+      const extraEdges: SyntheticEdge[] = [{ from: volumeService, to: recoveryService }];
+      const { visited, allParents } = walkImportGraph(ROOTS, { extraEdges });
+
+      expect(
+        visited.has(volumeService),
+        "expected volume/service.ts to be a real graph member",
+      ).toBe(true);
+      expect(isSyncTransportException(recoveryService, allParents)).toBe(false);
+      const offenders = [...visited]
+        .filter(isForbidden)
+        .filter((f) => !isSyncTransportException(f, allParents));
+      expect(offenders).toContain(recoveryService);
+    });
+
+    it("a forbidden edge from server/progression/service.ts is (still) detected", () => {
+      const progressionService = path.join(SRC_ROOT, "server", "progression", "service.ts");
+      const extraEdges: SyntheticEdge[] = [{ from: progressionService, to: recoveryService }];
+      const { visited, allParents } = walkImportGraph(ROOTS, { extraEdges });
+
+      expect(isSyncTransportException(recoveryService, allParents)).toBe(false);
+      const offenders = [...visited]
+        .filter(isForbidden)
+        .filter((f) => !isSyncTransportException(f, allParents));
+      expect(offenders).toContain(recoveryService);
+    });
   });
 
   // Negative control (phase-7-review.md's own methodology): if the walker

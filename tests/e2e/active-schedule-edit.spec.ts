@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { login, ensureNoActiveSession } from "./helpers";
+import { login, ensureNoActiveSession, waitForOutboxDrained } from "./helpers";
 
 // Active-schedule remediation e2e — implementation-plan.md Phase 5's block
 // lifecycle was wrong: a real-iPhone acceptance pass found that once a
@@ -160,6 +160,15 @@ test.describe("active-block schedule editing (active-schedule remediation)", () 
       await expect(page.getByRole("button", { name: "Start workout" })).toBeVisible();
       await page.getByRole("button", { name: "Start workout" }).click();
       await page.waitForURL(/\/today\/workout$/);
+      // phase-8-review.md HIGH-3 remediation — pre-existing race, unrelated
+      // to Phase 8: `startSession` commits locally to IndexedDB immediately,
+      // but this spec queries the SERVER's view of the session
+      // (`/api/active-session`) right after, before the outbox has actually
+      // flushed the session/session-exercise create ops. Without waiting,
+      // the server can still show `exercises: []` here — reproduced on a
+      // freshly migrated+seeded database in complete isolation, not a
+      // cross-spec contamination artifact.
+      await waitForOutboxDrained(page);
 
       const beforeEditSessionRes = await page.request.get("/api/active-session");
       const beforeEditSession = ((await beforeEditSessionRes.json()) as ActiveSessionDto)
