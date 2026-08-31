@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { asc } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import type { AppDb } from "@/db/client";
 import { createTestDb } from "./testDb";
-import { exercisePrescriptions, recommendations, users } from "@/db/schema";
+import {
+  exercisePrescriptions,
+  recommendations,
+  sessionExercises,
+  setLogs,
+  users,
+  workoutSessions,
+} from "@/db/schema";
 import { seedMuscleGroups } from "@/db/seed";
 import { createExercise } from "@/server/exercises/service";
 import { createProgram } from "@/server/programs/service";
@@ -272,6 +279,393 @@ describe("progression engine server orchestration (PGlite integration)", () => {
 
     const after = await db.select().from(recommendations);
     expect(after).toEqual(before);
+  });
+
+  // docs/reviews/mvp-v1-independent-review.md MEDIUM-1 — a lost reply to a
+  // multi-op reconnect flush resends the WHOLE pending outbox unchanged
+  // (src/sync/flush.ts never removes an op it didn't get a classified
+  // response for). This reproduces the exact op mix the review's F6
+  // reconnect flow produces — session create, two exercise creates, a
+  // skip/unskip round-trip and a stray skip left set on the second
+  // exercise, set creates AND a correction, and completion — submitted
+  // three times as one identical batch (the "server actually applied it,
+  // client never saw the reply, resend the same batch" shape). Before the
+  // fix, the second and third submissions dead-lettered the session-create
+  // (`invalid_lifecycle_transition`) and the exercise ops whose skip/notes
+  // state a later op in the same batch had since moved on
+  // (`session_locked`), even though nothing was ever lost or duplicated.
+  it(
+    "a lost-reply replay of a full reconnect batch (create, skip toggle, notes, set " +
+      "create+edit, second exercise, completion) converges with zero rejections and an " +
+      "unchanged, non-duplicated recommendation",
+    async () => {
+      const curl = await createExercise(db, userId, {
+        name: "Bicep Curl",
+        equipment: "dumbbell",
+        mechanics: "isolation",
+        laterality: "bilateral",
+        loadStepKg: 1,
+        contributions: [{ muscleGroupId: "biceps", role: "primary", weight: 1 }],
+      });
+
+      const sessionId = newId();
+      const squatRowId = newId();
+      const curlRowId = newId();
+      const setIds = [newId(), newId(), newId()];
+      const startedAt = "2026-08-20T10:00:00.000Z";
+      const completedAt = "2026-08-20T11:00:00.000Z";
+
+      // Every op below is deliberately FULL-ROW (see
+      // sync.integration.test.ts's twin test for the full rationale): the
+      // real client always resends every field it knows, and the
+      // supersession tolerance only excuses an earlier op via a later one
+      // that is itself create-anchored and fully subsumes it
+      // (docs/reviews/mvp-v1-remediation-verification.md V-3) — a later op
+      // missing fields (as an earlier version of this test sent) never
+      // qualifies, and isn't what the real client produces anyway.
+      const squatSnapshot = buildSnapshot(exerciseId, exerciseName);
+      const ops: SyncOpEnvelope[] = [
+        {
+          opId: newId(),
+          entity: "workoutSession",
+          operation: "upsert",
+          payload: {
+            id: sessionId,
+            blockId,
+            templateId,
+            templateName: "Push Day",
+            weekIndex: 1,
+            isDeload: false,
+            status: "in_progress",
+            startedAt,
+            completedAt: null,
+            clientId: null,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: squatRowId,
+            sessionId,
+            exerciseId,
+            position: 0,
+            source: "template",
+            prescription: squatSnapshot,
+            skipped: false,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: curlRowId,
+            sessionId,
+            exerciseId: curl.id,
+            position: 1,
+            source: "adhoc",
+            prescription: null,
+            skipped: false,
+            notes: null,
+          },
+        },
+        // Skip/unskip round-trip on the squat — its create-shaped values
+        // (skipped:false) end up trailing these later same-id ops once the
+        // batch is replayed against an already-terminal row.
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: squatRowId,
+            sessionId,
+            exerciseId,
+            position: 0,
+            source: "template",
+            prescription: squatSnapshot,
+            skipped: true,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: squatRowId,
+            sessionId,
+            exerciseId,
+            position: 0,
+            source: "template",
+            prescription: squatSnapshot,
+            skipped: false,
+            notes: null,
+          },
+        },
+        // The curl is left skipped — mirrors the review's exact "curl slot"
+        // reproduction: its create's skipped:false is stale against this.
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: curlRowId,
+            sessionId,
+            exerciseId: curl.id,
+            position: 1,
+            source: "adhoc",
+            prescription: null,
+            skipped: true,
+            notes: null,
+          },
+        },
+        ...[5, 5, 5].map((repCount, index): SyncOpEnvelope => ({
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setIds[index]!,
+            sessionExerciseId: squatRowId,
+            setNumber: index + 1,
+            isWarmup: false,
+            weightKg: 100,
+            reps: repCount,
+            rir: index === 2 ? 2 : 3,
+            loggedAt: startedAt,
+            notes: null,
+          },
+        })),
+        // A correction of the first set through the in-session Edit/Save UI
+        // (editSet → setLogFullRowOp, also full-row) — "set edits", not
+        // just creates.
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setIds[0]!,
+            sessionExerciseId: squatRowId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 101,
+            reps: 5,
+            rir: 3,
+            loggedAt: startedAt,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: squatRowId,
+            sessionId,
+            exerciseId,
+            position: 0,
+            source: "template",
+            prescription: squatSnapshot,
+            skipped: false,
+            notes: "felt strong today",
+          },
+        },
+        {
+          opId: newId(),
+          entity: "workoutSession",
+          operation: "upsert",
+          payload: {
+            id: sessionId,
+            blockId,
+            templateId,
+            templateName: "Push Day",
+            weekIndex: 1,
+            isDeload: false,
+            status: "completed",
+            startedAt,
+            completedAt,
+            clientId: null,
+            notes: null,
+          },
+        },
+      ];
+
+      const first = await applySyncBatch(db, userId, ops);
+      expect(first.rejected).toEqual([]);
+      expect(first.applied).toHaveLength(ops.length);
+
+      async function snapshot() {
+        const [session] = await db
+          .select()
+          .from(workoutSessions)
+          .where(eq(workoutSessions.id, sessionId));
+        const exerciseRows = await db
+          .select()
+          .from(sessionExercises)
+          .where(eq(sessionExercises.sessionId, sessionId))
+          .orderBy(asc(sessionExercises.position));
+        const setRows = await db
+          .select()
+          .from(setLogs)
+          .where(eq(setLogs.sessionExerciseId, squatRowId))
+          .orderBy(asc(setLogs.setNumber));
+        const recs = await db.select().from(recommendations);
+        return {
+          session,
+          exerciseRows,
+          // setLogs.updatedAt is bumped on every replay by design
+          // (applySetLogUpsert has no noop short-circuit — corrections are
+          // allowed at any time, pre-existing and unrelated to MEDIUM-1) —
+          // excluded here so this stays a check on actual DATA, not on that
+          // bookkeeping column.
+          setRows: setRows.map((row) => {
+            const { updatedAt, ...rest } = row;
+            void updatedAt;
+            return rest;
+          }),
+          recs,
+        };
+      }
+
+      const after = await snapshot();
+      expect(after.session?.status).toBe("completed");
+      expect(after.exerciseRows.find((e) => e.id === squatRowId)).toMatchObject({
+        skipped: false,
+        notes: "felt strong today",
+      });
+      expect(after.exerciseRows.find((e) => e.id === curlRowId)).toMatchObject({
+        skipped: true,
+      });
+      expect(after.setRows.find((s) => s.id === setIds[0])?.weightKg).toBe(101);
+      expect(after.recs).toHaveLength(1);
+      expect(after.recs[0]?.action).toBe("increase_load");
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const replay = await applySyncBatch(db, userId, ops);
+        expect(replay.rejected).toEqual([]);
+        expect(replay.applied).toHaveLength(ops.length);
+
+        const now = await snapshot();
+        expect(now).toEqual(after);
+      }
+    },
+  );
+
+  // docs/reviews/mvp-v1-remediation-verification.md V-1 — extends the
+  // create→delete→renumber shape (see sync.integration.test.ts's twin
+  // tests) to a real load-progression recommendation, proving the deleted
+  // set never transiently (or permanently) resurrects into the evaluation
+  // the completion runs, and that replaying the batch never churns out a
+  // second recommendation. The deleted set here is a genuinely bad rep (a
+  // failed single at 3 reps) — if it survived the replay even momentarily,
+  // evaluation would see 4 sets instead of 3 and a worse final-set outcome.
+  it("a create→delete→renumber→complete batch never resurrects the deleted set into evaluation, and never churns the recommendation, across three submissions", async () => {
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    const setIds = [newId(), newId(), newId(), newId()];
+    const startedAt = "2026-08-21T10:00:00.000Z";
+    const completedAt = "2026-08-21T11:00:00.000Z";
+    const snapshot = buildSnapshot(exerciseId, exerciseName);
+
+    const ops: SyncOpEnvelope[] = [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: {
+          id: sessionId,
+          blockId,
+          templateId,
+          templateName: "Push Day",
+          weekIndex: 1,
+          isDeload: false,
+          status: "in_progress",
+          startedAt,
+          completedAt: null,
+          clientId: null,
+          notes: null,
+        },
+      },
+      {
+        opId: newId(),
+        entity: "sessionExercise",
+        operation: "upsert",
+        payload: {
+          id: sessionExerciseId,
+          sessionId,
+          exerciseId,
+          position: 0,
+          source: "template",
+          prescription: snapshot,
+          skipped: false,
+          notes: null,
+        },
+      },
+      // Sets 1-3 at 100kg/5reps/RIR2 (all-prescribed-reps-completed), a 4th
+      // failed single (3 reps) that gets deleted below — if it survived
+      // even transiently, `derived.setsCompleted` would be 4 and the
+      // outcome would differ.
+      ...[5, 5, 5, 3].map((reps, index): SyncOpEnvelope => ({
+        opId: newId(),
+        entity: "setLog",
+        operation: "upsert",
+        payload: {
+          id: setIds[index]!,
+          sessionExerciseId,
+          setNumber: index + 1,
+          isWarmup: false,
+          weightKg: 100,
+          reps,
+          rir: index === 3 ? 0 : 2,
+          loggedAt: startedAt,
+          notes: null,
+        },
+      })),
+      { opId: newId(), entity: "setLog", operation: "delete", payload: { id: setIds[3]! } },
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: {
+          id: sessionId,
+          blockId,
+          templateId,
+          templateName: "Push Day",
+          weekIndex: 1,
+          isDeload: false,
+          status: "completed",
+          startedAt,
+          completedAt,
+          clientId: null,
+          notes: null,
+        },
+      },
+    ];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await applySyncBatch(db, userId, ops);
+      expect(result.rejected).toEqual([]);
+      expect(result.applied).toHaveLength(ops.length);
+    }
+
+    const setRows = await db
+      .select()
+      .from(setLogs)
+      .where(eq(setLogs.sessionExerciseId, sessionExerciseId));
+    expect(setRows).toHaveLength(3);
+    expect(setRows.every((s) => s.reps === 5)).toBe(true);
+
+    const recs = await db.select().from(recommendations);
+    expect(recs).toHaveLength(1);
+    // 3/3 prescribed sets at RIR 2 (in the progress zone) → increase_load,
+    // not the hold/decrease outcome a surviving failed 4th set would cause.
+    expect(recs[0]?.action).toBe("increase_load");
+    expect(recs[0]?.inputs).toMatchObject({
+      derived: { setsCompleted: 3, prescribedSets: 3 },
+    });
   });
 
   it("a later session's evaluation supersedes the previous pending rec (one pending per exercise+block)", async () => {
