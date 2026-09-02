@@ -18,3 +18,6 @@ export * from "./setLogs";
 export * from "./recommendations";
 export * from "./bodyweightEntries";
 export * from "./recoveryEntries";
+export * from "./warmupRoutines";
+export * from "./warmupRoutineItems";
+export * from "./workoutTemplateWarmupRoutines";

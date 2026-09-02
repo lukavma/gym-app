@@ -35,6 +35,7 @@ import {
   getSessionRecommendationsByExercise,
   type RecommendationDto,
 } from "@/server/progression/service";
+import { listTemplateWarmupRoutines } from "@/server/warmupRoutines/service";
 
 // Bounded lookback for "previous performance" / the future progression
 // engine's history window (progression-engine.md §2's `history` input —
@@ -137,6 +138,26 @@ export interface ActiveSessionDto {
   exercises: ActiveSessionExerciseDto[];
 }
 
+// Warm-up Routines v1 (owner decision O-2) — the routine definitions the
+// workout may offer, frozen client-side into the active-session aggregate at
+// start. Only the resolved template's LINKED routines ride here, in link
+// order; the user's wider library never does, because the in-workout
+// switcher must never offer it.
+//
+// Items are pure text (`label` + optional `instruction`) and reference no
+// exercise and no muscle group, so nothing here can reach the volume or
+// progression pipelines (I-4).
+export interface TodayWarmupRoutineItemDto {
+  label: string;
+  instruction: string | null;
+}
+
+export interface TodayWarmupRoutineDto {
+  id: string;
+  name: string;
+  items: TodayWarmupRoutineItemDto[];
+}
+
 export type TodayResolutionDto =
   | {
       kind: "scheduled";
@@ -146,6 +167,15 @@ export type TodayResolutionDto =
       weekIndex: number | null;
       isDeload: boolean;
       exercises: TodayBundleExerciseEntry[];
+      // The template's curated warm-up routines, in link order. Empty when
+      // the template links none — which is also how every bundle built
+      // before this feature shipped reads to a client (see the tolerance
+      // note on the client mirror in src/sync/types.ts).
+      warmupRoutines: TodayWarmupRoutineDto[];
+      // The id of the linked routine marked default, or null when the
+      // template has links but no default (the compact-chooser case) or no
+      // links at all.
+      defaultWarmupRoutineId: string | null;
     }
   | { kind: "rest" }
   | { kind: "no_schedule" };
@@ -521,6 +551,24 @@ export async function buildTodayBundle(
             });
           }
 
+          // Warm-up Routines v1 (O-2) — only what this template links, in
+          // link order. Read through the ownership-checked service call so
+          // the bundle can never widen access beyond what the REST surface
+          // would allow; `null` is impossible here (the template was reached
+          // through this user's own active program) but is handled as "no
+          // routines" rather than asserted away.
+          const warmupLinks = (await listTemplateWarmupRoutines(db, userId, template.id)) ?? [];
+          const warmupRoutines: TodayWarmupRoutineDto[] = warmupLinks.map((link) => ({
+            id: link.routineId,
+            name: link.name,
+            items: link.items.map((item) => ({
+              label: item.label,
+              instruction: item.instruction,
+            })),
+          }));
+          const defaultWarmupRoutineId =
+            warmupLinks.find((link) => link.isDefault)?.routineId ?? null;
+
           todayDto = {
             kind: "scheduled",
             blockId: block.id,
@@ -529,6 +577,8 @@ export async function buildTodayBundle(
             weekIndex: weekIdx,
             isDeload: effective.isDeload,
             exercises: entries,
+            warmupRoutines,
+            defaultWarmupRoutineId,
           };
         }
       } else {

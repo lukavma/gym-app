@@ -187,6 +187,14 @@ export function TodaySection({ navigate }: TodaySectionProps) {
         weekIndex: bundle.today.weekIndex,
         isDeload: bundle.today.isDeload,
         exercises: bundle.today.exercises,
+        // Warm-up Routines v1 — frozen into the local aggregate by
+        // startSession. Both fields are absent on a pre-upgrade cached
+        // bundle (SW cache or IndexedDB bundleCache), which is why the
+        // client DTO types them optional; `?? []` / `?? null` here means a
+        // stale cache starts a normal workout with no card instead of
+        // throwing (evaluation R-1, the Phase 5 L-4 precedent).
+        warmupRoutines: bundle.today.warmupRoutines ?? [],
+        defaultWarmupRoutineId: bundle.today.defaultWarmupRoutineId ?? null,
       });
       go("/today/workout");
     } catch {
@@ -344,6 +352,15 @@ function TodayResolutionView({
     return <p className="text-sm text-slate-400">No program scheduled.</p>;
   }
 
+  // Warm-up Routines v1, owner decision O-6 — a compact informational line,
+  // nothing more. It is not a control, adds no gate before "Start workout",
+  // and both fields are read defensively so a pre-upgrade cached bundle just
+  // shows nothing (R-1).
+  const defaultWarmupRoutineName =
+    (today.warmupRoutines ?? []).find(
+      (routine) => routine.id === (today.defaultWarmupRoutineId ?? null),
+    )?.name ?? null;
+
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -353,6 +370,9 @@ function TodayResolutionView({
             Week {today.weekIndex}
             {today.isDeload ? " · deload" : ""}
           </p>
+        )}
+        {defaultWarmupRoutineName && (
+          <p className="text-xs text-slate-400">Warm-up: {defaultWarmupRoutineName}</p>
         )}
       </div>
       <ul className="flex flex-col gap-2">

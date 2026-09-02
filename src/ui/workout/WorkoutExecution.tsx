@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import { ExerciseCard } from "./ExerciseCard";
 import { AddAdhocExercise } from "./AddAdhocExercise";
+import { WarmupCardForSession } from "./WarmupCard";
 
 interface WorkoutExecutionProps {
   // Supplied only by the offline app shell (src/ui/OfflineShell.tsx), which
@@ -97,6 +98,12 @@ export function WorkoutExecution({ navigate }: WorkoutExecutionProps) {
           in History.
         </p>
       )}
+
+      {/* Warm-up Routines v1 (evaluation §5) — above the exercises, below
+          the header. Renders nothing at all unless this session froze linked
+          routines at start, so the screen is byte-identical to before for
+          every template that links none. */}
+      <WarmupCardForSession session={session} disabled={sessionBlocked} />
 
       <ul className="flex flex-col gap-3">
         {exercises.map((exercise) => (

@@ -23,11 +23,18 @@ import {
   type SessionExerciseEvaluationInput,
 } from "@/domain/progression/evaluateSession";
 import type { PerformedExercise, RecommendationTarget } from "@/domain/progression/engine";
+import {
+  freezeWarmupState,
+  selectWarmupRoutine as selectWarmupRoutineState,
+  setWarmupDismissed as setWarmupDismissedState,
+  toggleWarmupItem as toggleWarmupItemState,
+} from "@/domain/warmup/session";
 import type {
   ActiveSessionDto,
   ActiveSessionExerciseDto,
   ActiveSessionSetDto,
   TodayBundleExerciseEntryDto,
+  TodayWarmupRoutineDto,
 } from "./types";
 
 // Every mutator here follows the same shape: mutate the in-memory
@@ -231,6 +238,12 @@ export interface StartSessionInput {
   weekIndex: number | null;
   isDeload: boolean;
   exercises: TodayBundleExerciseEntryDto[];
+  // Warm-up Routines v1 — both optional, because a pre-upgrade cached bundle
+  // (SW cache or IndexedDB `bundleCache`) simply has no such fields (R-1).
+  // Omitted/empty means `session.warmup` stays null and no card renders; no
+  // caller has to special-case it.
+  warmupRoutines?: TodayWarmupRoutineDto[];
+  defaultWarmupRoutineId?: string | null;
 }
 
 // Snapshot-on-use, exactly once: every scheduled exercise's
@@ -276,8 +289,21 @@ export function startSession(input: StartSessionInput): Promise<ActiveSessionDto
       clientId: null,
       notes: null,
       exercises,
+      // Frozen exactly once, here (evaluation §6.3). Nothing later in the
+      // session re-reads the bundle for warm-up data, so a bundle refresh
+      // or a routine edit mid-workout cannot change the checklist under the
+      // athlete's thumb.
+      warmup: freezeWarmupState({
+        routines: input.warmupRoutines ?? [],
+        defaultRoutineId: input.defaultWarmupRoutineId ?? null,
+      }),
     };
 
+    // Note what is NOT here: no warm-up op. `warmup` rides inside the local
+    // aggregate only, and the three payload builders below enumerate their
+    // fields explicitly, so it is a compile-level impossibility for it to
+    // reach the wire (I-2, W-1 — the sync contract is untouched by this
+    // feature).
     const ops: OutboxOpInput[] = [
       workoutSessionFullRowOp(session),
       ...exercises.map((ex) => sessionExerciseFullRowOp(sessionId, ex)),
@@ -287,6 +313,51 @@ export function startSession(input: StartSessionInput): Promise<ActiveSessionDto
     void flushOutbox();
     return session;
   });
+}
+
+// Warm-up Routines v1 — the three execution mutators.
+//
+// They are the ONLY mutators in this file that commit with `ops: []`. That
+// is the whole design: the write is a durable local aggregate commit through
+// the same `commitSessionMutation` transaction as everything else (so it
+// survives reload, iOS process kill and same-device resume exactly like a
+// logged set), while producing nothing for the outbox to carry and nothing
+// for the server to store (I-1/I-5).
+//
+// They also deliberately do NOT call `flushOutbox()`. Every other mutator
+// kicks a flush because it just enqueued something; these enqueue nothing,
+// so a flush would be a pointless network attempt whose only observable
+// effect would be to make "did a warm-up interaction touch the wire?" harder
+// to answer honestly. It is now answerable by inspection: no ops, no flush.
+//
+// A session without `warmup` (pre-upgrade aggregate, or a cross-device
+// adopt) is returned unchanged rather than throwing — the card that would
+// have called these isn't rendered in that case, so this is a backstop, not
+// a path the UI takes.
+function commitWarmupMutation(
+  mutate: (
+    state: NonNullable<ActiveSessionDto["warmup"]>,
+  ) => NonNullable<ActiveSessionDto["warmup"]>,
+): Promise<ActiveSessionDto> {
+  return serialize(async () => {
+    const session = await requireLocalSession();
+    if (!session.warmup) return session;
+    session.warmup = mutate(session.warmup);
+    await commitSessionMutation({ session, ops: [] });
+    return session;
+  });
+}
+
+export function selectWarmupRoutine(routineId: string | null): Promise<ActiveSessionDto> {
+  return commitWarmupMutation((state) => selectWarmupRoutineState(state, routineId));
+}
+
+export function toggleWarmupItem(index: number): Promise<ActiveSessionDto> {
+  return commitWarmupMutation((state) => toggleWarmupItemState(state, index));
+}
+
+export function setWarmupDismissed(dismissed: boolean): Promise<ActiveSessionDto> {
+  return commitWarmupMutation((state) => setWarmupDismissedState(state, dismissed));
 }
 
 export function addAdhocExercise(

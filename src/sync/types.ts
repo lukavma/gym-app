@@ -4,6 +4,11 @@ import type { RirBand } from "@/domain/schemes/rirBand";
 import type { ResolvedProgression } from "@/domain/progression/registry";
 import type { WeekModifiers } from "@/domain/blocks/schema";
 import type {
+  WarmupItemState,
+  WarmupRoutineState,
+  WarmupSessionState,
+} from "@/domain/warmup/session";
+import type {
   InputsSummary,
   RecommendationAction,
   RecommendationTarget,
@@ -127,6 +132,30 @@ export interface ActiveSessionExerciseDto {
   sets: ActiveSessionSetDto[];
 }
 
+// Warm-up Routines v1 — client-only session state. NEVER mirrored into any
+// sync payload, and there is no column, JSONB field or sync entity anywhere
+// that could receive it (evaluation §6.1, I-1/I-2/I-5).
+//
+// It survives reload, iOS process kill and same-device resume purely because
+// it rides inside the existing IndexedDB active-session aggregate, written
+// through the same `commitSessionMutation` transaction as everything else —
+// with `ops: []`, so nothing is ever enqueued for the wire. It ceases to
+// exist when the aggregate is deleted at completion/discard (M-5), and a
+// server-hydrated DTO (cross-device adopt) simply lacks it (O-3).
+// Aliases, not re-declarations: the shape and every transition over it live
+// in @/domain/warmup/session (pure, unit-testable without IndexedDB), and
+// this layer only decides where it is stored. `routines` is frozen once at
+// startSession from the bundle's linked routines, so a mid-session
+// rename/delete/relink never mutates a running workout (snapshot-on-use in
+// spirit, ADR-007 — but with no persistence obligation, because no
+// historical fact is created). `selectedRoutineId` is null when the template
+// has links but no default (the compact chooser); `done` is parallel to the
+// selected routine's items and resets on every switch; `dismissed` is a
+// per-session, reversible skip that is forgotten with the session.
+export type ActiveSessionWarmupItemDto = WarmupItemState;
+export type ActiveSessionWarmupRoutineDto = WarmupRoutineState;
+export type ActiveSessionWarmupDto = WarmupSessionState;
+
 export interface ActiveSessionDto {
   id: string;
   blockId: string | null;
@@ -139,6 +168,12 @@ export interface ActiveSessionDto {
   clientId: string | null;
   notes: string | null;
   exercises: ActiveSessionExerciseDto[];
+  // Optional on purpose, in both directions: an aggregate written before
+  // this feature shipped has no `warmup` (R-2), and a DTO hydrated from the
+  // server never will (the server has nothing to put there). Absent means
+  // "no card", never an error — and no IndexedDB DB_VERSION bump is needed,
+  // since object stores are schemaless.
+  warmup?: ActiveSessionWarmupDto | null;
 }
 
 // Phase 8 — mirrors src/ui/recovery/types.ts's RecoveryEntryDto by the same
@@ -157,6 +192,18 @@ export interface RecoveryEntrySnapshot {
   note: string | null;
 }
 
+// Warm-up Routines v1 — mirrors the server's TodayWarmupRoutineDto.
+export interface TodayWarmupRoutineItemDto {
+  label: string;
+  instruction: string | null;
+}
+
+export interface TodayWarmupRoutineDto {
+  id: string;
+  name: string;
+  items: TodayWarmupRoutineItemDto[];
+}
+
 export type TodayResolutionDto =
   | {
       kind: "scheduled";
@@ -166,6 +213,18 @@ export type TodayResolutionDto =
       weekIndex: number | null;
       isDeload: boolean;
       exercises: TodayBundleExerciseEntryDto[];
+      // Warm-up Routines v1 — OPTIONAL here while the server type declares
+      // them required, and that asymmetry is the point (evaluation §8.1's
+      // mandatory tolerance rule, R-1). Both the service worker's
+      // `today-bundle` cache and the IndexedDB `bundleCache` will keep
+      // serving pre-upgrade copies after deploy, and the Phase 5 L-4
+      // regression (a cached bundle lacking `appliedModifiers` made offline
+      // start throw) is exactly what happens when a client assumes a new
+      // bundle field exists. Typing them optional makes every read site
+      // handle absence at compile time; absent means "no warm-up card", not
+      // an error.
+      warmupRoutines?: TodayWarmupRoutineDto[];
+      defaultWarmupRoutineId?: string | null;
     }
   | { kind: "rest" }
   | { kind: "no_schedule" };

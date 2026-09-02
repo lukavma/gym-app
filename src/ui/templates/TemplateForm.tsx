@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/ui/Button";
 import type { TemplateDto } from "./types";
 import { PrescriptionsSection } from "@/ui/prescriptions/PrescriptionsSection";
+import { TemplateWarmupRoutinesSection } from "@/ui/warmup/TemplateWarmupRoutinesSection";
 
 type Status = "loading" | "ready" | "submitting" | "not_found";
 
@@ -182,6 +183,7 @@ export function TemplateForm({ mode, programId, templateId }: TemplateFormProps)
       </form>
 
       {mode === "edit" && templateId && <PrescriptionsSection templateId={templateId} />}
+      {mode === "edit" && templateId && <TemplateWarmupRoutinesSection templateId={templateId} />}
     </div>
   );
 }

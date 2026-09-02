@@ -39,6 +39,13 @@ interface ActiveSessionState {
   editSet: (sessionExerciseId: string, setId: string, patch: EditSetPatch) => Promise<void>;
   deleteSet: (sessionExerciseId: string, setId: string) => Promise<void>;
   setSessionNotes: (notes: string | null) => Promise<void>;
+  // Warm-up Routines v1 — local-only session state. Same store shape as
+  // every other action (mutate IndexedDB, mirror the result here), but the
+  // underlying mutators enqueue no outbox ops, so none of these can produce
+  // a sync effect (see src/sync/activeSession.ts).
+  selectWarmupRoutine: (routineId: string | null) => Promise<void>;
+  toggleWarmupItem: (index: number) => Promise<void>;
+  setWarmupDismissed: (dismissed: boolean) => Promise<void>;
   complete: () => Promise<void>;
   discard: (sessionId?: string) => Promise<void>;
   // MEDIUM-9 — if the session's own workoutSession op dead-lettered (e.g. a
@@ -107,6 +114,18 @@ export const useActiveSessionStore = create<ActiveSessionState>((set, get) => ({
   },
   setSessionNotes: async (notes) => {
     const session = await activeSession.setSessionNotes(notes);
+    set({ session });
+  },
+  selectWarmupRoutine: async (routineId) => {
+    const session = await activeSession.selectWarmupRoutine(routineId);
+    set({ session });
+  },
+  toggleWarmupItem: async (index) => {
+    const session = await activeSession.toggleWarmupItem(index);
+    set({ session });
+  },
+  setWarmupDismissed: async (dismissed) => {
+    const session = await activeSession.setWarmupDismissed(dismissed);
     set({ session });
   },
   complete: async () => {
