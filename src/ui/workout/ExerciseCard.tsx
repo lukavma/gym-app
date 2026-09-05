@@ -38,6 +38,18 @@ function validateSetInput(weightKg: number, reps: number, rir: number | null): s
   return null;
 }
 
+// V-1 remediation (docs/reviews/warmup-set-classification-remediation-verification.md)
+// — a plain `useState(false)` reset to "off" on any remount of the same
+// exercise (a reload, a PWA relaunch, a takeover), silently turning the next
+// ramp set into a work set mid-warm-up. Deriving the initial value from the
+// last logged set's own `isWarmup` instead makes a remount resume exactly
+// where the athlete left off, using data that is already synced and
+// rendered — no new persisted field, no sync-contract change. A fresh
+// exercise (no sets yet) still starts at false.
+function deriveWarmupToggleDefault(exercise: ActiveSessionExerciseDto): boolean {
+  return exercise.sets.at(-1)?.isWarmup ?? false;
+}
+
 // Prefill priority: the last set logged this session for this exercise →
 // the recommendation's target while it is pending or accepted
 // (progression-engine.md §7: "the recommendation shows as the prefilled
@@ -83,6 +95,13 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
   const [weight, setWeight] = useState(prefill.loadKg !== null ? String(prefill.loadKg) : "");
   const [reps, setReps] = useState(prefill.reps !== null ? String(prefill.reps) : "");
   const [rir, setRir] = useState("");
+  // Defaults to false for a fresh exercise, and — since ExerciseCard is
+  // keyed by exercise.id — resets on a genuinely different exercise. Within
+  // the SAME exercise, it survives a remount by deriving from the last
+  // logged set (V-1) and, unlike rir, deliberately does NOT reset after a
+  // successful log — a warm-up ramp is consecutive sets, so the toggle
+  // stays on until the athlete turns it off themselves.
+  const [isWarmup, setIsWarmup] = useState(() => deriveWarmupToggleDefault(exercise));
   const [notesOpen, setNotesOpen] = useState(Boolean(exercise.notes));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +127,13 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
     setError(null);
     setBusy(true);
     try {
-      await logSet({ sessionExerciseId: exercise.id, weightKg, reps: repsValue, rir: rirValue });
+      await logSet({
+        sessionExerciseId: exercise.id,
+        weightKg,
+        reps: repsValue,
+        rir: rirValue,
+        isWarmup,
+      });
       setRir("");
     } finally {
       setBusy(false);
@@ -184,6 +209,16 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
 
       {!exercise.skipped && (
         <div className="flex flex-col gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={isWarmup}
+              onChange={(e) => setIsWarmup(e.target.checked)}
+              disabled={disabled}
+              className="h-5 w-5 rounded border-slate-700 bg-slate-950 accent-slate-100 disabled:opacity-50"
+            />
+            Warm-up set
+          </label>
           <div className="flex items-end gap-2">
             <label className="flex flex-1 flex-col gap-1">
               <span className="text-xs text-slate-400">kg</span>
@@ -265,13 +300,23 @@ function SetRow({
 }: {
   set: ActiveSessionSetDto;
   disabled?: boolean;
-  onEdit: (patch: { weightKg?: number; reps?: number; rir?: number | null }) => void;
+  onEdit: (patch: {
+    weightKg?: number;
+    reps?: number;
+    rir?: number | null;
+    isWarmup?: boolean;
+  }) => void;
   onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [weight, setWeight] = useState(String(set.weightKg));
   const [reps, setReps] = useState(String(set.reps));
   const [rir, setRir] = useState(set.rir === null ? "" : String(set.rir));
+  // V-2 remediation — seeded from the actual stored value every time edit
+  // mode opens (this row remounts per set via `key={set.id}` in the parent
+  // list), so a set mislogged as warm-up/work mid-session can be corrected
+  // in place instead of only after completion via History.
+  const [isWarmup, setIsWarmup] = useState(set.isWarmup);
   const [error, setError] = useState<string | null>(null);
 
   if (editing) {
@@ -315,7 +360,7 @@ function SetRow({
                 return;
               }
               setError(null);
-              onEdit({ weightKg, reps: repsValue, rir: rirValue });
+              onEdit({ weightKg, reps: repsValue, rir: rirValue, isWarmup });
               setEditing(false);
             }}
             className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-900"
@@ -333,6 +378,22 @@ function SetRow({
             Cancel
           </button>
         </div>
+        {/* Placed after the weight/reps/rir inputs, not before: three e2e
+            specs address this row's inputs positionally by index since they
+            carry no aria-labels — offline-set-edit-delete.spec.ts,
+            reconnect-batch-idempotence.spec.ts, and
+            transient-failure-fifo.spec.ts (each `.nth(0)`/`.nth(1)` for
+            weight/reps) — inserting this checkbox earlier would silently
+            shift those indices in all three (W-3, second verification). */}
+        <label className="flex items-center gap-2 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={isWarmup}
+            onChange={(e) => setIsWarmup(e.target.checked)}
+            className="h-5 w-5 rounded border-slate-700 bg-slate-950 accent-slate-100"
+          />
+          Warm-up set
+        </label>
         {error && <p className="text-xs text-red-400">{error}</p>}
       </li>
     );

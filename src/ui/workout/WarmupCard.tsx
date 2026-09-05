@@ -126,7 +126,12 @@ export function WarmupCard({ warmup, hasLoggedWorkSet, disabled = false }: Warmu
 
       {expanded && (
         <>
-          <ul className="flex flex-col">
+          {/* V-3 remediation (docs/reviews/warmup-set-classification-
+              remediation-verification.md) — a stable, semantic hook for
+              tests, so "how many checklist items are showing" never again
+              depends on a CSS-class coincidence or page-wide checkbox counts
+              that an unrelated control elsewhere on the page can invalidate. */}
+          <ul className="flex flex-col" data-testid="warmup-checklist">
             {routine.items.map((item, index) => (
               // Full-width, py-3 label rows — the whole row is the touch
               // target on the phone, not just the 16px checkbox.

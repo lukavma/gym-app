@@ -159,18 +159,37 @@ function HistorySetRow({
   onDelete,
 }: {
   set: HistorySetDetail;
-  onSave: (patch: { weightKg: number; reps: number; rir: number | null }) => void;
+  onSave: (patch: {
+    weightKg: number;
+    reps: number;
+    rir: number | null;
+    isWarmup: boolean;
+  }) => void;
   onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [weight, setWeight] = useState(String(set.weightKg));
   const [reps, setReps] = useState(String(set.reps));
   const [rir, setRir] = useState(set.rir === null ? "" : String(set.rir));
+  // Seeded from the actual stored value every time edit mode opens (this
+  // component remounts per set via `key={set.id}` in the parent list, so a
+  // fresh `useState(set.isWarmup)` always reflects what's persisted — never
+  // fabricated or defaulted while the athlete is only touching weight/reps/rir).
+  const [isWarmup, setIsWarmup] = useState(set.isWarmup);
   const [error, setError] = useState<string | null>(null);
 
   if (editing) {
     return (
       <li className="flex flex-col gap-1">
+        <label className="flex items-center gap-2 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={isWarmup}
+            onChange={(e) => setIsWarmup(e.target.checked)}
+            className="h-5 w-5 rounded border-slate-700 bg-slate-950 accent-slate-100"
+          />
+          Warm-up set
+        </label>
         <div className="flex items-center gap-2 text-sm">
           <input
             type="text"
@@ -209,6 +228,7 @@ function HistorySetRow({
                 weightKg,
                 reps: Number(reps),
                 rir: rir.trim() === "" ? null : Number(rir),
+                isWarmup,
               });
               setEditing(false);
             }}

@@ -159,8 +159,27 @@ async function readLocalWarmupState(page: Page): Promise<unknown> {
 // for the counter the component derives from COMMITTED state is both the
 // correct assertion and a stronger one — it proves the write landed, not
 // merely that the browser toggled a checkbox.
+// V-3 remediation (docs/reviews/warmup-set-classification-remediation-
+// verification.md) — the Warm-up Set Classification remediation gave
+// ExerciseCard's set-entry form its own "Warm-up set" checkbox (a different,
+// pre-existing concept: set_logs.is_warmup, not this feature's checklist),
+// rendered unconditionally on the same /today/workout page, and its own
+// in-session edit form (SetRow) now carries one too. A bare
+// `page.getByRole("checkbox")` can no longer stand in for "how many warm-up
+// ROUTINE checklist items are showing" — it now also counts those unrelated
+// controls. A CSS-coincidence exclusion (matching every flex-col <ul> except
+// the exercises list) was tried and rejected: it silently matches whichever
+// OTHER flex-col <ul> exists on the page (ExerciseCard's own logged-sets
+// list, or AddAdhocExercise's results list) and would have re-broken the
+// moment either grew a checkbox — which SetRow's edit form just did. Scoped
+// instead to `data-testid="warmup-checklist"` (WarmupCard.tsx), a marker
+// that exists for exactly this purpose and names what it selects.
+function warmupChecklistCheckboxes(page: Page) {
+  return page.getByTestId("warmup-checklist").getByRole("checkbox");
+}
+
 async function tickWarmupItem(page: Page, index: number, expectedCounter: string): Promise<void> {
-  await page.getByRole("checkbox").nth(index).click();
+  await warmupChecklistCheckboxes(page).nth(index).click();
   await expect(page.getByText(expectedCounter)).toBeVisible();
 }
 
@@ -291,9 +310,9 @@ test.describe("warm-up card: in-workout execution", () => {
 
     await page.reload();
     await expect(page.getByText(`${UPPER_STANDARD} · 2/3`)).toBeVisible();
-    await expect(page.getByRole("checkbox").nth(0)).toBeChecked();
-    await expect(page.getByRole("checkbox").nth(1)).not.toBeChecked();
-    await expect(page.getByRole("checkbox").nth(2)).toBeChecked();
+    await expect(warmupChecklistCheckboxes(page).nth(0)).toBeChecked();
+    await expect(warmupChecklistCheckboxes(page).nth(1)).not.toBeChecked();
+    await expect(warmupChecklistCheckboxes(page).nth(2)).toBeChecked();
 
     // Un-ticking is durable too.
     await tickWarmupItem(page, 0, `${UPPER_STANDARD} · 1/3`);
@@ -315,7 +334,7 @@ test.describe("warm-up card: in-workout execution", () => {
 
     await page.getByLabel("Warm-up routine").selectOption({ label: SHOULDER_PREP });
     await expect(page.getByText(`${SHOULDER_PREP} · 0/1`)).toBeVisible();
-    await expect(page.getByRole("checkbox").nth(0)).not.toBeChecked();
+    await expect(warmupChecklistCheckboxes(page).nth(0)).not.toBeChecked();
     await expect(page.getByText("Wall slides")).toBeVisible();
     await expect(page.getByText("Bike")).toHaveCount(0);
 
@@ -342,14 +361,14 @@ test.describe("warm-up card: in-workout execution", () => {
     await page.getByRole("button", { name: "Skip warm-up" }).click();
 
     await expect(page.getByText("Warm-up skipped")).toBeVisible();
-    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expect(warmupChecklistCheckboxes(page)).toHaveCount(0);
 
     // The skip survives a reload, and is still reversible afterwards.
     await page.reload();
     await expect(page.getByText("Warm-up skipped")).toBeVisible();
     await page.getByRole("button", { name: "Undo skip" }).click();
     await expect(page.getByText(`${UPPER_STANDARD} · 1/3`)).toBeVisible();
-    await expect(page.getByRole("checkbox").nth(1)).toBeChecked();
+    await expect(warmupChecklistCheckboxes(page).nth(1)).toBeChecked();
   });
 
   test("the card auto-collapses when every item is checked, and stays recoverable", async ({
@@ -369,13 +388,13 @@ test.describe("warm-up card: in-workout execution", () => {
     }
 
     await expect(page.getByRole("button", { name: "Show warm-up" })).toBeVisible();
-    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expect(warmupChecklistCheckboxes(page)).toHaveCount(0);
     await expect(page.getByText(`${UPPER_STANDARD} · 3/3`)).toBeVisible();
 
     // Recoverable: one tap brings it back, with the ticks intact.
     await page.getByRole("button", { name: "Show warm-up" }).click();
-    await expect(page.getByRole("checkbox")).toHaveCount(3);
-    await expect(page.getByRole("checkbox").nth(0)).toBeChecked();
+    await expect(warmupChecklistCheckboxes(page)).toHaveCount(3);
+    await expect(warmupChecklistCheckboxes(page).nth(0)).toBeChecked();
   });
 
   test("the card auto-collapses once the first work set is logged, and stays recoverable", async ({
@@ -399,7 +418,7 @@ test.describe("warm-up card: in-workout execution", () => {
 
     await expect(page.getByRole("button", { name: "Show warm-up" })).toBeVisible();
     await page.getByRole("button", { name: "Show warm-up" }).click();
-    await expect(page.getByRole("checkbox").nth(0)).toBeChecked();
+    await expect(warmupChecklistCheckboxes(page).nth(0)).toBeChecked();
   });
 
   test("a warm-up-using workout puts no new entity and no warm-up field on the wire", async ({
@@ -676,7 +695,7 @@ test.describe("warm-up card: cold-offline execution", () => {
         await expect(page.getByText(`Warm-up: ${UPPER_STANDARD}`)).toBeVisible();
         await page.getByRole("button", { name: "Start workout" }).click();
         await page.waitForURL(/\/today\/workout$/);
-        await page.getByRole("checkbox").nth(0).click();
+        await warmupChecklistCheckboxes(page).nth(0).click();
         await expect(page.getByText(`${UPPER_STANDARD} · 1/3`)).toBeVisible();
         await waitForOutboxDrained(page);
       } finally {
@@ -698,10 +717,10 @@ test.describe("warm-up card: cold-offline execution", () => {
 
         // The frozen warm-up state came back from IndexedDB, ticks intact.
         await expect(page.getByText(`${UPPER_STANDARD} · 1/3`)).toBeVisible();
-        await expect(page.getByRole("checkbox").nth(0)).toBeChecked();
+        await expect(warmupChecklistCheckboxes(page).nth(0)).toBeChecked();
 
         // ...and it is fully usable offline: tick, switch, skip, undo.
-        await page.getByRole("checkbox").nth(1).click();
+        await warmupChecklistCheckboxes(page).nth(1).click();
         await expect(page.getByText(`${UPPER_STANDARD} · 2/3`)).toBeVisible();
         await page.getByLabel("Warm-up routine").selectOption({ label: SHOULDER_PREP });
         await expect(page.getByText(`${SHOULDER_PREP} · 0/1`)).toBeVisible();
@@ -759,7 +778,7 @@ test.describe("warm-up card: cross-device adoption (O-3, accepted v1 behavior)",
       await pageA.goto("/today");
       await pageA.getByRole("button", { name: "Start workout" }).click();
       await pageA.waitForURL(/\/today\/workout$/);
-      await pageA.getByRole("checkbox").nth(0).click();
+      await warmupChecklistCheckboxes(pageA).nth(0).click();
       await expect(pageA.getByText(`${UPPER_STANDARD} · 1/3`)).toBeVisible();
       await pageA.getByLabel("kg", { exact: true }).fill("100");
       await pageA.getByLabel("reps", { exact: true }).fill("5");
