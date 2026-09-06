@@ -10,6 +10,7 @@ import type {
   Laterality,
   Mechanics,
   ResolvedContribution,
+  StrengthEstimateMode,
   UpdateExerciseInput,
 } from "@/domain/exercises/schema";
 import { isRollupMuscleGroupSlug, type MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
@@ -60,6 +61,7 @@ export interface ExerciseRecord {
   mechanics: Mechanics;
   laterality: Laterality;
   loadStepKg: number;
+  strengthEstimate: StrengthEstimateMode;
   isSeeded: boolean;
   notes: string | null;
   archivedAt: Date | null;
@@ -80,6 +82,7 @@ function toRecord(row: ExerciseRow, contributions: ResolvedContribution[]): Exer
     mechanics: row.mechanics as Mechanics,
     laterality: row.laterality as Laterality,
     loadStepKg: row.loadStepKg,
+    strengthEstimate: row.strengthEstimate as StrengthEstimateMode,
     isSeeded: row.isSeeded,
     notes: row.notes,
     archivedAt: row.archivedAt,
@@ -235,6 +238,7 @@ export async function updateExercise(
       if (input.mechanics !== undefined) patch.mechanics = input.mechanics;
       if (input.laterality !== undefined) patch.laterality = input.laterality;
       if (input.loadStepKg !== undefined) patch.loadStepKg = input.loadStepKg;
+      if (input.strengthEstimate !== undefined) patch.strengthEstimate = input.strengthEstimate;
       if (input.notes !== undefined) patch.notes = input.notes;
 
       const [row] = await tx.update(exercises).set(patch).where(eq(exercises.id, id)).returning();

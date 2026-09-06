@@ -12,7 +12,7 @@ Status: Final for MVP implementation — the entry point to the architecture pac
 | `pwa-offline-strategy.md` | Offline posture, sync, iOS constraints |
 | `mvp-scope.md` | MVP / post-MVP / out-of-scope with acceptance criteria |
 | `evidence-to-design.md` | Design decisions ↔ evidence registry mapping |
-| `adr/ADR-001…010` | Consequential decision records (ADR-010: muscle taxonomy v2) |
+| `adr/ADR-001…011` | Consequential decision records (ADR-010: muscle taxonomy v2; ADR-011: estimated 1RM and advisory load translation, amending OD-06) |
 | `open-decisions.md` | Deliberately unfrozen decisions with defaults |
 | `implementation-plan.md` | Phased handoff plan for the coding agent |
 

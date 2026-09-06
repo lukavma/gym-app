@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/ui/Button";
 import {
@@ -8,6 +9,7 @@ import {
   LATERALITY_TYPES,
   MAX_LOAD_STEP_KG,
   MECHANICS_TYPES,
+  STRENGTH_ESTIMATE_MODES,
 } from "@/domain/exercises/schema";
 import { decimalPlaceCount, parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import {
@@ -28,6 +30,14 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+// `'auto'`/`'off'` read as jargon on a form; the labels say what the switch
+// actually does. V-3: `'auto'` cannot ENABLE an estimate the equipment
+// category disallows, which is why it is not labelled "On".
+const STRENGTH_ESTIMATE_LABELS: Record<(typeof STRENGTH_ESTIMATE_MODES)[number], string> = {
+  auto: "Automatic (where the equipment allows)",
+  off: "Off for this exercise",
+};
+
 export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
   const router = useRouter();
   const [status, setStatus] = useState<Status>(mode === "edit" ? "loading" : "ready");
@@ -39,6 +49,11 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
   // equipment's default load step" (domain/exercises/schema.ts
   // DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT), mirroring ContributionEditor's weight field.
   const [loadStepKg, setLoadStepKg] = useState("");
+  // ADR-011 / estimated-1RM revision §14.4 (O-2, O-4). Edit-mode only: the
+  // column defaults to 'auto' and `createExerciseSchema` deliberately does
+  // not accept it, so a new exercise never has to answer this question.
+  const [strengthEstimate, setStrengthEstimate] =
+    useState<(typeof STRENGTH_ESTIMATE_MODES)[number]>("auto");
   const [notes, setNotes] = useState("");
   const [contributions, setContributions] = useState<ContributionRow[]>([
     emptyContributionRow("primary"),
@@ -66,6 +81,7 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
         setMechanics(ex.mechanics);
         setLaterality(ex.laterality);
         setLoadStepKg(String(ex.loadStepKg));
+        setStrengthEstimate(ex.strengthEstimate);
         setNotes(ex.notes ?? "");
         setArchivedAt(ex.archivedAt);
         setContributions(
@@ -149,6 +165,10 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
       mechanics,
       laterality,
       loadStepKg: loadStepKgValue,
+      // Edit-only: `createExerciseSchema` is `.strict()` and has no such key,
+      // so sending it on create would be a blanket 400 (§14.4 adds the field
+      // to the UPDATE schema only).
+      strengthEstimate: mode === "edit" ? strengthEstimate : undefined,
       notes: notes.trim() === "" ? undefined : notes,
       contributions: contributionsResult.contributions,
     };
@@ -331,6 +351,50 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
           className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
         />
       </label>
+
+      {/*
+        ADR-011 / estimated-1RM revision §14.4 (O-2, O-4): the opt-out lives
+        in the EDIT form only — `createExerciseSchema` deliberately does not
+        take it, and a new row gets the column's 'auto' default.
+
+        Placed AFTER `ContributionEditor` on purpose. `muscleTaxonomyV2.spec.ts`
+        addresses the contribution pickers positionally
+        (`page.locator("select").nth(3)` / `.nth(5)`), so a new <select> above
+        them silently shifts every one of those indices. Keeping this one last
+        leaves the existing spec's numbering intact.
+      */}
+      {mode === "edit" && (
+        <label className="flex flex-col gap-1 text-sm text-slate-300">
+          Strength estimate
+          <select
+            value={strengthEstimate}
+            onChange={(e) =>
+              setStrengthEstimate(e.target.value as (typeof STRENGTH_ESTIMATE_MODES)[number])
+            }
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+          >
+            {STRENGTH_ESTIMATE_MODES.map((value) => (
+              <option key={value} value={value}>
+                {STRENGTH_ESTIMATE_LABELS[value]}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-slate-500">
+            Turn this off where the logged number is not a load the body lifts — assisted machines,
+            carries, timed work. Off always wins; automatic only estimates where the equipment type
+            allows.
+          </span>
+        </label>
+      )}
+
+      {mode === "edit" && exerciseId && (
+        <Link
+          href={`/exercises/${exerciseId}/strength`}
+          className="inline-flex min-h-11 items-center self-start text-sm text-slate-400 underline"
+        >
+          View strength estimate
+        </Link>
+      )}
 
       {error && (
         <p role="alert" className="text-sm text-red-400">

@@ -78,6 +78,13 @@
       "when": 1788299527793,
       "tag": "0010_chunky_black_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788648961608,
+      "tag": "0011_happy_celestials",
+      "breakpoints": true
     }
   ]
 }

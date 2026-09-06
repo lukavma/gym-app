@@ -77,11 +77,15 @@ export function ExerciseLibrary() {
 
       <ul className="flex flex-col gap-2">
         {exercises.map((exercise) => (
-          <li key={exercise.id}>
-            <Link
-              href={`/exercises/${exercise.id}`}
-              className="flex flex-col gap-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-3"
-            >
+          // ADR-011 §15.1 — the strength page is "linked from the library
+          // row". The row's own <Link> cannot wrap a second one (nested
+          // anchors are invalid), so the card is a plain container holding
+          // the edit link and the strength link side by side.
+          <li
+            key={exercise.id}
+            className="flex flex-col gap-1 rounded-lg border border-slate-800 bg-slate-900 px-3 py-3"
+          >
+            <Link href={`/exercises/${exercise.id}`} className="flex flex-col gap-1">
               <div className="flex items-center justify-between">
                 <span className="text-base font-medium text-slate-50">{exercise.name}</span>
                 {exercise.archivedAt && (
@@ -96,6 +100,22 @@ export function ExerciseLibrary() {
                   .map((c) => contributionMuscleLabel(c.muscleGroupId))
                   .join(", ")}
               </span>
+            </Link>
+            {/*
+              The accessible name is deliberately just "Strength estimate" and
+              does NOT repeat the exercise name: several existing specs locate
+              a row with `getByRole("link", { name })` where `name` is the
+              exercise, and Playwright matches an accessible name by SUBSTRING
+              — a per-row label like "Strength estimate for Back Squat" would
+              make every one of those a strict-mode violation. The link's
+              purpose is clear from its row (WCAG 2.4.4's "in context"), and
+              the row's own link above carries the exercise name.
+            */}
+            <Link
+              href={`/exercises/${exercise.id}/strength`}
+              className="inline-flex min-h-11 items-center self-start text-sm text-slate-400 underline"
+            >
+              Strength estimate
             </Link>
           </li>
         ))}

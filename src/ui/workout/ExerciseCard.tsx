@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { formatScheme } from "@/domain/schemes/setScheme";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
@@ -174,6 +175,26 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
             </p>
           )}
           {exercise.source === "adhoc" && <p className="text-xs text-slate-500">Ad-hoc</p>}
+          {/*
+            ADR-011 §15.1 — the strength page is "linked from the library row
+            and the workout card". Release A adds this LINK only: no starting
+            suggestion, no Use action, no line under the prescription, and no
+            bundle field. The page it opens is read-only, so following it can
+            neither change nor lose the in-progress session (which lives in
+            IndexedDB, not in this component).
+
+            `prefetch={false}` on purpose: a workout is the one screen that
+            routinely runs offline, and a background route prefetch failing
+            there is a known source of spurious navigations (see the
+            `TRANSIENT_READ_FAILURE` note in tests/e2e/helpers.ts).
+          */}
+          <Link
+            href={`/exercises/${exercise.exerciseId}/strength`}
+            prefetch={false}
+            className="inline-flex min-h-11 items-center text-sm text-slate-400 underline"
+          >
+            Strength estimate
+          </Link>
         </div>
         <button
           type="button"

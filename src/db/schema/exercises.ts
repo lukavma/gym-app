@@ -11,6 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { EQUIPMENT_TYPES, LATERALITY_TYPES, MECHANICS_TYPES } from "@/domain/exercises/schema";
+import { STRENGTH_ESTIMATE_MODES } from "@/domain/strength/estimateMode";
 import { users } from "./users";
 
 // `sql\`${v}\`` binds a parameter placeholder ($1, $2, ...) rather than
@@ -38,6 +39,12 @@ export const exercises = pgTable(
     mechanics: text("mechanics").notNull(),
     laterality: text("laterality").notNull().default("bilateral"),
     loadStepKg: numeric("load_step_kg", { precision: 4, scale: 2, mode: "number" }).notNull(),
+    // ADR-011 / estimated-1RM revision §14.4 (owner decision O-2) — planning-
+    // world metadata, mutable, never snapshotted into a PrescriptionSnapshot.
+    // `'auto'` means "estimate if the equipment category allows"; `'off'`
+    // suppresses the estimate entirely. An enum rather than a boolean leaves
+    // room for the deferred D-3 / D-11 values without a second migration.
+    strengthEstimate: text("strength_estimate").notNull().default("auto"),
     isSeeded: boolean("is_seeded").notNull().default(false),
     notes: text("notes"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -57,5 +64,9 @@ export const exercises = pgTable(
       sql`${table.laterality} in (${checkInList(LATERALITY_TYPES)})`,
     ),
     check("ck_exercises_load_step_kg_positive", sql`${table.loadStepKg} > 0`),
+    check(
+      "ck_exercises_strength_estimate",
+      sql`${table.strengthEstimate} in (${checkInList(STRENGTH_ESTIMATE_MODES)})`,
+    ),
   ],
 );

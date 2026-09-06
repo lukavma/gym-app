@@ -220,7 +220,7 @@ Typecheck + lint + all tests green in CI; deployed to production; new surface sm
 
 ### Phase 9 — Analytics dashboard (post-MVP, size M)
 
-Resolve OD-04 (default Recharts) + OD-06 (default Epley) first. Builds: e1RM trends per exercise (computed on read, labeled estimate, reps ≤12), tonnage per session/week, per-muscle volume trend chart, recommendation acceptance/modification stats, history search + filters. All read-only derivations — **no new persisted aggregates** (architecture-plan §7 holds).
+Resolve OD-04 (default Recharts) first; OD-06 was resolved by amendment in ADR-011 (2026-09-05 — Epley with `f(1) = 1` over `reps + reported RIR`, source ceiling `RTF ≤ 12`, every value with a ±10 % band). Builds: e1RM trends per exercise per ADR-011 — the per-exercise strength page ships earlier as ADR-011 Release A with an inline SVG sparkline, so this phase only re-hosts or extends that trend under the OD-04 charting choice (computed on read, labeled estimate with band, source RTF ≤ 12), tonnage per session/week, per-muscle volume trend chart, recommendation acceptance/modification stats, history search + filters. All read-only derivations — **no new persisted aggregates** (architecture-plan §7 holds).
 
 ### Phase 10 — Ops & durability hardening (post-MVP, size S)
 

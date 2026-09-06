@@ -1,5 +1,11 @@
 import type { MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
-import type { ContributionRole, Equipment, Laterality, Mechanics } from "@/domain/exercises/schema";
+import type {
+  ContributionRole,
+  Equipment,
+  Laterality,
+  Mechanics,
+  StrengthEstimateMode,
+} from "@/domain/exercises/schema";
 
 export interface ExerciseContributionDto {
   muscleGroupId: MuscleGroupSlug;
@@ -15,6 +21,7 @@ export interface ExerciseDto {
   mechanics: Mechanics;
   laterality: Laterality;
   loadStepKg: number;
+  strengthEstimate: StrengthEstimateMode;
   isSeeded: boolean;
   notes: string | null;
   archivedAt: string | null;

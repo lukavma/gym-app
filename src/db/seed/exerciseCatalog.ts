@@ -1,4 +1,5 @@
 import type { Equipment, Laterality, Mechanics } from "@/domain/exercises/schema";
+import type { StrengthEstimateMode } from "@/domain/strength/estimateMode";
 import type { LeafMuscleGroupSlug } from "@/domain/exercises/muscleGroups";
 
 // Release 2 (ADR-010): the catalog targets leaves only — a rollup slug
@@ -19,6 +20,14 @@ export interface SeedCatalogExercise {
   equipment: Equipment;
   mechanics: Mechanics;
   laterality?: Laterality;
+  // ADR-011 / estimated-1RM revision §14.4 — omitted means the column's
+  // `'auto'` default. Set to `'off'` only for catalog entries whose stored
+  // load cannot be fed to a 1RM equation: an inverted assistance load, or
+  // fabricated reps for time/distance work. Rows already seeded are
+  // unreachable from here — the seed is ledger-gated and insert-if-absent —
+  // so `src/db/seed/reconcileStrengthEstimates.ts` carries the matching
+  // one-shot, id-keyed reconcile for them (ADR-010's mechanism).
+  strengthEstimate?: StrengthEstimateMode;
   contributions: SeedContribution[];
 }
 
@@ -627,6 +636,9 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     name: "Dumbbell Farmer's Carry",
     equipment: "dumbbell",
     mechanics: "compound",
+    // Time/distance work: the reps logged against a carry are fabricated, so
+    // no reps-to-failure input exists (revision §6.1, PI-005).
+    strengthEstimate: "off",
     contributions: [
       { muscleGroupId: "forearms", role: "primary" },
       { muscleGroupId: "traps", role: "secondary" },
@@ -867,6 +879,10 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     name: "Assisted Pull-Up",
     equipment: "machine",
     mechanics: "compound",
+    // The logged load is the ASSISTANCE, a non-negative number whose meaning
+    // is inverted and unmodelled — a larger number is an easier set, so no
+    // equation can consume it (revision §6.1).
+    strengthEstimate: "off",
     contributions: [
       { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },

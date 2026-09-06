@@ -4,6 +4,7 @@ import {
   DEFAULT_CONTRIBUTION_WEIGHT,
   DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT,
 } from "@/domain/exercises/schema";
+import { DEFAULT_STRENGTH_ESTIMATE_MODE } from "@/domain/strength/estimateMode";
 import { exerciseCatalogSeedLog, exerciseMuscleContributions, exercises, users } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import { EXERCISE_CATALOG } from "./exerciseCatalog";
@@ -97,6 +98,11 @@ export async function seedExerciseCatalogForUser(db: AppDb, userId: string): Pro
       mechanics: item.mechanics,
       laterality: item.laterality ?? "bilateral",
       loadStepKg: DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT[item.equipment],
+      // ADR-011 — new seeds get the catalog's value; omitted falls through to
+      // the column's `'auto'` default. Rows seeded before this column existed
+      // are reconciled once by `reconcileStrengthEstimates`, because the
+      // ledger above makes them unreachable from here forever.
+      strengthEstimate: item.strengthEstimate ?? DEFAULT_STRENGTH_ESTIMATE_MODE,
       isSeeded: true,
     }));
 

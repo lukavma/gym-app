@@ -2,6 +2,7 @@ import type { AppDb } from "@/db/client";
 import { seedMuscleGroups } from "./muscleGroups";
 import { seedExerciseCatalogForAllUsers } from "./exercises";
 import { reconcileContributions } from "./reconcileContributions";
+import { reconcileStrengthEstimates } from "./reconcileStrengthEstimates";
 import { seedVolumePresets } from "./volumePresets";
 
 export { seedMuscleGroups } from "./muscleGroups";
@@ -17,6 +18,11 @@ export {
   type ReconciliationSummary,
 } from "./reconcileContributions";
 export { seedVolumePresets, RP_GENERAL_PRESET_ID } from "./volumePresets";
+export {
+  reconcileStrengthEstimates,
+  STRENGTH_ESTIMATE_OFF_SLUGS,
+  type StrengthEstimateReconciliationSummary,
+} from "./reconcileStrengthEstimates";
 
 // Entry point for `pnpm db:seed` (run.ts) and the deploy pipeline. Idempotent
 // and safe to rerun on every deploy (implementation-plan.md §1.4).
@@ -29,9 +35,14 @@ export { seedVolumePresets, RP_GENERAL_PRESET_ID } from "./volumePresets";
 // `seedMuscleGroups` (its landmarks FK muscle_groups) and `users` (its
 // default-preset init); it has no ordering dependency on the taxonomy
 // reconciliation or catalog steps, so it runs alongside `seedMuscleGroups`.
+//
+// `reconcileStrengthEstimates` (ADR-011) runs LAST: it only ever touches rows
+// that already exist, so it must see whatever the catalog step just inserted,
+// and it depends on nothing the earlier steps produce.
 export async function runSeed(db: AppDb): Promise<void> {
   await seedMuscleGroups(db);
   await seedVolumePresets(db);
   await reconcileContributions(db);
   await seedExerciseCatalogForAllUsers(db);
+  await reconcileStrengthEstimates(db);
 }

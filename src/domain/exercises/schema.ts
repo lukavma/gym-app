@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { STRENGTH_ESTIMATE_MODES } from "@/domain/strength/estimateMode";
 import {
   LEAF_MUSCLE_GROUP_SLUGS,
   MUSCLE_GROUP_SLUGS,
@@ -26,6 +27,15 @@ export const mechanicsSchema = z.enum(MECHANICS_TYPES);
 export const LATERALITY_TYPES = ["bilateral", "unilateral"] as const;
 export type Laterality = (typeof LATERALITY_TYPES)[number];
 export const lateralitySchema = z.enum(LATERALITY_TYPES);
+
+// ADR-011 / revision §14.4 (owner decision O-2) — the per-exercise strength
+// estimate opt-out. The vocabulary itself lives in
+// `@/domain/strength/estimateMode` because the pure strength module may not
+// import `@/domain/exercises/**` (revision §14.5); this re-export keeps the
+// exercise aggregate's Zod surface in one place all the same.
+export const strengthEstimateSchema = z.enum(STRENGTH_ESTIMATE_MODES);
+export { STRENGTH_ESTIMATE_MODES };
+export type { StrengthEstimateMode } from "@/domain/strength/estimateMode";
 
 // domain-model.md §3 — MuscleContribution (child of Exercise).
 export const CONTRIBUTION_ROLES = ["primary", "secondary"] as const;
@@ -165,6 +175,14 @@ export const updateExerciseSchema = z
     mechanics: mechanicsSchema.optional(),
     laterality: lateralitySchema.optional(),
     loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).multipleOf(0.01).optional(),
+    // ADR-011 / revision §14.4 — the estimate opt-out is editable metadata
+    // like every other field here, so it is `.optional()` in the same
+    // omission-means-unchanged sense: `updateExerciseSchema` is `.strict()`,
+    // so without this key the toggle's PATCH would be a blanket 400.
+    // Deliberately NOT added to `createExerciseSchema`: §14.4 and O-4 place
+    // the toggle in the EDIT form only, and a new row takes the column's
+    // `'auto'` default.
+    strengthEstimate: strengthEstimateSchema.optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
     contributions: updateContributionsListSchema
       .transform((contributions) => contributions.map(withDefaultWeight))
