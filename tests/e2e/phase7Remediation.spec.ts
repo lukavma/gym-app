@@ -35,6 +35,7 @@ test.describe("BLOCKER-1 remediation: nav fits every reviewed iPhone width with 
       for (const linkName of [
         "Today",
         "History",
+        "Metrics",
         "Exercises",
         "Programs",
         "Volume",

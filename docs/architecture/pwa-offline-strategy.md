@@ -24,6 +24,8 @@ Everything else (browsing history offline, editing templates offline) is explici
 | See / accept / override pending recommendations | ✅ | In bundle; decision + (if completing offline) client-computed recs queue in outbox |
 | Resume in-progress workout after refresh / crash / restart | ✅ | IndexedDB is the live store, not a backup |
 | Browse full history, analytics, volume charts | ❌ | Online only (may serve stale HTTP cache opportunistically, no guarantee) |
+| View the Metrics dashboard (`/metrics`) | ❌ | Online only — `GET /api/metrics` is `NetworkOnly`; no IndexedDB store, no bundle field, no cache across launches |
+| Edit the Metrics dashboard's exercise selection (`/metrics/exercises`) | ❌ | Online only — `GET`/`PUT /api/metrics/selection` are `NetworkOnly`; never queued in the outbox |
 | Edit programs / templates / blocks / exercises / presets | ❌ | Online only — avoids definition-level merge conflicts entirely |
 | Log bodyweight / recovery | ✅ (lightweight) | Same outbox mechanism, trivial payloads |
 | Login | ❌ | Requires network; see §7 auth expiry handling |

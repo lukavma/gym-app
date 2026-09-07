@@ -31,7 +31,7 @@ Cross-cutting MVP constraints: kg only (`open-decisions.md` OD-01); phone-first 
 
 Ordered roughly by expected value. Nothing here may leak into Phases 0–8 "because it was easy".
 
-1. **Analytics dashboard** — e1RM trends (Epley, computed on read, labeled estimate), tonnage, per-muscle volume trend charts, recommendation acceptance stats. (Phases 9–10; charting choice in OD-04.)
+1. **Analytics dashboard** — e1RM trends (Epley, computed on read, labeled estimate), per-muscle volume trend charts, recommendation acceptance stats. Tonnage is dropped from the dashboard's first cut (O-4 / `docs/reviews/metrics-dashboard-architecture-evaluation.md`): load semantics for bodyweight, per-hand dumbbell, machine and cross-exercise comparison are not recorded consistently, so it waits on a load-semantics model. (Phases 9–10; charting choice in OD-04. Phase 9a, 2026-09-06, shipped a read-only metrics dashboard over five cards with inline SVG only — no charting decision made.)
 2. **Richer schemes** — `perSet`, `fixedPlusAmrap` (top-set/backoff, AMRAP), `percent1RM`/`absolute` load modes. Reserved shapes already specified in prescription-model §2.
 3. **Additional strategy configs as shipped presets** — e.g., double progression preset (mechanism already exists as `rep-progression` with `onCapReached: 'suggest_load_increase'`; MVP ships it off by default).
 4. **Multiple named volume presets + switching** — MVP ships the seeded RP preset with editable landmark values; creating/comparing whole presets comes later.

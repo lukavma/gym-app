@@ -15,6 +15,10 @@ workout execution, the progression engine, and block lifecycle (deloads,
 week overrides, transitions) all exist and are in use. Volume tracking
 (Phase 6) is not yet built.
 
+Phase 9a (Metrics dashboard v1) has also shipped: a read-only `/metrics`
+screen composing training, weekly volume, estimated-1RM, bodyweight and
+recovery data, plus its exercise-selection editor at `/metrics/exercises`.
+
 ## Stack
 
 Next.js 15 (App Router) · React 19 · TypeScript (strict) · Tailwind CSS v4 ·

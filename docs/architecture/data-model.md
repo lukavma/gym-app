@@ -327,6 +327,19 @@ A landmark may reference a rollup row: the RP "Back" row attaches to `back` (`ki
 
 `uq_recovery_day` — unique `(user_id, date)`; ck: at least one metric column not null.
 
+### 2.20 `dashboard_estimate_selections`
+
+Metrics dashboard v1 (`docs/reviews/metrics-dashboard-architecture-evaluation.md` §11.5, migration `0012`) — the feature's one write path. Dashboard *configuration* only (which of the athlete's estimated-1RM-tracker-compatible exercises the Current estimates card shows, and in what order); never a fact, snapshot, or derived value — no column stores an estimate, a name, or an eligibility flag.
+
+| Column | Type | Constraints |
+|---|---|---|
+| user_id | uuid | FK → users, `ON DELETE CASCADE`, not null |
+| exercise_id | uuid | FK → exercises, `ON DELETE CASCADE`, not null |
+| position | smallint | not null, ck between 1 and 5 |
+| created_at / updated_at | timestamptz | |
+
+Primary key `(user_id, exercise_id)` — no `id` column, the pair is the identity, like `exercise_muscle_contributions`. `uq_dashboard_estimate_selections_position` — unique `(user_id, position)`; combined with the check constraint, more than five rows per user is impossible at the database level. Rows are never created by the seed or by account setup — the initial state is empty for every account.
+
 ---
 
 ## 3. ER diagram

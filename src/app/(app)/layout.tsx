@@ -20,6 +20,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/history" className="hover:text-slate-200">
           History
         </Link>
+        <Link href="/metrics" className="hover:text-slate-200">
+          Metrics
+        </Link>
         <Link href="/exercises" className="hover:text-slate-200">
           Exercises
         </Link>
