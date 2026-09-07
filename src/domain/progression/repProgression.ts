@@ -14,8 +14,25 @@ import type { SetScheme } from "../schemes/setScheme";
 // progression — it ships because it falls out of the same code path, but the
 // MVP default keeps it off and the UI does not advertise it (mvp-scope §2.3).
 
-function schemeMinReps(scheme: SetScheme): number {
-  return scheme.type === "fixed" ? scheme.reps : scheme.minReps;
+// rep-progression is `load_reps`-only (measurement-profiles-architecture
+// -evaluation.md §9.2, N-13); `null` is the fail-closed signal for the two
+// athletic scheme variants, which have no reps dimension at all (§9.1 — same
+// idiom as workingTargets.ts's `schemeDefaultReps`). `evaluateSession`'s
+// `supportsScheme` gate keeps any other scheme type from ever reaching this
+// function in practice — `evaluateRepProgression`'s guard below treats
+// `null` exactly like `evaluateSession`'s own `unsupportedSchemeDraft`, so a
+// regressed gate fails closed instead of throwing and poisoning the sync
+// completion transaction (review L-4).
+function schemeMinReps(scheme: SetScheme): number | null {
+  switch (scheme.type) {
+    case "fixed":
+      return scheme.reps;
+    case "repRange":
+      return scheme.minReps;
+    case "distanceRounds":
+    case "durationRounds":
+      return null;
+  }
 }
 
 // Effective rep cap: config `repCap` wins when set; `repRange` falls back to
@@ -40,26 +57,47 @@ export function evaluateRepProgression(
   const scheme = ctx.prescription.scheme;
   const { loadKg: load, mixed } = modalWorkingLoad(sets);
 
+  const prescribed = {
+    scheme,
+    ...(ctx.prescription.targetRir ? { targetRir: ctx.prescription.targetRir } : {}),
+  };
+  const derivedBase = {
+    setsCompleted: sets.length,
+    prescribedSets: scheme.sets,
+    finalSetRir: sets.length > 0 ? sets[sets.length - 1]!.rir : null,
+    workingLoadKg: load,
+    mixedLoads: mixed,
+  };
+
+  // L-4 fail-closed guard, checked before `currentTarget` is derived (a
+  // scheme with no reps dimension has no minReps to fall back on either) —
+  // same idiom as evaluateLoadProgression's guard and evaluateSession.ts's
+  // own `unsupportedSchemeDraft`.
+  const schemeReps = schemeMinReps(scheme);
+  if (schemeReps === null) {
+    return {
+      action: "none",
+      reasonCodes: ["UNSUPPORTED_SCHEME"],
+      inputs: {
+        prescribed,
+        workSets: sets,
+        derived: derivedBase,
+        historyDepthUsed: ctx.history.length,
+      },
+      confidence: "low",
+    };
+  }
+
   // §4.2 — "currentTarget = target reps this session (from snapshot prefill;
   // else scheme.minReps / scheme.reps)". The context assembler overlays an
   // in-session accepted/modified decision's chosen reps onto the prefill
   // (evaluationTarget.ts), so this is the target as executed.
-  const currentTarget = ctx.prescription.prefill.reps ?? schemeMinReps(scheme);
+  const currentTarget = ctx.prescription.prefill.reps ?? schemeReps;
 
   const inputs: InputsSummary = {
-    prescribed: {
-      scheme,
-      ...(ctx.prescription.targetRir ? { targetRir: ctx.prescription.targetRir } : {}),
-    },
+    prescribed,
     workSets: sets,
-    derived: {
-      setsCompleted: sets.length,
-      prescribedSets: scheme.sets,
-      finalSetRir: sets.length > 0 ? sets[sets.length - 1]!.rir : null,
-      workingLoadKg: load,
-      currentRepTarget: currentTarget,
-      mixedLoads: mixed,
-    },
+    derived: { ...derivedBase, currentRepTarget: currentTarget },
     historyDepthUsed: ctx.history.length,
   };
 
@@ -147,9 +185,10 @@ export function evaluateRepProgression(
   }
 
   // 'suggest_load_increase' — classic double progression: load up, reps back
-  // to the scheme minimum (or a configured reset value).
-  const resetReps =
-    cfg.resetRepsOnRollover === "schemeMin" ? schemeMinReps(scheme) : cfg.resetRepsOnRollover;
+  // to the scheme minimum (or a configured reset value). `schemeReps` is
+  // already the validated non-null result from the guard above — no second
+  // call (and no second null case) needed here.
+  const resetReps = cfg.resetRepsOnRollover === "schemeMin" ? schemeReps : cfg.resetRepsOnRollover;
   const increment = cfg.loadIncrementOnRollover ?? ctx.exercise.loadStepKg;
   return {
     action: "increase_load",

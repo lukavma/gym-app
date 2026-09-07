@@ -387,6 +387,34 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
         </label>
       )}
 
+      {/*
+        athletic-measurement-profiles-architecture-evaluation.md §15.1 /
+        §21.1 — Release 1 ships this selector present but locked to
+        `load_reps`; it renders in both create and edit mode (unlike
+        Strength estimate, which is edit-only). Placed AFTER the
+        Strength-estimate `<select>` above for the same reason that select
+        sits where it does (see its own comment): `muscleTaxonomyV2.spec.ts`
+        addresses this form's `<select>`s positionally
+        (`page.locator("select").nth(3)` / `.nth(5)`), so a new `<select>`
+        anywhere earlier would silently renumber them. Its value is never
+        read into the submit payload — `createExerciseSchema` already
+        defaults `measurementProfile` to `load_reps`, and the field is
+        locked, so there is nothing for this control to report.
+      */}
+      <label className="flex flex-col gap-1 text-sm text-slate-300">
+        Measurement profile
+        <select
+          value="load_reps"
+          disabled
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 opacity-60 outline-none"
+        >
+          <option value="load_reps">Load + Reps</option>
+        </select>
+        <span className="text-xs text-slate-500">
+          Load + Reps — more measurement types coming later.
+        </span>
+      </label>
+
       {mode === "edit" && exerciseId && (
         <Link
           href={`/exercises/${exerciseId}/strength`}

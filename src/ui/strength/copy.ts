@@ -24,8 +24,10 @@
 //   * never blaming the imprecision mainly on RIR (V-28: formula
 //     misspecification and individual variation dominate).
 //
-// I-14 / A-19: this map's keys are EXACTLY the forty-eight members of
-// `@/domain/strength/reasonCodes`, asserted in both directions by
+// I-14 / A-19: this map's keys are EXACTLY the fifty members of
+// `@/domain/strength/reasonCodes` — re-scoped from forty-eight by
+// `docs/reviews/athletic-measurement-profiles-architecture-evaluation.md`
+// §11.6 (O-17) — asserted in both directions by
 // `tests/unit/strengthReasonCodes.test.ts`.
 
 import { STRENGTH_REASON_CODES } from "@/domain/strength/reasonCodes";
@@ -64,9 +66,13 @@ export const STRENGTH_REASON_COPY: Record<StrengthReasonCode, string> = {
   DELOAD_SESSIONS_EXCLUDED: "Deload sessions not counted",
 
   // --- Suggestion level, refusal (§15.4, table 3) ---
-  // Only the first two are reachable in Release A; the rest belong to
+  // Only the first four are reachable in Release A; the rest belong to
   // `suggestStartingLoad` and are declared so the map's membership matches
-  // the enum exactly.
+  // the enum exactly. The first two are §11.6's (O-17) amendment: unreachable
+  // in Release 1 (no non-`load_reps` exercise and no `assistance` basis
+  // exists yet) but ahead of the pre-existing pair in the refusal order.
+  MEASUREMENT_PROFILE_UNSUPPORTED: "Not available for this exercise's measurement type",
+  LOAD_BASIS_UNSUPPORTED: "Not available for assisted exercises",
   EXERCISE_CATEGORY_UNSUPPORTED: "Not available for this equipment type",
   EXERCISE_ESTIMATE_DISABLED: "Strength estimate turned off for this exercise",
   DELOAD_SESSION_NO_SUGGESTION: "Deload session — no starting load offered",

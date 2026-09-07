@@ -21,6 +21,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { exercises, sessionExercises, setLogs, users, workoutSessions } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import type { Equipment, Laterality } from "@/domain/exercises/schema";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import { isStrengthExerciseId } from "@/domain/strength/query";
 import { deriveStrengthReport } from "@/domain/strength/report";
 import type {
@@ -40,6 +41,8 @@ export interface StrengthExerciseSummary {
   loadStepKg: number;
   strengthEstimate: StrengthEstimateMode;
   archivedAt: Date | null;
+  measurementProfile: MeasurementProfile;
+  loadBasis: LoadBasis | null;
 }
 
 export interface ExerciseStrengthReportDto extends StrengthReport {
@@ -60,6 +63,12 @@ interface FactRow {
   sessionId: string;
   startedAt: Date;
   isDeload: boolean;
+  // The FROZEN slot's profile (§11.3 site #3), not the exercise's current
+  // one — the two agree for any exercise with history at all, because §10.3
+  // locks `measurementProfile` the moment a `session_exercises` row first
+  // references it, but the frozen column is the one this boundary is
+  // specified against.
+  measurementProfile: string;
   setNumber: number | null;
   isWarmup: boolean | null;
   weightKg: number | null;
@@ -89,6 +98,7 @@ async function queryFactRows(db: AppDb, userId: string, exerciseId: string): Pro
       sessionId: workoutSessions.id,
       startedAt: workoutSessions.startedAt,
       isDeload: workoutSessions.isDeload,
+      measurementProfile: sessionExercises.measurementProfile,
       setNumber: setLogs.setNumber,
       isWarmup: setLogs.isWarmup,
       weightKg: setLogs.weightKg,
@@ -143,6 +153,8 @@ export async function getExerciseStrengthReport(
       loadStepKg: exercises.loadStepKg,
       strengthEstimate: exercises.strengthEstimate,
       archivedAt: exercises.archivedAt,
+      measurementProfile: exercises.measurementProfile,
+      loadBasis: exercises.loadBasis,
     })
     .from(exercises)
     .where(and(eq(exercises.id, exerciseId), eq(exercises.userId, userId)));
@@ -188,11 +200,24 @@ export async function getExerciseStrengthReport(
       bySession.set(row.sessionId, entry);
     }
     if (row.setNumber === null) continue; // LEFT JOIN miss: session with no sets
+    // §11.3 site #3 — keep only load_reps slots, excluded BEFORE mapping; the
+    // session entry above still exists, so a non-`load_reps` slot counts
+    // toward `sessionsWithoutEligibleSets` exactly like a slot with no sets.
+    if (row.measurementProfile !== "load_reps") continue;
+    // I-13/H-12 — a null load or rep count is never coerced to `0`; both are
+    // `number | null` post-migration-0013 while `StrengthSetInput` stays
+    // non-null, so an explicit skip (not `?? 0`) is what makes this compile
+    // without fabricating a `0 kg` / `0 rep` set that was never logged. Only
+    // `weightKg` is named at the SQL->domain boundary site, but `reps` is the
+    // identical landmine (flagged, unfixed, by the prior stage) and I-13's
+    // own text is "a null load OR REP COUNT" — both are fixed here together.
+    if (row.weightKg === null) continue;
+    if (row.reps === null) continue;
     entry.sets.push({
       setNumber: row.setNumber,
       isWarmup: row.isWarmup ?? false,
-      weightKg: row.weightKg ?? 0,
-      reps: row.reps ?? 0,
+      weightKg: row.weightKg,
+      reps: row.reps,
       rir: row.rir,
     });
   }
@@ -202,6 +227,8 @@ export async function getExerciseStrengthReport(
       equipment: exercise.equipment,
       strengthEstimate: exercise.strengthEstimate as StrengthEstimateMode,
       loadStepKg: exercise.loadStepKg,
+      measurementProfile: exercise.measurementProfile as MeasurementProfile,
+      loadBasis: exercise.loadBasis as LoadBasis | null,
     },
     sessions: [...bySession.values()].map((entry) => entry.session),
     asOfLocalDate,
@@ -218,6 +245,8 @@ export async function getExerciseStrengthReport(
       loadStepKg: exercise.loadStepKg,
       strengthEstimate: exercise.strengthEstimate as StrengthEstimateMode,
       archivedAt: exercise.archivedAt,
+      measurementProfile: exercise.measurementProfile as MeasurementProfile,
+      loadBasis: exercise.loadBasis as LoadBasis | null,
     },
     asOf: effectiveAsOf.toISOString(),
     asOfLocalDate,

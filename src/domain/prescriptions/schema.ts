@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { rirBandSchema } from "../schemes/rirBand";
 import { setSchemeEnvelopeSchema, type SetScheme } from "../schemes/setScheme";
-import { strategyIdSchema, supportsScheme, type StrategyId } from "../progression/registry";
+import { strategyIdSchema, type StrategyId } from "../progression/registry";
+import { profileSupportsScheme, strategySupportsProfile } from "../measurement/compatibility";
+import { dimensionsOf, type MeasurementProfile } from "../measurement/profile";
 
 // prescription-model.md §6 — 0 <= x <= 1000, multiple of 0.25. (The
 // `numeric(6,2)` column could hold up to 9999.99; this is a narrower,
@@ -57,28 +59,59 @@ export const reorderPrescriptionsSchema = z.object({
 });
 export type ReorderPrescriptionsInput = z.infer<typeof reorderPrescriptionsSchema>;
 
+// Presence-only: a field is flagged when the *effective* value carries an
+// actual value and the profile forbids the field — never based on the value
+// itself. `undefined` ("not part of this effective combination") and
+// `null` ("explicitly unset") both mean "nothing to reject"; only a real
+// value on a forbidden field is an issue.
+export interface PrescriptionCompatibilityFields {
+  targetRir?: unknown;
+  baselineLoadKg?: unknown;
+}
+
 // domain-model.md §4 invariant: "progression.strategyId must exist in the
 // code registry; strategy must support the scheme type." Plus
 // prescription-model.md §2's compatibility table footnote: rep-progression
 // requires an explicit `repCap` in config for `fixed` schemes (repRange
-// schemes infer it from `maxReps` — progression-engine.md §4.2).
+// schemes infer it from `maxReps` — progression-engine.md §4.2). Plus
+// measurement-profiles-architecture-evaluation.md §9.2 (profile × scheme ×
+// strategy — both issue kinds) and §9.3 (targetRir/baselineLoadKg allowed
+// only where the profile has an rir/weight field — reusing `dimensionsOf`
+// rather than re-deriving that table here, so the two can't drift).
 //
 // This runs in the service layer (not a Zod .superRefine) because on
-// PATCH, `scheme` and `progression` can each be omitted independently — the
-// service merges the patch onto the existing row and validates the
-// *effective* combination, which only it can assemble.
+// PATCH, `scheme`, `progression`, `targetRir` and `baselineLoadKg` can each
+// be omitted independently — the service merges the patch onto the
+// existing row and validates the *effective* combination, which only it can
+// assemble.
 export function checkPrescriptionCompatibility(
   scheme: SetScheme,
   progression: { strategyId: StrategyId; config: Record<string, unknown> },
+  profile: MeasurementProfile,
+  fields: PrescriptionCompatibilityFields = {},
 ): string[] {
   const issues: string[] = [];
-  if (!supportsScheme(progression.strategyId, scheme.type)) {
-    issues.push(`${progression.strategyId} does not support ${scheme.type} schemes`);
+  if (!profileSupportsScheme(profile, scheme.type)) {
+    issues.push(`${profile} does not support ${scheme.type} schemes`);
+  }
+  if (!strategySupportsProfile(progression.strategyId, profile)) {
+    issues.push(`${progression.strategyId} does not support ${profile}`);
   }
   if (progression.strategyId === "rep-progression" && scheme.type === "fixed") {
     if (typeof progression.config.repCap !== "number") {
       issues.push("repCap is required in rep-progression config for fixed schemes");
     }
+  }
+  const dims = dimensionsOf(profile);
+  if (fields.targetRir !== undefined && fields.targetRir !== null && dims.rir === "forbidden") {
+    issues.push(`targetRir is not supported for ${profile}`);
+  }
+  if (
+    fields.baselineLoadKg !== undefined &&
+    fields.baselineLoadKg !== null &&
+    dims.weight === "forbidden"
+  ) {
+    issues.push(`baselineLoadKg is not supported for ${profile}`);
   }
   return issues;
 }

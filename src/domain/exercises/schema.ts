@@ -1,6 +1,15 @@
 import { z } from "zod";
 import { STRENGTH_ESTIMATE_MODES } from "@/domain/strength/estimateMode";
 import {
+  DEFAULT_MEASUREMENT_PROFILE,
+  LOAD_BASES,
+  MEASUREMENT_PROFILES,
+  VOLUME_COUNTING_MODES,
+  loadBasisRequired,
+  type LoadBasis,
+  type MeasurementProfile,
+} from "@/domain/measurement/profile";
+import {
   LEAF_MUSCLE_GROUP_SLUGS,
   MUSCLE_GROUP_SLUGS,
   leafMuscleGroupSlugSchema,
@@ -36,6 +45,36 @@ export const lateralitySchema = z.enum(LATERALITY_TYPES);
 export const strengthEstimateSchema = z.enum(STRENGTH_ESTIMATE_MODES);
 export { STRENGTH_ESTIMATE_MODES };
 export type { StrengthEstimateMode } from "@/domain/strength/estimateMode";
+
+// athletic-measurement-profiles-architecture-evaluation.md §5.3 / §12.1 — the
+// vocabulary lives in `@/domain/measurement/profile` (that module may not
+// import `@/domain/exercises/**`, I-10); this re-export keeps the exercise
+// aggregate's Zod surface in one place, the same pattern as
+// `strengthEstimateSchema` above.
+export const measurementProfileSchema = z.enum(MEASUREMENT_PROFILES);
+export { MEASUREMENT_PROFILES };
+export type { MeasurementProfile } from "@/domain/measurement/profile";
+
+export const loadBasisSchema = z.enum(LOAD_BASES);
+export { LOAD_BASES };
+export type { LoadBasis } from "@/domain/measurement/profile";
+
+export const volumeCountingSchema = z.enum(VOLUME_COUNTING_MODES);
+export { VOLUME_COUNTING_MODES };
+export type { VolumeCounting } from "@/domain/measurement/profile";
+
+// §7.1 / §8.1's presence rule ("a load field exists on exactly the three
+// load-bearing profiles") applied to a caller-supplied `loadBasis`: resolves
+// to `'unspecified'` for a load-bearing profile the caller didn't classify,
+// `null` for a profile with no load field, and an explicit caller value
+// passes through unchanged (callers of this must have already rejected an
+// explicit value on a load-less profile — see the `.superRefine`s below).
+export function resolveLoadBasis(
+  profile: MeasurementProfile,
+  loadBasis: LoadBasis | undefined,
+): LoadBasis | null {
+  return loadBasisRequired(profile) ? (loadBasis ?? "unspecified") : null;
+}
 
 // domain-model.md §3 — MuscleContribution (child of Exercise).
 export const CONTRIBUTION_ROLES = ["primary", "secondary"] as const;
@@ -153,10 +192,30 @@ export const createExerciseSchema = z
     loadStepKg: z.number().gt(0).max(MAX_LOAD_STEP_KG).multipleOf(0.01).optional(),
     notes: z.string().trim().max(2000).optional(),
     contributions: createContributionsListSchema,
+    // athletic-measurement-profiles-architecture-evaluation.md §12.1 (I-9,
+    // MEDIUM-2) — optional with a default so a cached pre-upgrade client
+    // posting today's body still gets `201`. `volumeCounting` is deliberately
+    // NOT accepted here: §11.4 makes its default depend on the resolved
+    // profile, which only src/server/exercises/service.ts can apply.
+    measurementProfile: measurementProfileSchema.default(DEFAULT_MEASUREMENT_PROFILE),
+    loadBasis: loadBasisSchema.optional(),
+  })
+  .superRefine((data, ctx) => {
+    // §7.1 / §8.1's presence rule, enforced here rather than left to
+    // `ck_exercises_load_basis_presence` — an explicit mismatch is a 400,
+    // not an unmapped `23514`.
+    if (data.loadBasis !== undefined && !loadBasisRequired(data.measurementProfile)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["loadBasis"],
+        message: `loadBasis is not supported for measurement profile "${data.measurementProfile}"`,
+      });
+    }
   })
   .transform((data) => ({
     ...data,
     loadStepKg: data.loadStepKg ?? DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT[data.equipment],
+    loadBasis: resolveLoadBasis(data.measurementProfile, data.loadBasis),
     contributions: data.contributions.map(withDefaultWeight),
   }));
 
@@ -187,8 +246,31 @@ export const updateExerciseSchema = z
     contributions: updateContributionsListSchema
       .transform((contributions) => contributions.map(withDefaultWeight))
       .optional(),
+    // athletic-measurement-profiles-architecture-evaluation.md §10.3 / §12.1.
+    // `measurementProfile`'s §10.3 lock (once referenced) and the
+    // `loadBasis` presence rule against an *unchanged* profile are
+    // service-layer checks (src/server/exercises/service.ts) — Zod has no DB
+    // access to the exercise's current profile or reference state.
+    measurementProfile: measurementProfileSchema.optional(),
+    loadBasis: loadBasisSchema.optional(),
+    volumeCounting: volumeCountingSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    // Only the case both fields land in the same patch is checkable here;
+    // see the comment above.
+    if (
+      data.measurementProfile !== undefined &&
+      data.loadBasis !== undefined &&
+      !loadBasisRequired(data.measurementProfile)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["loadBasis"],
+        message: `loadBasis is not supported for measurement profile "${data.measurementProfile}"`,
+      });
+    }
+  });
 
 export type UpdateExerciseInput = z.infer<typeof updateExerciseSchema>;
 

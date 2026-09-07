@@ -5,6 +5,7 @@ import { createTestDb } from "./testDb";
 import {
   blocks,
   exerciseMuscleContributions,
+  exercises,
   sessionExercises,
   setLogs,
   users,
@@ -22,6 +23,8 @@ import { aggregateVolume } from "@/domain/volume/aggregate";
 import { blockWeekWindows } from "@/domain/volume/weekBuckets";
 import { localDateToUtcInstant } from "@/server/time/userLocalDate";
 import { seedVolumePresets } from "@/db/seed/volumePresets";
+import { updateExercise } from "@/server/exercises/service";
+import type { MeasurementProfile } from "@/domain/measurement/profile";
 
 async function insertTestUser(db: AppDb, email = "lifter@example.com", timezone = "UTC") {
   const [user] = await db
@@ -318,10 +321,13 @@ describe("block-week bucketing + a session spanning midnight (volume-model.md §
         muscleGroupId: exerciseMuscleContributions.muscleGroupId,
         role: exerciseMuscleContributions.role,
         weight: exerciseMuscleContributions.weight,
+        measurementProfile: sessionExercises.measurementProfile,
+        volumeCounting: exercises.volumeCounting,
       })
       .from(setLogs)
       .innerJoin(sessionExercises, eq(setLogs.sessionExerciseId, sessionExercises.id))
       .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+      .innerJoin(exercises, eq(exercises.id, sessionExercises.exerciseId))
       .innerJoin(
         exerciseMuscleContributions,
         eq(exerciseMuscleContributions.exerciseId, sessionExercises.exerciseId),
@@ -336,10 +342,183 @@ describe("block-week bucketing + a session spanning midnight (volume-model.md §
       muscleGroupId: r.muscleGroupId as "quads",
       role: r.role as "primary",
       weight: r.weight,
+      measurementProfile: r.measurementProfile as "load_reps",
+      volumeCounting: r.volumeCounting as "auto",
     }));
 
     const [week2, week1] = aggregateVolume(mapped, instantWindows);
     expect(week1!.leaves.quads).toEqual({ effective: 2, raw: 2 });
     expect(week2!.leaves.quads).toEqual({ effective: 1, raw: 1 });
+  });
+});
+
+// §11.3 site #4, §11.4 (O-4), NC-11, A-14 — the profile/switch gate.
+// Direct raw inserts (not `insertSession`, which is fixed to the
+// `load_reps` shape) so each set matches its profile's exact CHECK shape,
+// with the session_exercises row's `measurementProfile` frozen to the
+// exercise's own (they can never diverge once referenced, §10.3).
+describe("volume — profile/volume_counting gate (§11.3 site #4, §11.4, NC-11, A-14)", () => {
+  async function insertProfileWorkSet(
+    db: AppDb,
+    spec: {
+      userId: string;
+      exerciseId: string;
+      measurementProfile: MeasurementProfile;
+      startedAt: Date;
+      fields: { weightKg?: number; reps?: number; distanceM?: number };
+    },
+  ): Promise<void> {
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    const loadBasis = spec.measurementProfile === "reps" ? null : "unspecified";
+    await db.insert(workoutSessions).values({
+      id: sessionId,
+      userId: spec.userId,
+      templateName: "Ad-hoc",
+      weekIndex: 1,
+      isDeload: false,
+      status: "completed",
+      startedAt: spec.startedAt,
+      completedAt: spec.startedAt,
+    });
+    await db.insert(sessionExercises).values({
+      id: sessionExerciseId,
+      sessionId,
+      exerciseId: spec.exerciseId,
+      position: 0,
+      source: "adhoc",
+      measurementProfile: spec.measurementProfile,
+      loadBasis,
+    });
+    await db.insert(setLogs).values({
+      id: newId(),
+      sessionExerciseId,
+      setNumber: 1,
+      isWarmup: false,
+      measurementProfile: spec.measurementProfile,
+      weightKg: spec.fields.weightKg ?? null,
+      reps: spec.fields.reps ?? null,
+      distanceM: spec.fields.distanceM ?? null,
+      loggedAt: spec.startedAt,
+    });
+  }
+
+  const now = new Date("2026-08-06T12:00:00.000Z"); // Thursday in [2026-08-03, 2026-08-10)
+
+  async function setUp(db: AppDb) {
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db, "gate@example.com", "UTC");
+    return user.id;
+  }
+
+  it("excludes a load_distance exercise's sets from volume even though its own profile check would otherwise apply", async () => {
+    const db = await createTestDb();
+    const userId = await setUp(db);
+    const carry = await createExercise(db, userId, {
+      name: "Hand-built Carry",
+      equipment: "other",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "load_distance",
+      contributions: [{ muscleGroupId: "forearms", role: "primary", weight: 1 }],
+    });
+    expect(carry.volumeCounting).toBe("off"); // O-4(ii) — non-load_reps defaults closed.
+
+    await insertProfileWorkSet(db, {
+      userId,
+      exerciseId: carry.id,
+      measurementProfile: "load_distance",
+      startedAt: new Date("2026-08-04T10:00:00.000Z"),
+      fields: { weightKg: 30, distanceM: 20 },
+    });
+
+    const report = await getWeeklyVolumeReport(db, userId, now);
+    expect(report.weeks[0]!.leaves.forearms).toEqual({ effective: 0, raw: 0 });
+  });
+
+  it("NC-11 — volume_counting = 'auto' on a load_distance exercise still excludes (structural gate wins over the switch, I-5)", async () => {
+    const db = await createTestDb();
+    const userId = await setUp(db);
+    const carry = await createExercise(db, userId, {
+      name: "Hand-built Carry 2",
+      equipment: "other",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "load_distance",
+      contributions: [{ muscleGroupId: "forearms", role: "primary", weight: 1 }],
+    });
+    await updateExercise(db, userId, carry.id, { volumeCounting: "auto" });
+
+    await insertProfileWorkSet(db, {
+      userId,
+      exerciseId: carry.id,
+      measurementProfile: "load_distance",
+      startedAt: new Date("2026-08-04T10:00:00.000Z"),
+      fields: { weightKg: 30, distanceM: 20 },
+    });
+
+    const report = await getWeeklyVolumeReport(db, userId, now);
+    expect(report.weeks[0]!.leaves.forearms).toEqual({ effective: 0, raw: 0 });
+  });
+
+  it("A-14 / NC-11 — a hand-built `reps` exercise created without volumeCounting is stored 'off' and excluded by default; set to 'auto' it counts", async () => {
+    const db = await createTestDb();
+    const userId = await setUp(db);
+    // No seeded athletic slug exists yet (Release 3 hasn't shipped) — the
+    // hand-built exercise takes the profile-dependent creation default,
+    // never a `volumeCounting` key on the create payload itself (V-3).
+    const pushup = await createExercise(db, userId, {
+      name: "Hand-built Push-Up",
+      equipment: "other",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "reps",
+      contributions: [{ muscleGroupId: "chest", role: "primary", weight: 1 }],
+    });
+    expect(pushup.volumeCounting).toBe("off");
+
+    await insertProfileWorkSet(db, {
+      userId,
+      exerciseId: pushup.id,
+      measurementProfile: "reps",
+      startedAt: new Date("2026-08-04T10:00:00.000Z"),
+      fields: { reps: 20 },
+    });
+
+    const excludedReport = await getWeeklyVolumeReport(db, userId, now);
+    expect(excludedReport.weeks[0]!.leaves.chest).toEqual({ effective: 0, raw: 0 });
+
+    await updateExercise(db, userId, pushup.id, { volumeCounting: "auto" });
+    const includedReport = await getWeeklyVolumeReport(db, userId, now);
+    expect(includedReport.weeks[0]!.leaves.chest).toEqual({ effective: 1, raw: 1 });
+  });
+
+  it("volume_counting = 'off' excludes an ordinary load_reps exercise (a compatible profile with the switch turned off)", async () => {
+    const db = await createTestDb();
+    const userId = await setUp(db);
+    const bench = await createExercise(db, userId, {
+      name: "Gate Bench",
+      equipment: "barbell",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "chest", role: "primary", weight: 1 }],
+    });
+    expect(bench.volumeCounting).toBe("auto");
+    await updateExercise(db, userId, bench.id, { volumeCounting: "off" });
+
+    await insertProfileWorkSet(db, {
+      userId,
+      exerciseId: bench.id,
+      measurementProfile: "load_reps",
+      startedAt: new Date("2026-08-04T10:00:00.000Z"),
+      fields: { weightKg: 100, reps: 5 },
+    });
+
+    const report = await getWeeklyVolumeReport(db, userId, now);
+    expect(report.weeks[0]!.leaves.chest).toEqual({ effective: 0, raw: 0 });
   });
 });

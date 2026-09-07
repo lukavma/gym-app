@@ -208,6 +208,54 @@ describe("replaceSelection / getSelection (§11.5)", () => {
     expect(afterEquip[0]).toMatchObject({ exerciseId: exercise.id, state: "not_available" });
   });
 
+  // §11.2's "Metrics Current-estimates selection" row / A-16 — reuses the
+  // e1RM structural gate, so a hand-built new-profile exercise is rejected
+  // the same way a bodyweight/off exercise already is (A-29).
+  it("A-16: replaceSelection rejects a hand-built new-profile exercise", async () => {
+    const distanceEx = await createExercise(db, userId, {
+      name: "Farmer's Carry",
+      equipment: "other",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "load_distance",
+      contributions: [{ muscleGroupId: "forearms", role: "primary", weight: 1 }],
+    });
+    await expect(replaceSelection(db, userId, [distanceEx.id])).rejects.toThrow(
+      InvalidSelectionExerciseError,
+    );
+  });
+
+  // A-16 / H-14 — an already-selected row for an exercise that later becomes
+  // ineligible is RETAINED and shown `not_available`, never pruned. §10.3
+  // blocks a profile edit through the service once an exercise is
+  // referenced; the raw update below bypasses that lock deliberately, to
+  // reach the edge state H-14 protects against — not a path the
+  // athlete-facing API can produce in Release 1 (a locked exercise cannot
+  // reach this shape any other way).
+  it("A-16: a retained selected row for an exercise whose profile is later flipped to non-load_reps shows not_available, never deleted", async () => {
+    const exercise = await makeExercise(db, userId, "Profile Flip Candidate");
+    await replaceSelection(db, userId, [exercise.id]);
+
+    await db
+      .update(exercises)
+      .set({ measurementProfile: "reps", loadBasis: null })
+      .where(eq(exercises.id, exercise.id));
+
+    const selection = await getSelection(db, userId);
+    expect(selection.selection).toHaveLength(1);
+    expect(selection.selection[0]).toMatchObject({
+      exerciseId: exercise.id,
+      state: "not_available",
+    });
+
+    const rows = await db
+      .select()
+      .from(dashboardEstimateSelections)
+      .where(eq(dashboardEstimateSelections.userId, userId));
+    expect(rows).toHaveLength(1); // never pruned.
+  });
+
   it("A-30: the same body applied twice yields identical rows both times (only updated_at differs)", async () => {
     const exercise = await makeExercise(db, userId, "Idempotent Exercise");
     const first = await replaceSelection(db, userId, [exercise.id]);

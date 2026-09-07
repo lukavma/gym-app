@@ -1,10 +1,19 @@
 // Estimated 1RM tracker — the complete reason-code vocabulary.
 //
 // Binding source: `docs/reviews/estimated-1rm-load-translation-architecture-revision.md`
-// §15.4, which declares *exactly* these forty-eight codes grouped by the level
-// that emits them. I-14: every member is emitted by at least one fixture, and
-// no code outside this enum may be emitted anywhere — in code, in copy, or in
-// a DTO. A-19 asserts both halves.
+// §15.4, which declared these forty-eight codes grouped by the level that
+// emits them. I-14: every member is emitted by at least one fixture, and no
+// code outside this enum may be emitted anywhere — in code, in copy, or in a
+// DTO. A-19 asserts both halves.
+//
+// Amended to fifty codes by `docs/reviews/athletic-measurement-profiles-architecture-evaluation.md`
+// §11.6 (owner decision O-17, accepted, option (a)): `MEASUREMENT_PROFILE_UNSUPPORTED`
+// and `LOAD_BASIS_UNSUPPORTED` join `SUGGESTION_REFUSAL_REASON_CODES` below,
+// and `evaluateExerciseEligibility`'s refusal order becomes
+// profile -> basis -> equipment -> switch. This is an explicit amendment of a
+// previously closed, owner-accepted enum and ordering, in the way ADR-011
+// itself amended OD-06 — not a reopening of I-14/A-19, which are re-scoped to
+// the extended enum by the same section.
 //
 // Phrasing is owned by `src/ui/strength/copy.ts`; the grouping here fixes the
 // meaning and the emitter, not the wording.
@@ -51,10 +60,16 @@ export const ESTIMATE_REASON_CODES = [
 
 // --- Suggestion level, refusal (revision §15.4, table 3) -------------------
 // `status: "none"`. The primary code is the first one that holds in the order
-// of the revision's §9.6 refusal list. `NO_ELIGIBLE_SETS` and
+// of the revision's §9.6 refusal list, amended by measurement-profiles §11.6
+// (O-17) to profile -> basis -> equipment -> switch. `NO_ELIGIBLE_SETS` and
 // `NO_RECENT_EVIDENCE` are shared with the estimate level and are declared
 // once, above.
 export const SUGGESTION_REFUSAL_REASON_CODES = [
+  // §11.6 (O-17): the two structural, exercise-level refusals ahead of the
+  // pre-existing pair — this group already holds the exercise-level refusals
+  // despite its "suggestion" name, so no new group is introduced.
+  "MEASUREMENT_PROFILE_UNSUPPORTED",
+  "LOAD_BASIS_UNSUPPORTED",
   "EXERCISE_CATEGORY_UNSUPPORTED",
   "EXERCISE_ESTIMATE_DISABLED",
   "DELOAD_SESSION_NO_SUGGESTION",

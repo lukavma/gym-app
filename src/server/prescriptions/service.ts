@@ -10,6 +10,7 @@ import {
   type CreatePrescriptionInput,
   type UpdatePrescriptionInput,
 } from "@/domain/prescriptions/schema";
+import type { MeasurementProfile } from "@/domain/measurement/profile";
 
 export class PrescriptionNotFoundError extends Error {
   constructor() {
@@ -108,6 +109,11 @@ interface OwnedExercise {
   id: string;
   loadStepKg: number;
   archivedAt: Date | null;
+  // Unnarrowed at the Drizzle layer like every other enum-shaped column on
+  // this table (matches `exercises.ts`'s own convention) — narrowed to
+  // `MeasurementProfile` at this service boundary, same as `toRecord`'s
+  // `scheme`/`progression` casts below.
+  measurementProfile: string;
 }
 
 async function getOwnedExercise(
@@ -120,6 +126,7 @@ async function getOwnedExercise(
       id: exercises.id,
       loadStepKg: exercises.loadStepKg,
       archivedAt: exercises.archivedAt,
+      measurementProfile: exercises.measurementProfile,
     })
     .from(exercises)
     .where(and(eq(exercises.id, exerciseId), eq(exercises.userId, userId)));
@@ -177,7 +184,12 @@ export async function createPrescription(
     input.scheme.scheme,
     { loadStepKg: exercise.loadStepKg },
   );
-  const issues = checkPrescriptionCompatibility(input.scheme.scheme, progression);
+  const issues = checkPrescriptionCompatibility(
+    input.scheme.scheme,
+    progression,
+    exercise.measurementProfile as MeasurementProfile,
+    { targetRir: input.targetRir, baselineLoadKg: input.baselineLoadKg },
+  );
   if (issues.length > 0) throw new PrescriptionCompatibilityError(issues);
 
   return db.transaction(async (tx) => {
@@ -238,7 +250,20 @@ export async function updatePrescription(
         )
       : (existing.progression as ResolvedProgression);
 
-  const issues = checkPrescriptionCompatibility(effectiveScheme.scheme, effectiveProgression);
+  // Same "input wins when present, existing row otherwise" rule as
+  // `effectiveScheme`/`effectiveProgression` above — an explicit `null`
+  // patch (clearing the field) must win over the existing row too, so this
+  // is `!== undefined ? :`, not `??`.
+  const effectiveTargetRir = input.targetRir !== undefined ? input.targetRir : existing.targetRir;
+  const effectiveBaselineLoadKg =
+    input.baselineLoadKg !== undefined ? input.baselineLoadKg : existing.baselineLoadKg;
+
+  const issues = checkPrescriptionCompatibility(
+    effectiveScheme.scheme,
+    effectiveProgression,
+    exercise.measurementProfile as MeasurementProfile,
+    { targetRir: effectiveTargetRir, baselineLoadKg: effectiveBaselineLoadKg },
+  );
   if (issues.length > 0) throw new PrescriptionCompatibilityError(issues);
 
   const patch: Partial<typeof exercisePrescriptions.$inferInsert> = { updatedAt: new Date() };

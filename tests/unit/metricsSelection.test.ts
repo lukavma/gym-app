@@ -44,19 +44,45 @@ describe("putSelectionInputSchema", () => {
   });
 });
 
+// A default `load_reps` / `unspecified` shape (§11.2/§11.6): each test below
+// overrides only the field(s) its scenario is about.
+function candidate(
+  overrides: Partial<Parameters<typeof isSelectionEligible>[0]> = {},
+): Parameters<typeof isSelectionEligible>[0] {
+  return {
+    equipment: "barbell",
+    strengthEstimate: "auto",
+    measurementProfile: "load_reps",
+    loadBasis: "unspecified",
+    ...overrides,
+  };
+}
+
 describe("isSelectionEligible — the one eligibility rule, reused not copied", () => {
   it("accepts a barbell/dumbbell/cable/machine exercise with strengthEstimate='auto'", () => {
     for (const equipment of ["barbell", "dumbbell", "cable", "machine"]) {
-      expect(isSelectionEligible({ equipment, strengthEstimate: "auto" })).toBe(true);
+      expect(isSelectionEligible(candidate({ equipment }))).toBe(true);
     }
   });
 
   it("rejects bodyweight/other equipment", () => {
-    expect(isSelectionEligible({ equipment: "bodyweight", strengthEstimate: "auto" })).toBe(false);
-    expect(isSelectionEligible({ equipment: "other", strengthEstimate: "auto" })).toBe(false);
+    expect(isSelectionEligible(candidate({ equipment: "bodyweight" }))).toBe(false);
+    expect(isSelectionEligible(candidate({ equipment: "other" }))).toBe(false);
   });
 
   it("rejects strengthEstimate='off' regardless of equipment", () => {
-    expect(isSelectionEligible({ equipment: "barbell", strengthEstimate: "off" })).toBe(false);
+    expect(isSelectionEligible(candidate({ strengthEstimate: "off" }))).toBe(false);
+  });
+
+  // §11.2/§11.6 (O-17): the structural gate now also threads through
+  // measurementProfile and loadBasis, ahead of equipment/switch.
+  it("rejects a non-load_reps profile", () => {
+    expect(
+      isSelectionEligible(candidate({ measurementProfile: "duration", loadBasis: null })),
+    ).toBe(false);
+  });
+
+  it("rejects an assistance load basis", () => {
+    expect(isSelectionEligible(candidate({ loadBasis: "assistance" }))).toBe(false);
   });
 });

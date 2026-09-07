@@ -21,6 +21,7 @@ import {
   workoutSessions,
 } from "@/db/schema";
 import type { AppDb } from "@/db/client";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import { STRENGTH_ALGORITHM } from "@/domain/strength/constants";
 import type {
   StrengthEstimateMode,
@@ -100,6 +101,8 @@ interface SelectionExerciseRow {
   loadStepKg: number;
   strengthEstimate: string;
   archivedAt: Date | null;
+  measurementProfile: string;
+  loadBasis: string | null;
 }
 
 async function querySelection(db: AppDb, userId: string): Promise<SelectionExerciseRow[]> {
@@ -114,6 +117,8 @@ async function querySelection(db: AppDb, userId: string): Promise<SelectionExerc
       loadStepKg: exercises.loadStepKg,
       strengthEstimate: exercises.strengthEstimate,
       archivedAt: exercises.archivedAt,
+      measurementProfile: exercises.measurementProfile,
+      loadBasis: exercises.loadBasis,
     })
     .from(dashboardEstimateSelections)
     .innerJoin(exercises, eq(dashboardEstimateSelections.exerciseId, exercises.id))
@@ -132,6 +137,7 @@ interface StrengthFactRow {
   weightKg: number | null;
   reps: number | null;
   rir: number | null;
+  measurementProfile: string;
 }
 
 // §11.2 step 9 — filtered by the SELECTION, not by eligibility (that stays a
@@ -156,6 +162,11 @@ async function queryStrengthFactRows(
       weightKg: setLogs.weightKg,
       reps: setLogs.reps,
       rir: setLogs.rir,
+      // §11.3 site #3's rule, reused here for the same reason (this fact
+      // query feeds `deriveStrengthReport` too) — the frozen slot profile,
+      // never diverges from the exercise's current one once referenced
+      // (§10.3).
+      measurementProfile: sessionExercises.measurementProfile,
     })
     .from(sessionExercises)
     .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
@@ -211,11 +222,19 @@ function groupStrengthFactRows(
       bySession.set(row.sessionId, entry);
     }
     if (row.setNumber === null) continue; // LEFT JOIN miss: session with no sets
+    // §11.3 site #3's rule, mirrored here (this fact query also feeds
+    // `deriveStrengthReport`, via `projectEstimateIndex`): keep only
+    // load_reps slots, and never coerce a null load/rep count to `0`
+    // (I-13/H-12) — an explicit skip, not `?? 0`, is what makes this compile
+    // without fabricating a set that was never logged.
+    if (row.measurementProfile !== "load_reps") continue;
+    if (row.weightKg === null) continue;
+    if (row.reps === null) continue;
     entry.sets.push({
       setNumber: row.setNumber,
       isWarmup: row.isWarmup ?? false,
-      weightKg: row.weightKg ?? 0,
-      reps: row.reps ?? 0,
+      weightKg: row.weightKg,
+      reps: row.reps,
       rir: row.rir,
     });
   }
@@ -343,6 +362,8 @@ export async function getMetricsDashboard(
     position: row.position,
     loadStepKg: row.loadStepKg,
     strengthEstimate: row.strengthEstimate as StrengthEstimateMode,
+    measurementProfile: row.measurementProfile as MeasurementProfile,
+    loadBasis: row.loadBasis as LoadBasis | null,
   }));
 
   // Step 9 — the 90-day evidence window, bounded ALSO by the future guard

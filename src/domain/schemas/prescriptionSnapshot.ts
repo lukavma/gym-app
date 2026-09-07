@@ -3,6 +3,15 @@ import { setSchemeSchema } from "../schemes/setScheme";
 import { rirBandSchema } from "../schemes/rirBand";
 import { strategyIdSchema, type StrategyId } from "../progression/registry";
 import { weekModifiersSchema } from "../blocks/schema";
+import { LOAD_BASES, MEASUREMENT_PROFILES } from "../measurement/profile";
+
+// measurement-profiles-architecture-evaluation.md §9.4/§5.3 — `profile.ts`
+// is deliberately zero-import/framework-agnostic (I-10) and exports no Zod
+// schemas of its own, so the snapshot's Zod schema is built here from its
+// plain-TS vocabulary tuples rather than duplicating the enum values as
+// string literals.
+const measurementProfileSchema = z.enum(MEASUREMENT_PROFILES);
+const loadBasisSchema = z.enum(LOAD_BASES);
 
 // domain-model.md §6 — PrescriptionSnapshot, frozen into
 // `session_exercises.prescription` exactly once at session start
@@ -38,6 +47,17 @@ export const prescriptionSnapshotDataSchema = z.object({
   // (prescription-model.md §5). Null when no modifiers applied.
   appliedModifiers: weekModifiersSchema.nullable(),
   prefill: prefillSchema,
+  // §9.4 — additive, optional: a v1 snapshot written before this release has
+  // no `measurement` key and must still parse (A-7). §10.1 — this is the
+  // slot's frozen profile/basis; `loadBasis` here carries no authority (only
+  // `session_exercises.load_basis` does) and is not consulted by
+  // `evaluateSession`, which reads only `.profile`.
+  measurement: z
+    .object({
+      profile: measurementProfileSchema,
+      loadBasis: loadBasisSchema.nullable(),
+    })
+    .optional(),
 });
 export type PrescriptionSnapshotData = z.infer<typeof prescriptionSnapshotDataSchema>;
 

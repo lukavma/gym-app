@@ -9,24 +9,49 @@
 import { RIR_ELIGIBLE_MAX, RTF_MAX, STRENGTH_ELIGIBLE_EQUIPMENT } from "./constants";
 import type { StrengthEligibility, StrengthExerciseInput, StrengthSetInput } from "./types";
 
-// V-3 — an exercise is eligible when BOTH hold: its CURRENT `equipment` is
-// one of barbell / dumbbell / cable / machine, and `strength_estimate` is not
+// V-3, amended by `docs/reviews/athletic-measurement-profiles-architecture-evaluation.md`
+// §11.6 (O-17, accepted, option (a)): an exercise is eligible when ALL FOUR
+// hold, checked in this order — its `measurementProfile` is `load_reps`, its
+// `loadBasis` is not `assistance`, its CURRENT `equipment` is one of
+// barbell / dumbbell / cable / machine, and `strength_estimate` is not
 // `'off'`.
+//
+// The refusal order is now PROFILE -> BASIS -> EQUIPMENT -> SWITCH — the
+// profile is the more fundamental fact (§11.6): a `duration` Plank is refused
+// for its *shape*, not for its equipment category, so the first two checks
+// run ahead of the pre-existing pair rather than after them. This is an
+// explicit amendment of the previously closed "category code wins" ordering,
+// not a reinterpretation of it.
 //
 // `equipment` is an eligibility GATE, not a reinterpretation weight (review
 // RC-25): editing it makes a whole series appear or vanish on the next read.
-// Nothing is lost — flipping it back restores the series.
+// Nothing is lost — flipping it back restores the series. The same is true of
+// `measurementProfile` and `loadBasis` (§10.3's lock aside, both flow through
+// this same read-time gate).
 //
 // `bodyweight` is excluded because it needs a bodyweight join and a leverage
 // fraction (D-3); `other` has no load semantics. Assisted movements (the
-// seeded Assisted Pull-Up) and time/distance work (Farmer's Carry) are
-// switched `'off'` by the migration that introduced the column, because their
-// stored load is inverted-but-unmodelled or fabricated respectively — no
-// equation can consume either.
+// seeded Assisted Pull-Up, reconciled to `loadBasis = 'assistance'` in
+// Release 2) and time/distance work (Farmer's Carry, reconciled to a
+// non-`load_reps` profile) are refused structurally now, by profile/basis
+// rather than by the `strength_estimate = 'off'` switch that carried the
+// refusal until this amendment — in Release 1 neither reconcile has run yet,
+// so this branch is unreachable and the switch still carries them (§11.6's
+// "unobservable until Release 2" note).
 //
-// When both fail, the category code wins: §9.6's refusal list is ordered and
-// `EXERCISE_CATEGORY_UNSUPPORTED` is listed first.
+// `isProfileEligibleForE1rm` (`@/domain/measurement/capabilities`) is NOT
+// used here: it collapses profile-wrong and basis-wrong into one boolean,
+// but O-17 requires two DISTINCT reason codes at two DISTINCT ordering
+// positions, so the profile and basis checks are inlined directly against
+// the same vocabulary that function itself is built from (see
+// judgmentCalls).
 export function evaluateExerciseEligibility(exercise: StrengthExerciseInput): StrengthEligibility {
+  if (exercise.measurementProfile !== "load_reps") {
+    return { eligible: false, reasonCode: "MEASUREMENT_PROFILE_UNSUPPORTED" };
+  }
+  if (exercise.loadBasis === "assistance") {
+    return { eligible: false, reasonCode: "LOAD_BASIS_UNSUPPORTED" };
+  }
   if (!(STRENGTH_ELIGIBLE_EQUIPMENT as readonly string[]).includes(exercise.equipment)) {
     return { eligible: false, reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED" };
   }

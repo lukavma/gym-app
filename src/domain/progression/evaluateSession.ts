@@ -15,6 +15,7 @@ import type {
   RecommendationDraft,
 } from "./engine";
 import { STRATEGY_VERSIONS, type PrescriptionSnapshotData } from "../schemas/prescriptionSnapshot";
+import { DEFAULT_MEASUREMENT_PROFILE } from "../measurement/profile";
 
 // progression-engine.md §5 — the pure half of "onSessionCompleted". This
 // module is the isomorphism point: the server runs it inside the completion
@@ -109,9 +110,19 @@ export function evaluateSession(input: SessionEvaluationInput): EvaluatedRecomme
     const strategyId = snapshot.progression.strategyId;
     if (strategyId === "manual") continue;
 
+    // §11.2/§11.3 site #1, NC-9 — progression strategies are load_reps-only
+    // in v1 (N-13: reps-profile rep-progression is deferred); skip BEFORE
+    // even checking scheme compatibility, with the same silent-skip
+    // treatment `manual` (above) and an unparseable config (below) already
+    // get — no draft, no row, no reason code. This is independent of
+    // `unsupportedSchemeDraft` below, which stays reserved for an actual
+    // scheme/strategy mismatch on a load_reps exercise (X-19).
+    const profile = snapshot.measurement?.profile ?? DEFAULT_MEASUREMENT_PROFILE;
+    if (profile !== DEFAULT_MEASUREMENT_PROFILE) continue;
+
     let draft: RecommendationDraft;
     let config: Record<string, unknown>;
-    if (!supportsScheme(strategyId, snapshot.scheme.type)) {
+    if (!supportsScheme(profile, strategyId, snapshot.scheme.type)) {
       // prescription-model.md §2 — defensive, should be unreachable: the
       // editor only offers compatible pairs.
       draft = unsupportedSchemeDraft(exercise, snapshot);

@@ -4,13 +4,16 @@ import {
   repProgressionConfigSchema,
   supportsScheme,
   STRATEGY_IDS,
+  type StrategyId,
 } from "@/domain/progression/registry";
+import { MEASUREMENT_PROFILES, type MeasurementProfile } from "@/domain/measurement/profile";
 import { evaluateLoadProgression } from "@/domain/progression/loadProgression";
 import { evaluateRepProgression } from "@/domain/progression/repProgression";
 import { evaluateSession } from "@/domain/progression/evaluateSession";
 import { checkRir, type EvaluationContext, type PerformedSet } from "@/domain/progression/engine";
 import { modalWorkingLoad, roundToStepKg } from "@/domain/progression/loadHelpers";
-import { SCHEME_TYPES, type SetScheme } from "@/domain/schemes/setScheme";
+import { schemeDefaultReps } from "@/domain/progression/workingTargets";
+import { SCHEME_TYPES, type SchemeType, type SetScheme } from "@/domain/schemes/setScheme";
 import type { PrescriptionSnapshotData } from "@/domain/schemas/prescriptionSnapshot";
 
 // progression-engine.md §9 — the required unit-level testing contract:
@@ -48,11 +51,7 @@ function makeCtx(overrides: {
       prefill: {
         loadKg: null,
         reps:
-          overrides.prefillReps !== undefined
-            ? overrides.prefillReps
-            : scheme.type === "fixed"
-              ? scheme.reps
-              : scheme.minReps,
+          overrides.prefillReps !== undefined ? overrides.prefillReps : schemeDefaultReps(scheme),
       },
     },
     performance: {
@@ -277,12 +276,36 @@ describe("progression-engine §9 matrix", () => {
     expect(second).toEqual(first);
   });
 
-  it("case 14 — exhaustiveness: every scheme type × every strategy is supported or cleanly UNSUPPORTED_SCHEME", () => {
-    // MVP truth table (prescription-model.md §2): every shipped strategy
-    // supports every shipped scheme type.
-    for (const strategyId of STRATEGY_IDS) {
-      for (const schemeType of SCHEME_TYPES) {
-        expect(supportsScheme(strategyId, schemeType)).toBe(true);
+  it("case 14 — exhaustiveness: every profile × scheme type × strategy matches §9.2's table", () => {
+    // measurement-profiles-architecture-evaluation.md §9.2's table,
+    // transcribed independently of `compatibility.ts`'s own tables (which
+    // `tests/unit/measurement/compatibility.test.ts` already covers
+    // directly) so a regression in either file's table is still caught
+    // here at the point registry.supportsScheme is actually consumed.
+    const SCHEMES_BY_PROFILE: Record<MeasurementProfile, readonly SchemeType[]> = {
+      load_reps: ["fixed", "repRange"],
+      reps: ["fixed", "repRange"],
+      load_distance: ["distanceRounds"],
+      distance_time: ["distanceRounds"],
+      duration: ["durationRounds"],
+      load_duration: ["durationRounds"],
+    };
+    const STRATEGIES_BY_PROFILE: Record<MeasurementProfile, readonly StrategyId[]> = {
+      load_reps: ["load-progression", "rep-progression", "manual"],
+      reps: ["manual"],
+      load_distance: ["manual"],
+      distance_time: ["manual"],
+      duration: ["manual"],
+      load_duration: ["manual"],
+    };
+    for (const profile of MEASUREMENT_PROFILES) {
+      for (const strategyId of STRATEGY_IDS) {
+        for (const schemeType of SCHEME_TYPES) {
+          const expected =
+            SCHEMES_BY_PROFILE[profile].includes(schemeType) &&
+            STRATEGIES_BY_PROFILE[profile].includes(strategyId);
+          expect(supportsScheme(profile, strategyId, schemeType)).toBe(expected);
+        }
       }
     }
     // Defensive path: an unknown (future) scheme variant reaching the
@@ -308,6 +331,89 @@ describe("progression-engine §9 matrix", () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.draft.action).toBe("none");
     expect(results[0]!.draft.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
+  });
+});
+
+describe("L-4 remediation — a regressed supportsScheme gate must fail closed, not throw", () => {
+  // docs/reviews/athletic-measurement-profiles-release-1-review.md L-4 §5.5
+  // — `targetRepsPerSet`/`schemeMinReps` used to `throw` for the two
+  // athletic scheme variants (distanceRounds/durationRounds), reachable only
+  // if `evaluateSession`'s `supportsScheme` gate ever regressed and let a
+  // scheme/strategy mismatch through anyway. A plain throw from inside the
+  // sync completion transaction (src/server/sync/service.ts) would escape
+  // its catch block uncaught (only specific PostgreSQL SQLSTATEs are
+  // mapped there) and fail the WHOLE sync batch — exactly the H-17
+  // "poison batch" failure mode. These tests bypass the upstream gates
+  // entirely (call the strategy function directly with an incompatible
+  // scheme, simulating "the gate regressed") and assert a normal
+  // fail-closed draft comes back instead.
+  const distanceScheme: SetScheme = { type: "distanceRounds", sets: 4, distanceM: 20 };
+  const durationScheme: SetScheme = { type: "durationRounds", sets: 3, durationS: 60 };
+
+  it("evaluateLoadProgression with a distanceRounds scheme returns action:none/UNSUPPORTED_SCHEME instead of throwing", () => {
+    const ctx = makeCtx({ scheme: distanceScheme, workSets: straightSets(4, 40, 0, 2) });
+    expect(() => evaluateLoadProgression(ctx, loadCfg())).not.toThrow();
+    const draft = evaluateLoadProgression(ctx, loadCfg());
+    expect(draft.action).toBe("none");
+    expect(draft.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
+    expect(draft.confidence).toBe("low");
+    expect(draft.target).toBeUndefined();
+    expect(draft.inputs.prescribed.scheme).toEqual(distanceScheme);
+    expect(draft.inputs.derived.setsCompleted).toBe(4);
+  });
+
+  it("evaluateLoadProgression with a durationRounds scheme returns action:none/UNSUPPORTED_SCHEME instead of throwing", () => {
+    const ctx = makeCtx({ scheme: durationScheme, workSets: straightSets(3, 20, 0, 2) });
+    expect(() => evaluateLoadProgression(ctx, loadCfg())).not.toThrow();
+    const draft = evaluateLoadProgression(ctx, loadCfg());
+    expect(draft.action).toBe("none");
+    expect(draft.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
+    expect(draft.confidence).toBe("low");
+  });
+
+  it("evaluateRepProgression with a distanceRounds scheme returns action:none/UNSUPPORTED_SCHEME instead of throwing", () => {
+    const ctx = makeCtx({
+      scheme: distanceScheme,
+      prefillReps: null,
+      workSets: straightSets(4, 40, 0, 2),
+    });
+    expect(() => evaluateRepProgression(ctx, repCfg())).not.toThrow();
+    const draft = evaluateRepProgression(ctx, repCfg());
+    expect(draft.action).toBe("none");
+    expect(draft.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
+    expect(draft.confidence).toBe("low");
+    expect(draft.target).toBeUndefined();
+    expect(draft.inputs.derived.currentRepTarget).toBeUndefined();
+  });
+
+  it("evaluateRepProgression with a durationRounds scheme returns action:none/UNSUPPORTED_SCHEME instead of throwing", () => {
+    const ctx = makeCtx({
+      scheme: durationScheme,
+      prefillReps: null,
+      workSets: straightSets(3, 20, 0, 2),
+    });
+    expect(() => evaluateRepProgression(ctx, repCfg())).not.toThrow();
+    const draft = evaluateRepProgression(ctx, repCfg());
+    expect(draft.action).toBe("none");
+    expect(draft.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
+    expect(draft.confidence).toBe("low");
+  });
+
+  // repProgression.ts line ~53 (pre-fix) reached `schemeMinReps` a second
+  // time via `ctx.prescription.prefill.reps ?? schemeMinReps(scheme)` even
+  // when `prefill.reps` happened to already be a stale non-null value on an
+  // incompatible scheme — proving the guard is checked independently of
+  // whatever `prefill.reps` carries, not merely inferred from it being null.
+  it("evaluateRepProgression fails closed even when prefill.reps is a stale non-null value on an incompatible scheme", () => {
+    const ctx = makeCtx({
+      scheme: distanceScheme,
+      prefillReps: 8, // stale — a distanceRounds scheme has no reps dimension
+      workSets: straightSets(4, 40, 0, 2),
+    });
+    expect(() => evaluateRepProgression(ctx, repCfg())).not.toThrow();
+    const draft = evaluateRepProgression(ctx, repCfg());
+    expect(draft.action).toBe("none");
+    expect(draft.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
   });
 });
 

@@ -13,6 +13,7 @@ import {
   workoutSessions,
 } from "@/db/schema";
 import type { AppDb } from "@/db/client";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import { isSelectionEligible } from "@/domain/metrics/selection";
 import { deriveStrengthReport } from "@/domain/strength/report";
 import type {
@@ -51,6 +52,8 @@ interface SelectionMetadataRow {
   loadStepKg: number;
   strengthEstimate: string;
   archivedAt: Date | null;
+  measurementProfile: string;
+  loadBasis: string | null;
 }
 
 async function querySelectionMetadata(db: AppDb, userId: string): Promise<SelectionMetadataRow[]> {
@@ -63,6 +66,8 @@ async function querySelectionMetadata(db: AppDb, userId: string): Promise<Select
       loadStepKg: exercises.loadStepKg,
       strengthEstimate: exercises.strengthEstimate,
       archivedAt: exercises.archivedAt,
+      measurementProfile: exercises.measurementProfile,
+      loadBasis: exercises.loadBasis,
     })
     .from(dashboardEstimateSelections)
     .innerJoin(exercises, eq(dashboardEstimateSelections.exerciseId, exercises.id))
@@ -80,6 +85,7 @@ interface FactRow {
   weightKg: number | null;
   reps: number | null;
   rir: number | null;
+  measurementProfile: string;
 }
 
 // M-2 remediation — bounded exactly like `getMetricsDashboard`'s own step 9
@@ -110,6 +116,11 @@ async function queryWindowedFactRows(
       weightKg: setLogs.weightKg,
       reps: setLogs.reps,
       rir: setLogs.rir,
+      // §11.3 site #3's rule, reused here for the same reason (this fact
+      // query feeds `deriveStrengthReport` too) — the frozen slot profile,
+      // never diverges from the exercise's current one once referenced
+      // (§10.3).
+      measurementProfile: sessionExercises.measurementProfile,
     })
     .from(sessionExercises)
     .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
@@ -161,11 +172,19 @@ function groupByExercise(
       bySession.set(row.sessionId, entry);
     }
     if (row.setNumber === null) continue;
+    // §11.3 site #3's rule, mirrored here (this fact query also feeds
+    // `deriveStrengthReport`): keep only load_reps slots, and never coerce a
+    // null load/rep count to `0` (I-13/H-12) — an explicit skip, not `?? 0`,
+    // is what makes this compile without fabricating a set that was never
+    // logged.
+    if (row.measurementProfile !== "load_reps") continue;
+    if (row.weightKg === null) continue;
+    if (row.reps === null) continue;
     entry.sets.push({
       setNumber: row.setNumber,
       isWarmup: row.isWarmup ?? false,
-      weightKg: row.weightKg ?? 0,
-      reps: row.reps ?? 0,
+      weightKg: row.weightKg,
+      reps: row.reps,
       rir: row.rir,
     });
   }
@@ -220,6 +239,8 @@ async function toSelectionRowDtos(
         equipment: row.equipment,
         strengthEstimate: row.strengthEstimate as StrengthEstimateMode,
         loadStepKg: row.loadStepKg,
+        measurementProfile: row.measurementProfile as MeasurementProfile,
+        loadBasis: row.loadBasis as LoadBasis | null,
       },
       sessions: sessionsByExerciseId.get(row.exerciseId) ?? [],
       asOfLocalDate,
@@ -250,6 +271,8 @@ async function queryCandidates(
       equipment: exercises.equipment,
       strengthEstimate: exercises.strengthEstimate,
       archivedAt: exercises.archivedAt,
+      measurementProfile: exercises.measurementProfile,
+      loadBasis: exercises.loadBasis,
     })
     .from(exercises)
     .where(eq(exercises.userId, userId));
@@ -261,6 +284,8 @@ async function queryCandidates(
       isSelectionEligible({
         equipment: row.equipment,
         strengthEstimate: row.strengthEstimate as StrengthEstimateMode,
+        measurementProfile: row.measurementProfile as MeasurementProfile,
+        loadBasis: row.loadBasis as LoadBasis | null,
       }),
     )
     .map((row) => ({ exerciseId: row.id, name: row.name, equipment: row.equipment }))
@@ -325,6 +350,8 @@ export async function replaceSelection(
               equipment: exercises.equipment,
               strengthEstimate: exercises.strengthEstimate,
               archivedAt: exercises.archivedAt,
+              measurementProfile: exercises.measurementProfile,
+              loadBasis: exercises.loadBasis,
             })
             .from(exercises)
             .where(and(inArray(exercises.id, uniqueIds), eq(exercises.userId, userId)))
@@ -353,6 +380,8 @@ export async function replaceSelection(
         !isSelectionEligible({
           equipment: exercise.equipment,
           strengthEstimate: exercise.strengthEstimate as StrengthEstimateMode,
+          measurementProfile: exercise.measurementProfile as MeasurementProfile,
+          loadBasis: exercise.loadBasis as LoadBasis | null,
         })
       ) {
         throw new InvalidSelectionExerciseError(exerciseId);

@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/ui/Button";
-import { SCHEME_TYPES, type SchemeType } from "@/domain/schemes/setScheme";
+import type { SchemeType } from "@/domain/schemes/setScheme";
 import { DEFAULT_HYPERTROPHY_TARGET_RIR } from "@/domain/schemes/rirBand";
 import {
   STRATEGY_DISPLAY_NAMES,
@@ -16,6 +16,14 @@ import type { ExerciseDto } from "@/ui/exercises/types";
 import type { PrescriptionDto } from "./types";
 
 type Status = "loading" | "ready" | "submitting" | "not_found";
+
+// Hard Release-1 boundary — the schema/engine accept distanceRounds/
+// durationRounds (§9.1) but the prescription editor must not offer them:
+// every exercise's profile selector is present-but-disabled, fixed to
+// "Load + Reps", so `fixed`/`repRange` are the only schemes any exercise in
+// this release can actually use. Local, not derived from `SCHEME_TYPES`, so
+// a future scheme addition there doesn't silently widen this dropdown too.
+const EDITABLE_SCHEME_TYPES = ["fixed", "repRange"] as const satisfies readonly SchemeType[];
 
 interface PrescriptionFormProps {
   mode: "create" | "edit";
@@ -76,10 +84,15 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
         setResolvedTemplateId(p.templateId);
         setExerciseId(p.exerciseId);
         setSchemeType(p.scheme.scheme.type);
+        // The editor only ever writes fixed/repRange (see
+        // EDITABLE_SCHEME_TYPES above); distanceRounds/durationRounds can't
+        // reach here in Release 1 (no exercise can carry a non-load_reps
+        // profile), so they're left at their form defaults rather than
+        // given fields this editor doesn't expose.
         if (p.scheme.scheme.type === "fixed") {
           setSets(String(p.scheme.scheme.sets));
           setReps(String(p.scheme.scheme.reps));
-        } else {
+        } else if (p.scheme.scheme.type === "repRange") {
           setSets(String(p.scheme.scheme.sets));
           setMinReps(String(p.scheme.scheme.minReps));
           setMaxReps(String(p.scheme.scheme.maxReps));
@@ -262,7 +275,7 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
           onChange={(e) => setSchemeType(e.target.value as SchemeType)}
           className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
         >
-          {SCHEME_TYPES.map((t) => (
+          {EDITABLE_SCHEME_TYPES.map((t) => (
             <option key={t} value={t}>
               {t === "fixed" ? "Fixed sets × reps" : "Rep range"}
             </option>

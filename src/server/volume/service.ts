@@ -2,6 +2,7 @@ import { and, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   blocks,
   exerciseMuscleContributions,
+  exercises,
   programs,
   sessionExercises,
   setLogs,
@@ -14,6 +15,7 @@ import type { AppDb } from "@/db/client";
 import { newId } from "@/domain/ids/uuidv7";
 import type { MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
 import type { ContributionRole } from "@/domain/exercises/schema";
+import type { MeasurementProfile, VolumeCounting } from "@/domain/measurement/profile";
 import {
   aggregateVolume,
   type InstantWeekWindow,
@@ -189,10 +191,17 @@ async function queryWorkSetContributionRows(
       muscleGroupId: exerciseMuscleContributions.muscleGroupId,
       role: exerciseMuscleContributions.role,
       weight: exerciseMuscleContributions.weight,
+      // §11.3 site #4 — the frozen slot's profile (never diverges from the
+      // exercise's current one once referenced, §10.3) and the exercise's
+      // current `volume_counting` switch (current-convention, §11.4/H-3),
+      // which lives on `exercises`, not `session_exercises`.
+      measurementProfile: sessionExercises.measurementProfile,
+      volumeCounting: exercises.volumeCounting,
     })
     .from(setLogs)
     .innerJoin(sessionExercises, eq(setLogs.sessionExerciseId, sessionExercises.id))
     .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
+    .innerJoin(exercises, eq(exercises.id, sessionExercises.exerciseId))
     .innerJoin(
       exerciseMuscleContributions,
       eq(exerciseMuscleContributions.exerciseId, sessionExercises.exerciseId),
@@ -218,6 +227,8 @@ async function queryWorkSetContributionRows(
     muscleGroupId: row.muscleGroupId as MuscleGroupSlug,
     role: row.role as ContributionRole,
     weight: row.weight,
+    measurementProfile: row.measurementProfile as MeasurementProfile,
+    volumeCounting: row.volumeCounting as VolumeCounting,
   }));
 }
 

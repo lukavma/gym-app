@@ -6,12 +6,18 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { EQUIPMENT_TYPES, LATERALITY_TYPES, MECHANICS_TYPES } from "@/domain/exercises/schema";
 import { STRENGTH_ESTIMATE_MODES } from "@/domain/strength/estimateMode";
+import {
+  LOAD_BASES,
+  MEASUREMENT_PROFILES,
+  VOLUME_COUNTING_MODES,
+} from "@/domain/measurement/profile";
 import { users } from "./users";
 
 // `sql\`${v}\`` binds a parameter placeholder ($1, $2, ...) rather than
@@ -45,6 +51,12 @@ export const exercises = pgTable(
     // suppresses the estimate entirely. An enum rather than a boolean leaves
     // room for the deferred D-3 / D-11 values without a second migration.
     strengthEstimate: text("strength_estimate").notNull().default("auto"),
+    // athletic-measurement-profiles-architecture-evaluation.md §8.1. Defaults
+    // are kept permanently (§14.5 rollback safety), not just for the
+    // migration backfill — the application always writes them explicitly.
+    measurementProfile: text("measurement_profile").notNull().default("load_reps"),
+    loadBasis: text("load_basis").default("unspecified"),
+    volumeCounting: text("volume_counting").notNull().default("auto"),
     isSeeded: boolean("is_seeded").notNull().default(false),
     notes: text("notes"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -68,5 +80,26 @@ export const exercises = pgTable(
       "ck_exercises_strength_estimate",
       sql`${table.strengthEstimate} in (${checkInList(STRENGTH_ESTIMATE_MODES)})`,
     ),
+    check(
+      "ck_exercises_measurement_profile",
+      sql`${table.measurementProfile} in (${checkInList(MEASUREMENT_PROFILES)})`,
+    ),
+    check(
+      "ck_exercises_load_basis",
+      sql`${table.loadBasis} is null or ${table.loadBasis} in (${checkInList(LOAD_BASES)})`,
+    ),
+    // §8.1 — a load field exists on exactly the three load-bearing profiles;
+    // `load_basis` presence must agree with that set (§7.1, `loadBasisRequired`).
+    check(
+      "ck_exercises_load_basis_presence",
+      sql`(${table.measurementProfile} in ('load_reps', 'load_distance', 'load_duration')) = (${table.loadBasis} is not null)`,
+    ),
+    check(
+      "ck_exercises_volume_counting",
+      sql`${table.volumeCounting} in (${checkInList(VOLUME_COUNTING_MODES)})`,
+    ),
+    // O-14 — target of `session_exercises`' mirror FK (§8.2); proves at the
+    // database level that a slot's frozen profile equals its exercise's.
+    unique("uq_exercises_id_profile").on(table.id, table.measurementProfile),
   ],
 );

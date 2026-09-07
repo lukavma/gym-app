@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, lt } from "drizzle-orm";
 import { exercises, sessionExercises, setLogs, workoutSessions } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import type { PrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 
 // mvp-scope.md F9 — history is rendered purely from session snapshots
 // (`workout_sessions.template_name`/`week_index`/`is_deload`,
@@ -35,9 +36,13 @@ export interface HistorySetDetail {
   id: string;
   setNumber: number;
   isWarmup: boolean;
-  weightKg: number;
-  reps: number;
+  // §11.3 site #5 — display consumer: nullable to match `set_logs`'
+  // post-0013 shape (I-13/H-12, a null is never coerced to `0`).
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
   loggedAt: string;
   notes: string | null;
 }
@@ -52,6 +57,11 @@ export interface HistoryExerciseDetail {
   skipped: boolean;
   notes: string | null;
   sets: HistorySetDetail[];
+  // §12.1 — the slot's frozen shape, from the typed `session_exercises`
+  // columns (§8.2); always present, unlike the today-bundle's optional
+  // `measurement` (H-10 is about tolerating a stale CACHED bundle, which
+  // this live, non-cached endpoint has no equivalent of).
+  measurement: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
 }
 
 export interface HistorySessionDetail {
@@ -186,6 +196,8 @@ export async function getHistorySessionDetail(
       weightKg: s.weightKg,
       reps: s.reps,
       rir: s.rir,
+      distanceM: s.distanceM,
+      durationS: s.durationS,
       loggedAt: s.loggedAt.toISOString(),
       notes: s.notes,
     });
@@ -213,6 +225,10 @@ export async function getHistorySessionDetail(
         skipped: e.skipped,
         notes: e.notes,
         sets: setsBySessionExercise.get(e.id) ?? [],
+        measurement: {
+          profile: e.measurementProfile as MeasurementProfile,
+          loadBasis: e.loadBasis as LoadBasis | null,
+        },
       };
     }),
   };

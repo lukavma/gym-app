@@ -9,6 +9,8 @@ import {
   ExerciseNameConflictError,
   ExerciseNotFoundError,
   ExerciseReferencedError,
+  LoadBasisNotSupportedError,
+  MeasurementProfileLockedError,
   RollupContributionNotCarriedError,
 } from "@/server/exercises/service";
 
@@ -62,6 +64,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json(
         { error: "rollup_not_carried", muscleGroupId: err.muscleGroupId },
         { status: 422 },
+      );
+    }
+    if (err instanceof MeasurementProfileLockedError) {
+      return NextResponse.json({ error: "measurement_profile_locked" }, { status: 409 });
+    }
+    if (err instanceof LoadBasisNotSupportedError) {
+      return NextResponse.json(
+        { error: "load_basis_not_supported", measurementProfile: err.measurementProfile },
+        { status: 400 },
       );
     }
     throw err;

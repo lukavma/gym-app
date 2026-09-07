@@ -286,16 +286,27 @@ describe("strength report over real SQL (PGlite integration)", () => {
     const { ops: deletionOps } = buildSetDeletionOps({
       sessionExerciseId,
       setId: setIds[1]!,
-      sets: rows.map((row) => ({
-        id: row.id,
-        setNumber: row.setNumber,
-        isWarmup: row.isWarmup,
-        weightKg: row.weightKg,
-        reps: row.reps,
-        rir: row.rir,
-        loggedAt: row.loggedAt.toISOString(),
-        notes: row.notes,
-      })),
+      // `setLogs.weightKg`/`.reps` are `number | null` since migration 0013
+      // (athletic-measurement-profiles §8.3); this fixture is `load_reps`
+      // throughout, so both are always populated — the guard documents that
+      // precondition and narrows for `SetLogRowFields` (a hard-boundary,
+      // load_reps-shaped type this stage does not widen) rather than
+      // asserting past it or coercing a null to `0` (I-13/H-12).
+      sets: rows.map((row) => {
+        if (row.weightKg === null || row.reps === null) {
+          throw new Error("expected a load_reps row to have weightKg and reps");
+        }
+        return {
+          id: row.id,
+          setNumber: row.setNumber,
+          isWarmup: row.isWarmup,
+          weightKg: row.weightKg,
+          reps: row.reps,
+          rir: row.rir,
+          loggedAt: row.loggedAt.toISOString(),
+          notes: row.notes,
+        };
+      }),
     });
     const deletionResult = await applySyncBatch(
       db,
@@ -531,6 +542,73 @@ describe("endpoint semantics (A-25, §14.4)", () => {
     // left behind. NEGATIVE CONTROL: uncapped it would be [100, 125].
     expect(report?.whatIf?.bandKg).toEqual([97.5, 122.5]);
     expect(report?.whatIf?.bandKg).not.toEqual([100, 125]);
+  });
+});
+
+// §12.1's `GET /api/exercises/[id]/strength` row; §11.6 (O-17), A-15. The
+// route (src/app/api/exercises/[id]/strength/route.ts) is a thin wrapper
+// that returns `getExerciseStrengthReport`'s result verbatim as `{ strength:
+// report }` — calling the service directly, as every other describe block in
+// this file already does, exercises the identical shape the HTTP surface
+// serves; there is no route-handler-level test precedent anywhere in this
+// repository to depart from.
+describe("the HTTP surface's measurement fields (§12.1, §11.6, A-15)", () => {
+  let db: AppDb;
+  let userId: string;
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    await seedMuscleGroups(db);
+    userId = (await insertTestUser(db)).id;
+  });
+
+  it("surfaces exercise.measurementProfile / loadBasis on an eligible exercise", async () => {
+    const exercise = await createExercise(db, userId, {
+      name: "Bench Press",
+      equipment: "barbell",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "chest", role: "primary", weight: 1 }],
+    });
+    const report = await getExerciseStrengthReport(db, userId, exercise.id, {}, AS_OF);
+    expect(report?.exercise.measurementProfile).toBe("load_reps");
+    expect(report?.exercise.loadBasis).toBe("unspecified");
+    expect(report?.eligible).toBe(true);
+  });
+
+  it("refuses a hand-built load_distance exercise with MEASUREMENT_PROFILE_UNSUPPORTED, exercise fields still present", async () => {
+    const exercise = await createExercise(db, userId, {
+      name: "Sled Push",
+      equipment: "barbell",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+      measurementProfile: "load_distance",
+    });
+    const report = await getExerciseStrengthReport(db, userId, exercise.id, {}, AS_OF);
+    expect(report?.eligible).toBe(false);
+    expect(report?.estimate.reasonCodes).toEqual(["MEASUREMENT_PROFILE_UNSUPPORTED"]);
+    expect(report?.exercise.measurementProfile).toBe("load_distance");
+    expect(report?.exercise.loadBasis).toBe("unspecified");
+  });
+
+  it("refuses an assistance-basis load_reps exercise with LOAD_BASIS_UNSUPPORTED", async () => {
+    const exercise = await createExercise(db, userId, {
+      name: "Assisted Pull-Up",
+      equipment: "machine",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "lats", role: "primary", weight: 1 }],
+      loadBasis: "assistance",
+    });
+    const report = await getExerciseStrengthReport(db, userId, exercise.id, {}, AS_OF);
+    expect(report?.eligible).toBe(false);
+    expect(report?.estimate.reasonCodes).toEqual(["LOAD_BASIS_UNSUPPORTED"]);
+    expect(report?.exercise.measurementProfile).toBe("load_reps");
+    expect(report?.exercise.loadBasis).toBe("assistance");
   });
 });
 

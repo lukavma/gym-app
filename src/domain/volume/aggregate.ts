@@ -9,6 +9,8 @@ import {
   type RollupMuscleGroupSlug,
 } from "@/domain/exercises/muscleGroups";
 import type { ContributionRole } from "@/domain/exercises/schema";
+import { isProfileEligibleForVolume } from "@/domain/measurement/capabilities";
+import type { MeasurementProfile, VolumeCounting } from "@/domain/measurement/profile";
 
 // volume-model.md §2's aggregation pseudocode, implemented literally. Pure,
 // deterministic, no DB/framework/network/clock — the caller (server layer)
@@ -32,6 +34,14 @@ export interface WorkSetContributionRow {
   muscleGroupId: MuscleGroupSlug;
   role: ContributionRole;
   weight: number;
+  // §11.2 / §11.4 (O-4) — the frozen slot's profile (never the exercise's
+  // *current* one, though a referenced exercise's profile can never diverge
+  // from it, §10.3) and the exercise's current `volume_counting` switch.
+  // Both gate here, beside `isWarmup` (§11.3 site #4) — the row carries no
+  // load or rep numbers at all, so there is nothing for the domain to
+  // coerce.
+  measurementProfile: MeasurementProfile;
+  volumeCounting: VolumeCounting;
 }
 
 // Half-open instant window `[startInstant, endInstant)`, already resolved
@@ -170,7 +180,17 @@ export function aggregateVolume(
   // volume-model.md §1 — "Work set: a logged SetLog with isWarmup = false".
   // Filtered here (not by the caller) so the Work Set definition is a
   // domain behavior, provable directly against a fixture, not a query-level
-  // side effect.
-  const workRows = rows.filter((row) => !row.isWarmup);
+  // side effect. The profile/switch gate (§11.3 site #4, §11.4) is an
+  // ADDITIONAL predicate applied the same way: a row counts only if its
+  // profile is structurally volume-eligible AND the exercise's switch is
+  // `'auto'` — `'auto'` on an ineligible profile still excludes (NC-11, I-5:
+  // a switch may disable a compatible profile but can never enable an
+  // incompatible one).
+  const workRows = rows.filter(
+    (row) =>
+      !row.isWarmup &&
+      isProfileEligibleForVolume(row.measurementProfile) &&
+      row.volumeCounting === "auto",
+  );
   return windows.map((window) => aggregateWeek(workRows, window));
 }

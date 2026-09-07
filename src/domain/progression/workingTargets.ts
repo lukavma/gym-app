@@ -25,9 +25,19 @@ export interface WorkingTargets {
 
 // The reps prefill default is the scheme's own target (fixed reps / bottom
 // of a rep range) — same rule Phase 3 used; a decision's chosen reps (an
-// accepted rep-progression target) now takes precedence.
-export function schemeDefaultReps(scheme: SetScheme): number {
-  return scheme.type === "fixed" ? scheme.reps : scheme.minReps;
+// accepted rep-progression target) now takes precedence. §9.4 — the two
+// athletic scheme variants have no reps dimension at all (§6.2), so there is
+// no default to prefill; `null` carries through resolveWorkingTargets below.
+export function schemeDefaultReps(scheme: SetScheme): number | null {
+  switch (scheme.type) {
+    case "fixed":
+      return scheme.reps;
+    case "repRange":
+      return scheme.minReps;
+    case "distanceRounds":
+    case "durationRounds":
+      return null;
+  }
 }
 
 export function resolveWorkingTargets(args: {

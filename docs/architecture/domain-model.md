@@ -213,10 +213,11 @@ Invariants:
 - `discarded` sessions are retained but excluded from history, progression evaluation, and volume.
 
 ### SessionExercise
-One exercise slot inside a session: `{ exerciseId, position, source: template | adhoc, prescription: PrescriptionSnapshot | null, skipped: bool, notes }`.
+One exercise slot inside a session: `{ exerciseId, position, source: template | adhoc, prescription: PrescriptionSnapshot | null, measurementProfile, loadBasis, skipped: bool, notes }`.
 
 - `source: adhoc` covers exercises added mid-workout; their `prescription` may be null (log freely) or a minimal on-the-fly scheme.
 - `exerciseId` is a live reference — safe because of the exercise identity policy (§3).
+- `measurementProfile` and `loadBasis` are derived server-side from the exercise row and **frozen at insert** — never updated afterward. The frozen profile equals the exercise's profile at write time (database-enforced) and the exercise's profile cannot change while any slot references it; the frozen basis is not locked at the exercise level (`athletic-measurement-profiles-architecture-evaluation.md` §8.2, §10.1, I-3).
 
 ### SetLog (the atomic fact)
 `{ setNumber, isWarmup, weightKg, reps, rir?: int 0–10 | null, loggedAt, notes? }`
@@ -278,6 +279,7 @@ rawDirectSets(muscle, week) = count of work sets where muscle is a primary contr
 |---|---|---|
 | MuscleGroup | add-only; `kind` immutable | — (vocabulary v2 reconciled seeded `back` rows to leaves by deterministic id, role/weight preserved — ADR-010) |
 | Exercise metadata (name, equipment…) | yes | not snapshotted; identity policy instead |
+| Exercise `measurementProfile` | **the one exception to "all metadata mutable"** — locked once the exercise is referenced by any SessionExercise or ExercisePrescription row (`409 measurement_profile_locked`); freely editable before that | not snapshotted at the exercise level; the SessionExercise half of the lock is database-enforced (mirror FK), the ExercisePrescription half is service-enforced. `loadBasis` and `volumeCounting` are **not** covered by this exception — they stay mutable with history at any time, like `equipment` |
 | MuscleContribution weights | yes | **not snapshotted** — current-convention derivation (§8) |
 | Program / Template / Prescription | yes | **snapshot-on-use** into SessionExercise at session start |
 | Block config, schedule, deload | yes (future weeks) | weekIndex + isDeload + applied modifiers snapshotted into session |
@@ -302,3 +304,7 @@ rawDirectSets(muscle, week) = count of work sets where muscle is a primary contr
 8. Recommendations: at most one non-superseded pending per (exercise, block); decision written at most once.
 9. Deload/week modifiers never mutate templates or prescriptions.
 10. All timestamps UTC; day-bucketed entries (bodyweight, recovery) keyed by user-timezone local date.
+11. **(I-1)** A set row's field set is decided by its `measurement_profile` alone; the database proves it (`ck_set_logs_profile_shape`) and the row's profile equals its parent slot's (composite FK).
+12. **(I-3)** A slot's profile and basis are frozen at session start (or ad-hoc add) in typed columns and never updated. The profile freeze is database-enforced (the set-level composite FK refuses a parent update with children present); the basis freeze is a service rule (no update path writes `session_exercises.load_basis`). The slot's profile equals its exercise's at write time and the exercise's profile cannot change while any slot references it — enforced by the mirror FK; the `exercise_prescriptions` half of that lock is a service rule.
+13. **(I-13)** At every SQL→domain boundary that produces a numeric domain input, rows whose frozen slot profile the consumer cannot consume are excluded before mapping, and a null load or rep count is never coerced to `0` or `1`; display DTOs carry `number | null` instead. `evaluateSession` skips non-`load_reps` slots by `continue`, producing no row.
+14. **(I-14)** The slot-profile derivation on `sessionExercise` insert is a user-scoped select; a missing or foreign exercise rejects `invalid_reference`; the column default is never a fallback; a payload `measurementProfile` that disagrees rejects `measurement_profile_mismatch`; the payload `loadBasis` is never compared and never written — the slot's basis is always the live exercise row's value at insert.

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import type { AppDb } from "@/db/client";
 import { createTestDb } from "./testDb";
@@ -24,12 +24,26 @@ import { createPrescription } from "@/server/prescriptions/service";
 import { buildTodayBundle, getActiveSession } from "@/server/today/service";
 import { applySyncBatch } from "@/server/sync/service";
 import { newId } from "@/domain/ids/uuidv7";
-import { loadProgressionConfigSchema } from "@/domain/progression/registry";
+import { loadProgressionConfigSchema, supportsScheme } from "@/domain/progression/registry";
 import {
   wrapPrescriptionSnapshot,
   type PrescriptionSnapshot,
 } from "@/domain/schemas/prescriptionSnapshot";
 import type { SyncOpEnvelope } from "@/domain/sync/schema";
+
+// L-4 remediation (docs/reviews/athletic-measurement-profiles-release-1-review.md
+// §5.5) — `supportsScheme` is wrapped as a pass-through spy so a single test
+// below can force it to (wrongly) report compatibility for one call,
+// simulating "the gate ALSO regressed" on top of a hand-built incompatible
+// snapshot. Every other test in this file gets the real, unmodified
+// behavior (the wrap only intercepts, it never changes, the default
+// implementation) — same technique as `setLogPreCheck` in
+// measurementSync.integration.test.ts and the loadProgression/repProgression
+// wraps in progressionMeasurementGate.test.ts.
+vi.mock("@/domain/progression/registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/domain/progression/registry")>();
+  return { ...actual, supportsScheme: vi.fn(actual.supportsScheme) };
+});
 
 // Phase 4 integration coverage (implementation-plan.md Phase 4 Tests):
 // server evaluation on completion, supersede semantics, the pending partial
@@ -1204,6 +1218,150 @@ describe("progression engine server orchestration (PGlite integration)", () => {
         beforeLoadKg: 100,
         afterLoadKg: 100,
       });
+    });
+  });
+
+  // docs/reviews/athletic-measurement-profiles-release-1-review.md L-4 §5.5
+  // — the actual claim under test: a scheme/strategy mismatch reaching
+  // evaluateLoadProgression/evaluateRepProgression through the REAL sync
+  // completion transaction (not a direct unit call) must not throw and
+  // therefore must not fail/poison the whole `applySyncBatch` request.
+  //
+  // Two gates would normally prevent this state from ever existing: the
+  // write-side gate that only lets the prescription editor offer compatible
+  // scheme/strategy pairs (bypassed here by hand-building the frozen
+  // PrescriptionSnapshot directly, the same technique
+  // measurementSync.integration.test.ts and this file's own H-1 block use to
+  // reach otherwise-unreachable states — `prescriptionSnapshotDataSchema`
+  // itself has no cross-field scheme/strategy check), and evaluateSession's
+  // own `supportsScheme` read-time gate (which this suite's `vi.mock` above
+  // wraps as a pass-through spy so this one test can force it to report a
+  // false compatibility, simulating the gate ALSO regressing). Without both
+  // bypassed at once, the mismatch either never freezes into a session (gate
+  // 1) or is correctly intercepted by `unsupportedSchemeDraft` before ever
+  // reaching the strategy functions (gate 2) — this test's whole point is to
+  // reach one step further than either gate, into the code this task's fix
+  // touches, end to end.
+  describe("L-4 remediation — a regressed supportsScheme gate must not poison the sync completion transaction", () => {
+    afterEach(() => {
+      vi.mocked(supportsScheme).mockClear();
+    });
+
+    it("a distanceRounds scheme frozen under load-progression completes the batch (action:none/UNSUPPORTED_SCHEME), not a throw", async () => {
+      // Force just the one call this session's evaluation makes to
+      // (wrongly) report the distanceRounds/load-progression pair as
+      // supported, so evaluateSession's dispatcher proceeds to actually
+      // call evaluateLoadProgression instead of short-circuiting into
+      // unsupportedSchemeDraft first.
+      vi.mocked(supportsScheme).mockImplementationOnce(() => true);
+
+      const sessionId = newId();
+      const sessionExerciseId = newId();
+      const setId = newId();
+      const startedAt = "2026-09-07T10:00:00.000Z";
+      const completedAt = "2026-09-07T11:00:00.000Z";
+
+      // `exerciseId`/`exerciseName` (outer beforeEach) are the default
+      // `load_reps` profile — the REAL session_exercises row's derived
+      // measurementProfile comes from the exercise's live profile, never
+      // from this JSONB, so evaluateSession's earlier NC-9 profile-based
+      // skip does NOT mask this scenario (profile stays `load_reps`,
+      // reaching `supportsScheme` specifically). Only the frozen snapshot's
+      // own `scheme`/`progression.strategyId` pairing is the lie.
+      // `sets: 1` matches the single work set logged below exactly — the
+      // pre-fix throw lived behind `isCompleted`'s
+      // `sets.length >= scheme.sets && repShortfall(..., targetRepsPerSet(scheme))`
+      // short-circuit: with fewer logged sets than prescribed, `&&` never
+      // evaluates its right-hand side and `targetRepsPerSet` is never even
+      // called, so the scheme/sets count must actually be reachable for
+      // this test to exercise the throw (verified by the load-bearing
+      // revert check for this test — see the task's evidence notes).
+      const rogueSnapshot = wrapPrescriptionSnapshot({
+        exerciseId,
+        exerciseName,
+        scheme: { type: "distanceRounds", sets: 1, distanceM: 20 },
+        targetRir: { min: 0, max: 2 },
+        restSeconds: 120,
+        progression: {
+          strategyId: "load-progression",
+          strategyVersion: 1,
+          config: loadProgressionConfig as Record<string, unknown>,
+          classification: "heuristic",
+        },
+        appliedModifiers: null,
+        prefill: { loadKg: 100, reps: null },
+      });
+
+      const ops: SyncOpEnvelope[] = [
+        {
+          opId: newId(),
+          entity: "workoutSession",
+          operation: "upsert",
+          payload: {
+            id: sessionId,
+            blockId,
+            templateId,
+            templateName: "Push Day",
+            weekIndex: 1,
+            isDeload: false,
+            startedAt,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "sessionExercise",
+          operation: "upsert",
+          payload: {
+            id: sessionExerciseId,
+            sessionId,
+            exerciseId,
+            position: 0,
+            source: "template",
+            prescription: rogueSnapshot,
+          },
+        },
+        // The actual row's derived measurementProfile is `load_reps` (from
+        // the live exercise), so its work sets are ordinary weightKg/reps —
+        // the mismatch lives entirely in the frozen `prescription` JSONB the
+        // strategy functions read, not in the stored set shape.
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 100,
+            reps: 5,
+            rir: 2,
+            loggedAt: startedAt,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "workoutSession",
+          operation: "upsert",
+          payload: { id: sessionId, status: "completed", completedAt },
+        },
+      ];
+
+      // The claim: the whole batch converges normally — no throw escaping
+      // applySyncBatch, no rejection — even though completion's evaluation
+      // reaches evaluateLoadProgression with a scheme it cannot interpret.
+      const result = await applySyncBatch(db, userId, ops);
+      expect(result.rejected).toEqual([]);
+      expect(result.applied).toHaveLength(ops.length);
+
+      const recs = await db
+        .select()
+        .from(recommendations)
+        .where(eq(recommendations.sourceSessionId, sessionId));
+      expect(recs).toHaveLength(1);
+      expect(recs[0]?.action).toBe("none");
+      expect(recs[0]?.reasonCodes).toEqual(["UNSUPPORTED_SCHEME"]);
+      expect(recs[0]?.strategyId).toBe("load-progression");
     });
   });
 });

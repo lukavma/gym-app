@@ -65,12 +65,18 @@ Seeded reference data — vocabulary v2 (ADR-010): 18 rows = 17 leaves + the `ba
 | mechanics | text | not null, ck in ('compound','isolation') |
 | laterality | text | not null default 'bilateral', ck in ('bilateral','unilateral') |
 | load_step_kg | numeric(4,2) | not null, ck > 0, default by equipment |
+| strength_estimate | text | not null default 'auto', ck in ('auto','off') — e1RM disable-only override |
+| measurement_profile | text | not null default 'load_reps', ck in ('load_reps','reps','load_distance','distance_time','duration','load_duration') |
+| load_basis | text | null default 'unspecified', ck null or in ('total','per_hand','assistance','unspecified') — required exactly when `measurement_profile` has load (`ck_exercises_load_basis_presence`) |
+| volume_counting | text | not null default 'auto', ck in ('auto','off') — profile-dependent default at create (`'off'` for `reps`), not a column default |
 | is_seeded | boolean | not null default false |
 | notes | text | null |
 | archived_at | timestamptz | null |
 | created_at / updated_at | timestamptz | |
 
-Indexes/constraints: `uq_exercises_active_name` — unique `(user_id, lower(name))` **partial** `WHERE archived_at IS NULL` (allows re-using a name after archiving).
+Indexes/constraints: `uq_exercises_active_name` — unique `(user_id, lower(name))` **partial** `WHERE archived_at IS NULL` (allows re-using a name after archiving); `uq_exercises_id_profile` — unique `(id, measurement_profile)`, the target of `session_exercises`' mirror FK below.
+
+`measurement_profile` is locked once the exercise is referenced by any `session_exercises` or `exercise_prescriptions` row (`409 measurement_profile_locked`; a service rule for the `exercise_prescriptions` half, and the mirror FK enforces the `session_exercises` half at the database level). `load_basis` is **never** locked — it stays ordinary editable metadata with history at any time, like `equipment`, both before and after the profile locks. `volume_counting` and `strength_estimate` are likewise ordinary editable metadata. The three new columns' defaults are kept **permanently**, not dropped after backfill, for rollback safety (an older build's insert with the column default must always read as a real, self-consistent row).
 
 ### 2.5 `exercise_muscle_contributions`
 
@@ -213,11 +219,13 @@ Indexes: `uq_sessions_one_in_progress` — unique `(user_id)` partial `WHERE sta
 | position | smallint | not null |
 | source | text | not null, ck in ('template','adhoc') |
 | prescription | jsonb | null — PrescriptionSnapshot (null for free ad-hoc) |
+| measurement_profile | text | not null default 'load_reps', ck in ('load_reps','reps','load_distance','distance_time','duration','load_duration') — frozen at insert, never updated |
+| load_basis | text | null default 'unspecified', ck null or in ('total','per_hand','assistance','unspecified') — frozen at insert; not locked by any constraint (§10.3 of the profiles evaluation keeps the exercise-level basis editable) |
 | skipped | boolean | not null default false |
 | notes | text | null |
 | created_at / updated_at | timestamptz | |
 
-`uq_session_exercise_position` — unique `(session_id, position)` deferrable; `ix_session_exercises_exercise` `(exercise_id, created_at DESC)` — powers "previous performance" and engine history lookups.
+`uq_session_exercise_position` — unique `(session_id, position)` deferrable; `ix_session_exercises_exercise` `(exercise_id, created_at DESC)` — powers "previous performance" and engine history lookups; `uq_session_exercises_id_profile` — unique `(id, measurement_profile)`, the target of `set_logs`' composite FK below; `fk_session_exercises_exercise_profile` — composite FK `(exercise_id, measurement_profile)` → `exercises(id, measurement_profile)` `ON DELETE RESTRICT` (the "mirror FK": proves at the database level that a slot's frozen profile equals its exercise's profile at write time, and makes `exercises.measurement_profile` unchangeable once any slot references it).
 
 ### 2.14 `set_logs`
 
@@ -227,14 +235,17 @@ Indexes: `uq_sessions_one_in_progress` — unique `(user_id)` partial `WHERE sta
 | session_exercise_id | uuid | FK → session_exercises `ON DELETE CASCADE` |
 | set_number | smallint | not null, ck `>= 1` |
 | is_warmup | boolean | not null default false |
-| weight_kg | numeric(6,2) | not null, ck `>= 0` (0 = bodyweight-only) |
-| reps | smallint | not null, ck between 1 and 100 |
+| weight_kg | numeric(6,2) | null, ck `>= 0` (0 = bodyweight-only) — NOT NULL dropped; required only for load profiles, enforced by `ck_set_logs_profile_shape` |
+| reps | smallint | null, ck between 1 and 100 — NOT NULL dropped; required only for rep profiles, enforced by `ck_set_logs_profile_shape` |
 | rir | smallint | null, ck between 0 and 10 |
+| distance_m | numeric(7,2) | null, ck `> 0 and <= 99999.99` |
+| duration_s | numeric(7,2) | null, ck `> 0 and <= 86400` |
+| measurement_profile | text | not null default 'load_reps' — copied from the parent slot at insert, never updated; **no separate enum CHECK**: membership is enforced transitively by `ck_set_logs_profile_shape`'s OR-chain (an unknown value matches no branch) and by the composite FK below |
 | logged_at | timestamptz | not null (client clock) |
 | notes | text | null |
 | created_at / updated_at | timestamptz | |
 
-`uq_set_number` — unique `(session_exercise_id, set_number)` deferrable initially deferred (renumbering after mid-list delete); `ix_set_logs_session_exercise` `(session_exercise_id, set_number)`.
+`uq_set_number` — unique `(session_exercise_id, set_number)` deferrable initially deferred (renumbering after mid-list delete); `ix_set_logs_session_exercise` `(session_exercise_id, set_number)`; `fk_set_logs_parent_profile` — composite FK `(session_exercise_id, measurement_profile)` → `session_exercises(id, measurement_profile)` `ON DELETE CASCADE` (a set's profile always equals its parent slot's, and the parent's `measurement_profile` cannot change while child rows exist); `ck_set_logs_profile_shape` — a single per-profile CHECK over `weight_kg`/`reps`/`distance_m`/`duration_s`/`rir` nullability (six profile branches; see `athletic-measurement-profiles-architecture-evaluation.md` §8.3 for the exact predicate).
 
 ### 2.15 `recommendations`
 

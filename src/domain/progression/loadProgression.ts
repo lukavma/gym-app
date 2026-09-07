@@ -17,9 +17,26 @@ import type { SetScheme } from "../schemes/setScheme";
 // every deviation-worthy detail is called out inline.
 
 // R: the per-set rep requirement — fixed reps, or minReps for repRange
-// ("'repRange' (use minReps as R)").
-function targetRepsPerSet(scheme: SetScheme): number {
-  return scheme.type === "fixed" ? scheme.reps : scheme.minReps;
+// ("'repRange' (use minReps as R)"). load-progression is `load_reps`-only
+// (measurement-profiles-architecture-evaluation.md §9.2, N-13); `null` is
+// the fail-closed signal for the two athletic scheme variants, which have no
+// reps dimension at all (§9.1 — same idiom as workingTargets.ts's
+// `schemeDefaultReps`). `evaluateSession`'s `supportsScheme` gate keeps any
+// other scheme type from ever reaching this function in practice —
+// `evaluateLoadProgression`'s guard below treats `null` exactly like
+// `evaluateSession`'s own `unsupportedSchemeDraft`, so a regressed gate
+// fails closed instead of throwing and poisoning the sync completion
+// transaction (review L-4).
+function targetRepsPerSet(scheme: SetScheme): number | null {
+  switch (scheme.type) {
+    case "fixed":
+      return scheme.reps;
+    case "repRange":
+      return scheme.minReps;
+    case "distanceRounds":
+    case "durationRounds":
+      return null;
+  }
 }
 
 // shortfall(sets, R) — missing reps summed over the first S work sets (extra
@@ -34,10 +51,13 @@ function repShortfall(sets: readonly PerformedSet[], prescribedSets: number, rep
 }
 
 function isCompleted(sets: readonly PerformedSet[], scheme: SetScheme, tolerance: number): boolean {
-  return (
-    sets.length >= scheme.sets &&
-    repShortfall(sets, scheme.sets, targetRepsPerSet(scheme)) <= tolerance
-  );
+  const targetReps = targetRepsPerSet(scheme);
+  // No reps dimension to complete against (defensive — see
+  // targetRepsPerSet above). A history entry carrying such a scheme
+  // (entryQualifiesForStreak) simply never qualifies as "completed" —
+  // fail-closed, not a throw.
+  if (targetReps === null) return false;
+  return sets.length >= scheme.sets && repShortfall(sets, scheme.sets, targetReps) <= tolerance;
 }
 
 // §4.1 — "failStreak = 1 + count of immediately-preceding non-deload history
@@ -84,6 +104,15 @@ export function evaluateLoadProgression(
     },
     historyDepthUsed: ctx.history.length,
   };
+
+  // L-4 fail-closed guard — mirrors evaluateSession.ts's own
+  // `unsupportedSchemeDraft`: if `supportsScheme` ever regressed and let a
+  // scheme with no reps dimension reach this function, stop here with the
+  // same action:none/UNSUPPORTED_SCHEME/low shape rather than let
+  // `targetRepsPerSet` fail deeper inside `isCompleted`.
+  if (targetRepsPerSet(scheme) === null) {
+    return { action: "none", reasonCodes: ["UNSUPPORTED_SCHEME"], inputs, confidence: "low" };
+  }
 
   if (sets.length === 0) {
     return { action: "none", reasonCodes: ["NO_WORK_SETS_LOGGED"], inputs, confidence: "low" };

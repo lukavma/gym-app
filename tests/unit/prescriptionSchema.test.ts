@@ -126,19 +126,21 @@ describe("reorderPrescriptionsSchema", () => {
 });
 
 describe("checkPrescriptionCompatibility", () => {
-  it("returns no issues for a fixed scheme with load-progression", () => {
-    const issues = checkPrescriptionCompatibility(validFixedScheme, {
-      strategyId: "load-progression",
-      config: {},
-    });
+  it("returns no issues for a fixed scheme with load-progression on load_reps", () => {
+    const issues = checkPrescriptionCompatibility(
+      validFixedScheme,
+      { strategyId: "load-progression", config: {} },
+      "load_reps",
+    );
     expect(issues).toEqual([]);
   });
 
   it("requires repCap for rep-progression paired with a fixed scheme", () => {
-    const issues = checkPrescriptionCompatibility(validFixedScheme, {
-      strategyId: "rep-progression",
-      config: {},
-    });
+    const issues = checkPrescriptionCompatibility(
+      validFixedScheme,
+      { strategyId: "rep-progression", config: {} },
+      "load_reps",
+    );
     expect(issues).toContain("repCap is required in rep-progression config for fixed schemes");
   });
 
@@ -146,15 +148,132 @@ describe("checkPrescriptionCompatibility", () => {
     const issues = checkPrescriptionCompatibility(
       { type: "repRange", sets: 3, minReps: 8, maxReps: 12 },
       { strategyId: "rep-progression", config: {} },
+      "load_reps",
     );
     expect(issues).toEqual([]);
   });
 
   it("passes when rep-progression's fixed scheme has an explicit repCap", () => {
-    const issues = checkPrescriptionCompatibility(validFixedScheme, {
-      strategyId: "rep-progression",
-      config: { repCap: 15 },
-    });
+    const issues = checkPrescriptionCompatibility(
+      validFixedScheme,
+      { strategyId: "rep-progression", config: { repCap: 15 } },
+      "load_reps",
+    );
+    expect(issues).toEqual([]);
+  });
+
+  // §9.2's full profile × scheme × strategy table.
+  it.each([
+    ["load_reps", "fixed", "manual", true],
+    ["load_reps", "repRange", "load-progression", true],
+    ["load_reps", "distanceRounds", "manual", false],
+    ["load_reps", "durationRounds", "manual", false],
+    ["reps", "fixed", "manual", true],
+    ["reps", "repRange", "manual", true],
+    ["reps", "fixed", "load-progression", false],
+    ["reps", "fixed", "rep-progression", false],
+    ["reps", "distanceRounds", "manual", false],
+    ["load_distance", "distanceRounds", "manual", true],
+    ["load_distance", "fixed", "manual", false],
+    ["load_distance", "distanceRounds", "load-progression", false],
+    ["distance_time", "distanceRounds", "manual", true],
+    ["distance_time", "durationRounds", "manual", false],
+    ["duration", "durationRounds", "manual", true],
+    ["duration", "distanceRounds", "manual", false],
+    ["load_duration", "durationRounds", "manual", true],
+    ["load_duration", "fixed", "manual", false],
+  ] as const)(
+    "profile=%s scheme=%s strategy=%s -> compatible=%s",
+    (profile, schemeType, strategyId, compatible) => {
+      const scheme =
+        schemeType === "fixed"
+          ? { type: "fixed" as const, sets: 3, reps: 10 }
+          : schemeType === "repRange"
+            ? { type: "repRange" as const, sets: 3, minReps: 8, maxReps: 12 }
+            : schemeType === "distanceRounds"
+              ? { type: "distanceRounds" as const, sets: 3, distanceM: 20 }
+              : { type: "durationRounds" as const, sets: 3, durationS: 60 };
+      const issues = checkPrescriptionCompatibility(scheme, { strategyId, config: {} }, profile);
+      expect(issues.length === 0).toBe(compatible);
+    },
+  );
+
+  // §9.3 — field rules by profile. `dims.rir`/`dims.weight` mirror
+  // targetRir/baselineLoadKg exactly (see the JSDoc above the function).
+  it("rejects targetRir for every profile except load_reps/reps", () => {
+    for (const profile of [
+      "load_distance",
+      "distance_time",
+      "duration",
+      "load_duration",
+    ] as const) {
+      const issues = checkPrescriptionCompatibility(
+        validFixedScheme,
+        { strategyId: "manual", config: {} },
+        profile,
+        { targetRir: { min: 0, max: 2 } },
+      );
+      expect(issues).toContain(`targetRir is not supported for ${profile}`);
+    }
+  });
+
+  it("allows targetRir for load_reps and reps", () => {
+    for (const profile of ["load_reps", "reps"] as const) {
+      const issues = checkPrescriptionCompatibility(
+        validFixedScheme,
+        { strategyId: "manual", config: {} },
+        profile,
+        { targetRir: { min: 0, max: 2 } },
+      );
+      expect(issues).toEqual([]);
+    }
+  });
+
+  it("rejects baselineLoadKg for reps/distance_time/duration", () => {
+    for (const profile of ["reps", "distance_time", "duration"] as const) {
+      const issues = checkPrescriptionCompatibility(
+        validFixedScheme,
+        { strategyId: "manual", config: {} },
+        profile,
+        { baselineLoadKg: 50 },
+      );
+      expect(issues).toContain(`baselineLoadKg is not supported for ${profile}`);
+    }
+  });
+
+  it("allows baselineLoadKg for load_reps/load_distance/load_duration", () => {
+    const schemeFor = {
+      load_reps: validFixedScheme,
+      load_distance: { type: "distanceRounds" as const, sets: 3, distanceM: 20 },
+      load_duration: { type: "durationRounds" as const, sets: 3, durationS: 60 },
+    };
+    for (const profile of ["load_reps", "load_distance", "load_duration"] as const) {
+      const issues = checkPrescriptionCompatibility(
+        schemeFor[profile],
+        { strategyId: "manual", config: {} },
+        profile,
+        { baselineLoadKg: 50 },
+      );
+      expect(issues).toEqual([]);
+    }
+  });
+
+  it("does not reject an explicit null (clearing a field), only a real value", () => {
+    const issues = checkPrescriptionCompatibility(
+      { type: "distanceRounds", sets: 3, distanceM: 20 },
+      { strategyId: "manual", config: {} },
+      "load_distance",
+      { targetRir: null, baselineLoadKg: null },
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it("does not reject an omitted field (undefined), only a supplied one", () => {
+    const issues = checkPrescriptionCompatibility(
+      { type: "distanceRounds", sets: 3, distanceM: 20 },
+      { strategyId: "manual", config: {} },
+      "load_distance",
+    );
     expect(issues).toEqual([]);
   });
 });

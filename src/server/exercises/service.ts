@@ -1,18 +1,28 @@
 import { and, asc, eq, ilike, inArray, isNull } from "drizzle-orm";
-import { exerciseMuscleContributions, exercises } from "@/db/schema";
+import {
+  exerciseMuscleContributions,
+  exercisePrescriptions,
+  exercises,
+  sessionExercises,
+} from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import { newId } from "@/domain/ids/uuidv7";
-import type {
-  ArchiveAction,
-  ContributionRole,
-  CreateExerciseInput,
-  Equipment,
-  Laterality,
-  Mechanics,
-  ResolvedContribution,
-  StrengthEstimateMode,
-  UpdateExerciseInput,
+import {
+  resolveLoadBasis,
+  type ArchiveAction,
+  type ContributionRole,
+  type CreateExerciseInput,
+  type Equipment,
+  type Laterality,
+  type LoadBasis,
+  type Mechanics,
+  type MeasurementProfile,
+  type ResolvedContribution,
+  type StrengthEstimateMode,
+  type UpdateExerciseInput,
+  type VolumeCounting,
 } from "@/domain/exercises/schema";
+import { DEFAULT_MEASUREMENT_PROFILE, loadBasisRequired } from "@/domain/measurement/profile";
 import { isRollupMuscleGroupSlug, type MuscleGroupSlug } from "@/domain/exercises/muscleGroups";
 
 export class ExerciseNotFoundError extends Error {
@@ -52,6 +62,31 @@ export class ExerciseReferencedError extends Error {
   }
 }
 
+// athletic-measurement-profiles-architecture-evaluation.md §10.3 — a
+// measurementProfile change is refused once any `session_exercises` or
+// `exercise_prescriptions` row references the exercise. The `session_exercises`
+// half is also a database guarantee via `fk_session_exercises_exercise_profile`
+// (§8.2, O-14); its raw `23503` is mapped to this same error below as a
+// backstop for when the service check here is bypassed or races.
+export class MeasurementProfileLockedError extends Error {
+  constructor() {
+    super("Measurement profile is locked once the exercise is used in history or a template");
+    this.name = "MeasurementProfileLockedError";
+  }
+}
+
+// §7.1 / §8.1's presence rule for a `loadBasis` edit against an unchanged
+// profile that has no load field — `ck_exercises_load_basis_presence`'s
+// application-layer equivalent for the one case `updateExerciseSchema`'s
+// `.superRefine` cannot see (it has no access to the exercise's current
+// profile).
+export class LoadBasisNotSupportedError extends Error {
+  constructor(public readonly measurementProfile: string) {
+    super(`loadBasis is not supported for measurement profile "${measurementProfile}"`);
+    this.name = "LoadBasisNotSupportedError";
+  }
+}
+
 export interface ExerciseRecord {
   id: string;
   userId: string;
@@ -62,6 +97,9 @@ export interface ExerciseRecord {
   laterality: Laterality;
   loadStepKg: number;
   strengthEstimate: StrengthEstimateMode;
+  measurementProfile: MeasurementProfile;
+  loadBasis: LoadBasis | null;
+  volumeCounting: VolumeCounting;
   isSeeded: boolean;
   notes: string | null;
   archivedAt: Date | null;
@@ -83,6 +121,9 @@ function toRecord(row: ExerciseRow, contributions: ResolvedContribution[]): Exer
     laterality: row.laterality as Laterality,
     loadStepKg: row.loadStepKg,
     strengthEstimate: row.strengthEstimate as StrengthEstimateMode,
+    measurementProfile: row.measurementProfile as MeasurementProfile,
+    loadBasis: row.loadBasis as LoadBasis | null,
+    volumeCounting: row.volumeCounting as VolumeCounting,
     isSeeded: row.isSeeded,
     notes: row.notes,
     archivedAt: row.archivedAt,
@@ -133,8 +174,31 @@ function isPostgresErrorCode(err: unknown, code: string): boolean {
   return "cause" in err && isPostgresErrorCode(err.cause, code);
 }
 
+// Like `isPostgresErrorCode`, but additionally requires the violated
+// constraint (the pg driver's `.constraint` field on a `DatabaseError`,
+// confirmed present on `23503`/`23505` errors) to match `constraintName`.
+// Needed wherever a single SQLSTATE (e.g. `23503`) is shared by more than
+// one constraint this function's transaction can violate — mapping on the
+// code alone would misattribute a different constraint's violation to the
+// wrong domain error.
+function isPostgresConstraintViolation(
+  err: unknown,
+  code: string,
+  constraintName: string,
+): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  if ("code" in err && err.code === code) {
+    return "constraint" in err && err.constraint === constraintName;
+  }
+  return "cause" in err && isPostgresConstraintViolation(err.cause, code, constraintName);
+}
+
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+// The mirror FK backing the §10.3 measurement-profile lock (O-14) — see the
+// comment on `MeasurementProfileLockedError` and on the catch-block mapping
+// in `updateExercise` below.
+const MEASUREMENT_PROFILE_LOCK_FK = "fk_session_exercises_exercise_profile";
 
 export interface ListExercisesOptions {
   search?: string;
@@ -176,14 +240,40 @@ export async function getExercise(
   return record ?? null;
 }
 
+// `measurementProfile` / `loadBasis` are optional here even though
+// `CreateExerciseInput` (the `createExerciseSchema` output every route call
+// already carries) always resolves them — this is the pre-existing seam
+// every test fixture in this codebase calls `createExercise` through
+// directly, bypassing the route's Zod parse (data-model.md's phase-1 test
+// convention). Defaulting them again here, identically to the schema's
+// `.transform()`, keeps every such fixture compiling and behaving as if it
+// had gone through the route with today's body (I-9).
+export type CreateExerciseServiceInput = Omit<
+  CreateExerciseInput,
+  "measurementProfile" | "loadBasis"
+> &
+  Partial<Pick<CreateExerciseInput, "measurementProfile" | "loadBasis">>;
+
 export async function createExercise(
   db: AppDb,
   userId: string,
-  input: CreateExerciseInput,
+  input: CreateExerciseServiceInput,
 ): Promise<ExerciseRecord> {
   try {
     return await db.transaction(async (tx) => {
       const id = newId();
+      const measurementProfile: MeasurementProfile =
+        input.measurementProfile ?? DEFAULT_MEASUREMENT_PROFILE;
+      const loadBasis: LoadBasis | null =
+        input.loadBasis !== undefined
+          ? input.loadBasis
+          : resolveLoadBasis(measurementProfile, undefined);
+      // §11.4 (O-4(i)/(ii)) — the service, not the column default, applies
+      // the profile-dependent default: `'auto'` for `load_reps`, `'off'`
+      // for every other profile (intent isn't modelled, so anything that
+      // isn't `load_reps` defaults to not counting). `createExerciseSchema`
+      // deliberately has no `volumeCounting` key for the caller to override.
+      const volumeCounting: VolumeCounting = measurementProfile === "load_reps" ? "auto" : "off";
       const [row] = await tx
         .insert(exercises)
         .values({
@@ -195,6 +285,9 @@ export async function createExercise(
           mechanics: input.mechanics,
           laterality: input.laterality,
           loadStepKg: input.loadStepKg,
+          measurementProfile,
+          loadBasis,
+          volumeCounting,
           notes: input.notes ?? null,
         })
         .returning();
@@ -226,10 +319,37 @@ export async function updateExercise(
   try {
     return await db.transaction(async (tx) => {
       const [existing] = await tx
-        .select({ id: exercises.id })
+        .select({ id: exercises.id, measurementProfile: exercises.measurementProfile })
         .from(exercises)
         .where(and(eq(exercises.id, id), eq(exercises.userId, userId)));
       if (!existing) throw new ExerciseNotFoundError();
+
+      const currentProfile = existing.measurementProfile as MeasurementProfile;
+
+      if (input.measurementProfile !== undefined && input.measurementProfile !== currentProfile) {
+        // §10.3 — blocked once the exercise is referenced by any
+        // `session_exercises` or `exercise_prescriptions` row. The
+        // `session_exercises` half is also a DB guarantee via the mirror FK
+        // (caught in the `catch` block below as a `23503` backstop); the
+        // `exercise_prescriptions` half has no such FK, so it's checked here.
+        const [sessionRef] = await tx
+          .select({ id: sessionExercises.id })
+          .from(sessionExercises)
+          .where(eq(sessionExercises.exerciseId, id))
+          .limit(1);
+        const [prescriptionRef] = await tx
+          .select({ id: exercisePrescriptions.id })
+          .from(exercisePrescriptions)
+          .where(eq(exercisePrescriptions.exerciseId, id))
+          .limit(1);
+        if (sessionRef || prescriptionRef) throw new MeasurementProfileLockedError();
+      } else if (input.loadBasis !== undefined && !loadBasisRequired(currentProfile)) {
+        // §7.1 / §8.1's presence rule for a `loadBasis`-only edit against an
+        // unchanged, load-less profile — `updateExerciseSchema`'s
+        // `.superRefine` can only catch this when `measurementProfile` is
+        // also in the same patch, since Zod has no access to `currentProfile`.
+        throw new LoadBasisNotSupportedError(currentProfile);
+      }
 
       const patch: Partial<typeof exercises.$inferInsert> = { updatedAt: new Date() };
       if (input.name !== undefined) patch.name = input.name;
@@ -240,6 +360,17 @@ export async function updateExercise(
       if (input.loadStepKg !== undefined) patch.loadStepKg = input.loadStepKg;
       if (input.strengthEstimate !== undefined) patch.strengthEstimate = input.strengthEstimate;
       if (input.notes !== undefined) patch.notes = input.notes;
+      if (input.measurementProfile !== undefined) {
+        patch.measurementProfile = input.measurementProfile;
+        // Profile changed (and cleared the lock check above) — re-derive
+        // `loadBasis` the same way `createExerciseSchema` does, unless the
+        // caller also supplied one in this same patch (already validated
+        // consistent by `updateExerciseSchema`'s `.superRefine`).
+        patch.loadBasis = resolveLoadBasis(input.measurementProfile, input.loadBasis);
+      } else if (input.loadBasis !== undefined) {
+        patch.loadBasis = input.loadBasis;
+      }
+      if (input.volumeCounting !== undefined) patch.volumeCounting = input.volumeCounting;
 
       const [row] = await tx.update(exercises).set(patch).where(eq(exercises.id, id)).returning();
       if (!row) throw new Error("Failed to update exercise");
@@ -286,7 +417,21 @@ export async function updateExercise(
   } catch (err) {
     if (err instanceof ExerciseNotFoundError) throw err;
     if (err instanceof RollupContributionNotCarriedError) throw err;
+    if (err instanceof MeasurementProfileLockedError) throw err;
+    if (err instanceof LoadBasisNotSupportedError) throw err;
     if (isPostgresErrorCode(err, UNIQUE_VIOLATION)) throw new ExerciseNameConflictError();
+    // §10.3 backstop — scoped to the mirror FK specifically
+    // (`fk_session_exercises_exercise_profile`), which fires if the lock
+    // check above is ever bypassed or races with a concurrent
+    // session-exercise insert. A metadata PATCH can violate a *different*
+    // `23503` too — e.g. `exercise_muscle_contributions`'s FK to
+    // `muscle_groups` when `input.contributions` names a slug missing from
+    // an incomplete taxonomy — and that must NOT be mis-mapped to this
+    // error; it falls through to the generic `throw err` below instead,
+    // same as any other FK this function has no specific mapping for.
+    if (isPostgresConstraintViolation(err, FOREIGN_KEY_VIOLATION, MEASUREMENT_PROFILE_LOCK_FK)) {
+      throw new MeasurementProfileLockedError();
+    }
     throw err;
   }
 }

@@ -9,6 +9,7 @@
 // import boundary.
 
 import { z } from "zod";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import { evaluateExerciseEligibility } from "@/domain/strength/eligibility";
 import type { StrengthEstimateMode } from "@/domain/strength/types";
 
@@ -33,10 +34,16 @@ export type PutSelectionInput = z.infer<typeof putSelectionInputSchema>;
 // that `evaluateExerciseEligibility` accepts ... and is not archived." Kept
 // here so the one eligibility rule is never copied into the server layer —
 // `loadStepKg` plays no part in eligibility, so a placeholder value is
-// supplied to satisfy the shared function's input shape.
+// supplied to satisfy the shared function's input shape. `measurementProfile`
+// and `loadBasis` get no such placeholder (§11.2's "reuses the e1RM
+// structural gate ... with measurementProfile and loadBasis threaded through
+// selectionService.ts"): unlike `loadStepKg`, they are gate fields, so the
+// caller must supply the exercise's real current values.
 export function isSelectionEligible(exercise: {
   equipment: string;
   strengthEstimate: StrengthEstimateMode;
+  measurementProfile: MeasurementProfile;
+  loadBasis: LoadBasis | null;
 }): boolean {
   return evaluateExerciseEligibility({ ...exercise, loadStepKg: 0 }).eligible;
 }

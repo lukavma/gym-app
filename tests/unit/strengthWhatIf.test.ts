@@ -299,7 +299,13 @@ describe("the §9.5 step-4 global cap (review F-2, owner decision 2026-09-06)", 
       },
     ];
     const report = deriveStrengthReport({
-      exercise: { equipment: "barbell", strengthEstimate: "auto", loadStepKg: 2.5 },
+      exercise: {
+        equipment: "barbell",
+        strengthEstimate: "auto",
+        loadStepKg: 2.5,
+        measurementProfile: "load_reps",
+        loadBasis: "unspecified",
+      },
       sessions,
       asOfLocalDate: "2026-09-06",
       whatIf: { reps: 3, rir: 0 },
@@ -335,7 +341,13 @@ describe("the §9.5 step-4 global cap (review F-2, owner decision 2026-09-06)", 
       })),
     });
     const report = deriveStrengthReport({
-      exercise: { equipment: "barbell", strengthEstimate: "auto", loadStepKg: 2.5 },
+      exercise: {
+        equipment: "barbell",
+        strengthEstimate: "auto",
+        loadStepKg: 2.5,
+        measurementProfile: "load_reps",
+        loadBasis: "unspecified",
+      },
       // The deload session is the heaviest in the window; it must not raise
       // the ceiling on what the calculator may answer.
       sessions: [
@@ -431,7 +443,13 @@ describe("the what-if reaches the report (§15.1, Release A)", () => {
 
   it("computes from the current estimate", () => {
     const report = deriveStrengthReport({
-      exercise: { equipment: "barbell", strengthEstimate: "auto", loadStepKg: 2.5 },
+      exercise: {
+        equipment: "barbell",
+        strengthEstimate: "auto",
+        loadStepKg: 2.5,
+        measurementProfile: "load_reps",
+        loadBasis: "unspecified",
+      },
       sessions,
       asOfLocalDate: "2026-09-06",
       whatIf: { reps: 8, rir: 1 },
@@ -444,7 +462,13 @@ describe("the what-if reaches the report (§15.1, Release A)", () => {
 
   it("refuses for a disabled exercise, with the exercise's own code (A-30)", () => {
     const report = deriveStrengthReport({
-      exercise: { equipment: "barbell", strengthEstimate: "off", loadStepKg: 2.5 },
+      exercise: {
+        equipment: "barbell",
+        strengthEstimate: "off",
+        loadStepKg: 2.5,
+        measurementProfile: "load_reps",
+        loadBasis: "unspecified",
+      },
       sessions,
       asOfLocalDate: "2026-09-06",
       whatIf: { reps: 8, rir: 1 },
@@ -457,7 +481,13 @@ describe("the what-if reaches the report (§15.1, Release A)", () => {
 
   it("is absent when no what-if was asked for", () => {
     const report = deriveStrengthReport({
-      exercise: { equipment: "barbell", strengthEstimate: "auto", loadStepKg: 2.5 },
+      exercise: {
+        equipment: "barbell",
+        strengthEstimate: "auto",
+        loadStepKg: 2.5,
+        measurementProfile: "load_reps",
+        loadBasis: "unspecified",
+      },
       sessions,
       asOfLocalDate: "2026-09-06",
     });

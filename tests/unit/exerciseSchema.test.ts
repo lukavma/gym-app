@@ -255,6 +255,74 @@ describe("updateExerciseSchema", () => {
   });
 });
 
+// athletic-measurement-profiles-architecture-evaluation.md §12.1 (I-9,
+// MEDIUM-2, A-10).
+describe("createExerciseSchema — measurement profile / load basis", () => {
+  it("defaults measurementProfile to load_reps and loadBasis to unspecified when both are omitted", () => {
+    const result = createExerciseSchema.parse(baseInput());
+    expect(result.measurementProfile).toBe("load_reps");
+    expect(result.loadBasis).toBe("unspecified");
+  });
+
+  it("resolves loadBasis to null for a profile with no load field", () => {
+    const result = createExerciseSchema.parse(baseInput({ measurementProfile: "reps" }));
+    expect(result.measurementProfile).toBe("reps");
+    expect(result.loadBasis).toBeNull();
+  });
+
+  it("keeps an explicit loadBasis on a load-bearing profile", () => {
+    const result = createExerciseSchema.parse(
+      baseInput({ measurementProfile: "load_reps", loadBasis: "per_hand" }),
+    );
+    expect(result.loadBasis).toBe("per_hand");
+  });
+
+  it("rejects an explicit loadBasis on a profile with no load field (presence rule)", () => {
+    const result = createExerciseSchema.safeParse(
+      baseInput({ measurementProfile: "reps", loadBasis: "total" }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an unknown measurementProfile", () => {
+    const result = createExerciseSchema.safeParse(baseInput({ measurementProfile: "isometric" }));
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("updateExerciseSchema — measurement profile / load basis", () => {
+  it("accepts measurementProfile alone", () => {
+    const result = updateExerciseSchema.parse({ measurementProfile: "reps" });
+    expect(result).toEqual({ measurementProfile: "reps" });
+  });
+
+  it("accepts loadBasis alone", () => {
+    const result = updateExerciseSchema.parse({ loadBasis: "per_hand" });
+    expect(result).toEqual({ loadBasis: "per_hand" });
+  });
+
+  it("accepts volumeCounting alone", () => {
+    const result = updateExerciseSchema.parse({ volumeCounting: "off" });
+    expect(result).toEqual({ volumeCounting: "off" });
+  });
+
+  it("rejects a same-patch measurementProfile/loadBasis combination that violates the presence rule", () => {
+    const result = updateExerciseSchema.safeParse({
+      measurementProfile: "reps",
+      loadBasis: "total",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a same-patch combination that satisfies the presence rule", () => {
+    const result = updateExerciseSchema.safeParse({
+      measurementProfile: "load_reps",
+      loadBasis: "unspecified",
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe("archiveActionSchema", () => {
   it("accepts archive and unarchive", () => {
     expect(archiveActionSchema.parse("archive")).toBe("archive");

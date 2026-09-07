@@ -25,6 +25,18 @@ function isForbidden(file: string): boolean {
   return FORBIDDEN_DIRS.some((dir) => file === dir || file.startsWith(dir + path.sep));
 }
 
+// athletic-measurement-profiles-architecture-evaluation.md I-10 — "domain/
+// progression ... may import [domain/measurement]; it may not import any of
+// them." This file's only restriction on progression's own outward reach is
+// the FORBIDDEN_DIRS list above (bodyweight/recovery); it never asserted
+// "reaches nothing outside itself" the way `strengthBoundary.test.ts` does,
+// so no existing check here would fail once a later stage adds a real edge
+// from `domain/progression/registry.ts` into
+// `domain/measurement/compatibility.ts` (`profileSupportsScheme`,
+// §9.2) — this constant and the assertion below make that permission
+// explicit rather than leaving it merely un-forbidden.
+const DOMAIN_MEASUREMENT = path.join(SRC_ROOT, "domain", "measurement");
+
 // Phase 8 — bodyweight/recovery quick-logs joined the offline outbox
 // (pwa-offline-strategy.md §2 capability matrix), so `app/api/sync/route.ts`
 // (a root above, as a place progression evaluation gets triggered) now also
@@ -214,6 +226,11 @@ describe("progression engine — non-consumption of bodyweight/recovery (Phase 7
     expect(offenders.length).toBeGreaterThan(0);
     expect(offenders.some((f) => f.startsWith(path.join(SRC_ROOT, "ui", "bodyweight")))).toBe(true);
     expect(offenders.some((f) => f.startsWith(path.join(SRC_ROOT, "ui", "recovery")))).toBe(true);
+  });
+
+  it("domain/measurement is a permitted future import, not one of the forbidden directories (I-10, §9.2)", () => {
+    expect(isForbidden(DOMAIN_MEASUREMENT)).toBe(false);
+    expect(existsSync(DOMAIN_MEASUREMENT)).toBe(true);
   });
 
   it("keeps EvaluationContext's recovery slot reserved-but-unconsumed (typed as always undefined)", () => {

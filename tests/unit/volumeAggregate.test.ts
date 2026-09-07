@@ -18,6 +18,8 @@ function row(
     sessionStartedAt: "2026-08-04T18:00:00.000Z",
     isDeload: false,
     isWarmup: false,
+    measurementProfile: "load_reps",
+    volumeCounting: "auto",
     ...partial,
   };
 }

@@ -389,7 +389,7 @@ The gate runs **before** the direct-tier return (review RM-4, RC-8: the evaluati
 
 **Complete refusal list** — the suggestion is `status: "none"` with the first-listed code when any of these holds, and the UI renders the corresponding honest line (§15.1):
 
-1. `EXERCISE_CATEGORY_UNSUPPORTED`, `EXERCISE_ESTIMATE_DISABLED` (§6.1)
+1. `MEASUREMENT_PROFILE_UNSUPPORTED`, `LOAD_BASIS_UNSUPPORTED`, `EXERCISE_CATEGORY_UNSUPPORTED`, `EXERCISE_ESTIMATE_DISABLED` (§6.1) — **ordered profile → load basis → equipment → switch**, amended from equipment → switch by the athletic-measurement-profiles evaluation's O-17 (`docs/reviews/athletic-measurement-profiles-architecture-evaluation.md` §11.6, §25.4); effective with the Release-1 commit that changes `eligibility.ts` / `reasonCodes.ts`, unobservable until a non-`load_reps` exercise or an `assistance` basis exists (Release 2)
 2. `DELOAD_SESSION_NO_SUGGESTION` — `todayIsDeload` is an **input** of the pure function (review RM-9, RC-12), so I-7 is provable in one unit test
 3. `PENDING_RECOMMENDATION_PRESENT` — any pending recommendation for the exercise (§10.2)
 4. `CARRY_FORWARD_REP_COMPATIBLE` (§10.1)
@@ -617,6 +617,8 @@ Structural rule: every rendered value passes through one formatter (`formatEstim
 
 | Code | Emitted when | Phrasing |
 | --- | --- | --- |
+| `MEASUREMENT_PROFILE_UNSUPPORTED` | `exercises.measurement_profile ≠ 'load_reps'` | "Not available for this exercise's measurement type" |
+| `LOAD_BASIS_UNSUPPORTED` | `exercises.load_basis = 'assistance'` | "Not available for assisted exercises" |
 | `EXERCISE_CATEGORY_UNSUPPORTED` | equipment not barbell/dumbbell/cable/machine | "Not available for this equipment type" |
 | `EXERCISE_ESTIMATE_DISABLED` | `strength_estimate = 'off'` | "Strength estimate turned off for this exercise" |
 | `DELOAD_SESSION_NO_SUGGESTION` | `todayIsDeload` | (line not shown) |
@@ -646,7 +648,7 @@ Structural rule: every rendered value passes through one formatter (`formatEstim
 | `EQUIPMENT_TRANSLATION_NOISIER` | cable / dumbbell / machine | "Less precise on this equipment type" |
 | `CARRY_FORWARD_NO_REP_BASIS` | chain head is a baseline or empty | "Prefilled load is a baseline, not from a session" |
 
-Forty-eight distinct codes. `SESSION_SETS_INCONSISTENT`, `REP_DISTANCE_FAR`, `NEARBY_POOLED_DISAGREE`, `PENDING_RECOMMENDATION_COMPATIBLE`, and `SOURCE_CURRENT_ESTIMATE_TRANSLATED` from the evaluation are **not** members and must not be re-introduced.
+Fifty distinct codes (forty-eight plus `MEASUREMENT_PROFILE_UNSUPPORTED` / `LOAD_BASIS_UNSUPPORTED`, added by the athletic-measurement-profiles evaluation's O-17, §25.4). `SESSION_SETS_INCONSISTENT`, `REP_DISTANCE_FAR`, `NEARBY_POOLED_DISAGREE`, `PENDING_RECOMMENDATION_COMPATIBLE`, and `SOURCE_CURRENT_ESTIMATE_TRANSLATED` from the evaluation are **not** members and must not be re-introduced.
 
 ---
 
@@ -842,7 +844,7 @@ Consolidated in §17 with status **open** and a recommended default for each.
 - **I-11** The prefill chain, `PrescriptionSnapshot`, `resolveImplicitDecision`, and `recommendationForDeload` are unchanged; **Use** writes to the weight input only.
 - **I-12** A session's `e1rmKg` is invariant to any set logged after the third set of its governing group.
 - **I-13** A group excluded from its observation — sub-modal, or supra-modal more than 20 % above the modal group's e1RM — never contributes to the session value or to any suggestion basis.
-- **I-14** Every member of the reason-code enum declared in §15.4 is emitted by at least one fixture, and no code outside that enum is emitted anywhere.
+- **I-14** Every member of the reason-code enum declared in §15.4 — now fifty members, extended by `MEASUREMENT_PROFILE_UNSUPPORTED` and `LOAD_BASIS_UNSUPPORTED` per the athletic-measurement-profiles evaluation's O-17 (§25.4) — is emitted by at least one fixture, and no code outside that enum is emitted anywhere.
 
 ### 21.2 Acceptance criteria
 
@@ -866,7 +868,7 @@ Tags: (Domain) fixtures, (Integration) PGlite, (Wire) contract, (UI) Chromium 39
 - **A-16** (Domain, B) Basis of three groups where one lacks RIR → basis reduced to the two RIR-complete groups, `MIXED_RIR_BASIS_REDUCED`, band max used; basis with no RIR anywhere → `TARGET_RIR_EFFORT_MATCHED`, target RTF = `T`.
 - **A-17** (Domain, B) §22 fixtures reproduce exactly: 5×5 → 110.0 (`DIRECT_EVIDENCE_CAPS_LOAD`); 3×8 → 102.5 (nearby); 3×12 (band 0–2) → 90.0 (direct); single-source B → 5×5 `REP_DISTANCE_TOO_FAR`; single-source A → 3×12 `REP_DISTANCE_TOO_FAR`; `110×8 @ RIR 1` → 5 reps band 0–2 → 115.0 (far, low, `TRANSLATION_UPWARD_IN_LOAD`).
 - **A-18** (Domain, B) A non-finite `e1rmKg` or `loadStepKg ≤ 0` degrades to `none` / exact-value rounding without a non-finite `loadKg` ever reaching the DTO.
-- **A-19** (Domain, A+B) A reachability test asserts every member of the §15.4 reason-code enum appears in at least one fixture's output, and a completeness test asserts the enum, the copy map in `src/ui/strength/copy.ts`, and the §15.4 table have identical membership.
+- **A-19** (Domain, A+B) A reachability test asserts every member of the §15.4 reason-code enum — the extended, fifty-member enum per O-17, §25.4 — appears in at least one fixture's output, and a completeness test asserts the enum, the copy map in `src/ui/strength/copy.ts`, and the §15.4 table have identical membership. `MEASUREMENT_PROFILE_UNSUPPORTED` and `LOAD_BASIS_UNSUPPORTED` **are** fixture-reachable in Release 1 — the reachability test carries a dedicated fixture for each (a non-`load_reps` exercise; an `assistance`-basis exercise) and asserts both codes are members of `STRENGTH_REASON_CODES` and **not** of `RELEASE_B_ONLY_REASON_CODES`, so the Release-A reachability suite fails if either is ever moved back to Release-B-only. What Release 1 does not yet do is *produce either code from real product data*: no athlete-created exercise can be non-`load_reps` or `assistance`-basis until the profile selector unlocks in Release 2, so the codes are unobservable in practice, not untested.
 - **A-20** (Integration, A) Editing a historical set's weight or `isWarmup` through the sync path changes the next `GET /api/exercises/[id]/strength`; deleting a set removes or changes its group; no table other than `set_logs` (and `updated_at` on renumbered siblings) changes.
 - **A-21** (Integration, A) Completing a session performs no read or write by the strength service (query log).
 - **A-22** (UI, B) Tapping **Use** fills the weight input only; logging that set enqueues exactly one `setLog` op; the suggestion line is hidden after that set. (Integration) For every bundle entry, `startingSuggestion.status === "ok"` implies `pendingRecommendation === null` in the **same** entry, and the aggregate frozen at `startSession` carries both values from that one entry.
@@ -1021,6 +1023,24 @@ Applied from `docs/reviews/estimated-1rm-owner-decision-integration-verification
 | Addendum O-17 bullet: "executed in substance; status corrected"; full promotion and any re-upgrade wait on the registry's closure condition | addendum |
 | §16 citation-discipline note: provisional ids citable only with the marker | §16 |
 | V-11: EVIDENCE-037's maintenance-dose figures declared narrative context, cited for nothing | §8.2 |
+
+### 25.4 Athletic measurement profiles amendment — O-17 (2026-09-07)
+
+Applied from `docs/reviews/athletic-measurement-profiles-architecture-evaluation.md` §11.6, under that document's own owner decision **O-17** (accepted 2026-09-07, option (a) — distinct from this document's O-17, "evidence-registry promotion," §17/§20.3/addendum). Effective as of the Release-1 commit that changes `src/domain/strength/eligibility.ts` and `src/domain/strength/reasonCodes.ts`. No algorithm, threshold, RIR rule, or e1RM arithmetic changed; the change is confined to the two clauses below. Unobservable to the athlete until Release 2 (no non-`load_reps` exercise and no `assistance` basis exists in Release 1).
+
+| Clause | Before | After | Where |
+| --- | --- | --- | --- |
+| Refusal ordering | equipment → switch | **profile → load basis → equipment → switch** | §9.6 |
+| Reason-code enum, I-14, A-19 | closed, 48 members | **+2**: `MEASUREMENT_PROFILE_UNSUPPORTED`, `LOAD_BASIS_UNSUPPORTED` (50 members) | §15.4, I-14, A-19 |
+
+### 25.5 Release-1 review correction — A-19 and §15.4 phrasing (2026-09-07)
+
+Applied from `docs/reviews/athletic-measurement-profiles-release-1-review.md` §10 (L-1, L-2), found while reviewing the Release-1 implementation this §25.4 amendment landed in. **No rule, ordering, enum membership, reason code, or owner decision changed.** Both corrections bring this document's text into agreement with the shipped, already-verified test and copy — the O-17 amendment itself (§25.4, immediately above) is unaffected.
+
+| Finding | Correction | Where |
+| --- | --- | --- |
+| L-1 | §21.2's amended A-19 stated the two new codes are "unreachable by any fixture in Release 1 … the reachability test's Release-1 run excludes them by name" — the shipped `tests/unit/strengthReasonCodes.test.ts` does the opposite: it adds a dedicated fixture for each code and asserts both are Release-A-reachable, not Release-B-only. A-19 rewritten to state the codes are fixture-reachable in Release 1 and unobservable in product data only until Release 2 | §21.2 A-19 |
+| L-2 | §15.4's `MEASUREMENT_PROFILE_UNSUPPORTED` phrasing read "Not available for this exercise's **tracking** type"; the shipped `src/ui/strength/copy.ts` reads "…**measurement** type". Aligned to the shipped copy | §15.4 |
 
 ---
 

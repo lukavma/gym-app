@@ -44,6 +44,28 @@ interface RepRangeScheme {
 
 Every persisted scheme is wrapped with its schema version: `{ v: 1, scheme: {...} }`. Version bumps only on breaking shape changes; readers keep a small upgrade function per version (expected to be rare — variants are additive).
 
+### Athletic variants (measurement profiles, Release 1 schema / Release 2 editor)
+
+Two additive variants for the non-`load_reps` measurement profiles (`athletic-measurement-profiles-architecture-evaluation.md` §9.1):
+
+```ts
+interface DistanceRoundsScheme {
+  type: 'distanceRounds';
+  sets: number;      // int 1–20
+  distanceM: number; // > 0, ≤ 99999.99, multiple of 0.01
+}
+// renders "4 × 20 m"
+
+interface DurationRoundsScheme {
+  type: 'durationRounds';
+  sets: number;      // int 1–20
+  durationS: number; // > 0, ≤ 86400, multiple of 0.01
+}
+// renders "3 × 60 s"
+```
+
+`SCHEME_ENVELOPE_VERSION` stays `1` — additive variants do not bump it. **Schema-accepted in Release 1, offered in the editor starting Release 2**: `setSchemeSchema` and `formatScheme` ship in Release 1 so the shared domain module typechecks and a hand-built non-`load_reps` prescription (created through the API) is representable end to end, but the prescription editor does not offer either variant until Release 2.
+
 ### Reserved (post-MVP) variants — designed, not implemented
 
 These exist to prove the union absorbs known future needs without rework. Do **not** implement in MVP.
@@ -75,6 +97,19 @@ Progression strategies declare which scheme types they support (`supportsScheme(
 | `load-progression` | ✅ | ✅ (progress when all sets ≥ minReps… config) | later |
 | `rep-progression` | ✅ (cap required in config) | ✅ (cap = maxReps) | later |
 | `manual` | ✅ | ✅ | ✅ |
+
+**Profile × scheme × strategy compatibility** (measurement profiles; `athletic-measurement-profiles-architecture-evaluation.md` §9.2). `profileSupportsScheme` / `strategySupportsProfile` (`src/domain/measurement/compatibility.ts`) gate this independently of the scheme-only table above; `checkPrescriptionCompatibility` takes the profile as a third argument and reports both issue kinds.
+
+| Profile | `fixed` | `repRange` | `distanceRounds` | `durationRounds` | `load-progression` | `rep-progression` | `manual` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `load_reps` | ✓ | ✓ | – | – | ✓ | ✓ | ✓ |
+| `reps` | ✓ | ✓ | – | – | – | – (v1) | ✓ |
+| `load_distance` | – | – | ✓ | – | – | – | ✓ |
+| `distance_time` | – | – | ✓ | – | – | – | ✓ |
+| `duration` | – | – | – | ✓ | – | – | ✓ |
+| `load_duration` | – | – | – | ✓ | – | – | ✓ |
+
+The `reps` profile is **manual-only for progression in v1**: every strategy's output is persisted through `inputsSummarySchema` / `performedSetSchema`, which require a non-nullable `weightKg`; a `reps`-profile set has `weight_kg = null`, so rep-progression for `reps` is deferred to a later release that is allowed to widen those schemas.
 
 ---
 
@@ -149,6 +184,16 @@ Rules:
 - `RirBand`: ints, 0 ≤ min ≤ max ≤ 10.
 - `baselineLoadKg`: 0 ≤ x ≤ 1000, multiple of 0.25.
 - Scheme JSON failing validation is rejected at the API boundary (400) and impossible to produce from the UI. Snapshots are validated on write; on read they are trusted (they were valid when written; version upgraders handle old shapes).
+
+**Other prescription fields by profile** (`athletic-measurement-profiles-architecture-evaluation.md` §9.3): `O` = optional and accepted, `rejected` = a `400 incompatible_prescription` issue.
+
+| Field | `load_reps` | `reps` | `load_distance` | `distance_time` | `duration` | `load_duration` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `targetRir` | O | O | rejected | rejected | rejected | rejected |
+| `baselineLoadKg` | O | rejected | O | rejected | rejected | O |
+| `restSeconds` | O | O | O | O | O | O |
+
+**Deload semantics for the athletic variants, stated explicitly** (§9.4): `setMultiplier` applies to `sets` of all four scheme types identically; `loadMultiplier` applies to `prefill.loadKg` where the profile has one; `targetRirShift` only where a target-RIR band exists. **Nothing in v1 reduces `distanceM` or `durationS`** — a deload week on a distance or duration scheme is a sets-and-load deload only, with `appliedModifiers` recording the full modifier set so history stays unambiguous.
 
 ---
 

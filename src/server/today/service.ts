@@ -25,6 +25,7 @@ import type { SetScheme, SetSchemeEnvelope } from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
 import type { ResolvedProgression } from "@/domain/progression/registry";
 import type { DeloadConfig, WeekModifiers } from "@/domain/blocks/schema";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import {
   prescriptionSnapshotSchema,
   type PrescriptionSnapshot,
@@ -50,9 +51,16 @@ const PREVIOUS_PERFORMANCE_LIMIT = 3;
 
 export interface HistorySetDto {
   setNumber: number;
-  weightKg: number;
-  reps: number;
+  // §11.3 site #5 — display consumer: nullable to match `set_logs`'
+  // post-0013 shape (I-13/H-12, a null is never coerced to `0`); rendered
+  // through the same inline templates as today, which the athlete only ever
+  // sees non-null in Release 1 since `load_reps` is the only reachable
+  // profile through the app's own UI.
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
   isWarmup: boolean;
 }
 
@@ -92,14 +100,24 @@ export interface TodayBundleExerciseEntry {
   pendingRecommendation: RecommendationDto | null;
   previousPerformance: HistorySessionDto[];
   history: HistorySessionDto[];
+  // §12.1 — read from the exercise row, optional on the wire (H-10) so a
+  // cached pre-upgrade client's own bundle type (which has no such key)
+  // keeps parsing identically; the server always populates it.
+  measurement?: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
 }
 
 export interface ActiveSessionSetDto {
   id: string;
   setNumber: number;
   isWarmup: boolean;
-  weightKg: number;
-  reps: number;
+  // Widened alongside `HistorySetDto` (§11.3 site #5's own rule, generalised
+  // to this display DTO too — not itself a named site, but the identical
+  // "map a set_logs row into a numeric field" shape): a null is never
+  // coerced (I-13/H-12). The client's own mirror (`src/sync/types.ts`,
+  // untouched per the hard boundary) stays `number` — Release 1's real
+  // client never persists or reads a non-`load_reps` active-session set.
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
   loggedAt: string;
   notes: string | null;
@@ -257,6 +275,8 @@ async function getExerciseHistory(
       weightKg: s.weightKg,
       reps: s.reps,
       rir: s.rir,
+      distanceM: s.distanceM,
+      durationS: s.durationS,
       isWarmup: s.isWarmup,
     });
     setsBySessionExercise.set(s.sessionExerciseId, list);
@@ -548,6 +568,10 @@ export async function buildTodayBundle(
                 .slice(0, PREVIOUS_PERFORMANCE_LIMIT)
                 .map(toHistoryDto),
               history: history.slice(0, HISTORY_DISPLAY_LIMIT).map(toHistoryDto),
+              measurement: {
+                profile: exercise.measurementProfile as MeasurementProfile,
+                loadBasis: exercise.loadBasis as LoadBasis | null,
+              },
             });
           }
 

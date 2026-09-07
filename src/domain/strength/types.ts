@@ -13,6 +13,10 @@ import type {
   StrengthReasonCode,
   SuggestionRefusalReasonCode,
 } from "./reasonCodes";
+// domain/strength importing domain/measurement is explicitly allowed by
+// I-10 (`docs/reviews/athletic-measurement-profiles-architecture-evaluation.md`
+// §11.3).
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 
 export type StrengthAlgorithmStamp = typeof STRENGTH_ALGORITHM;
 
@@ -53,6 +57,10 @@ export interface StrengthExerciseInput {
   equipment: string;
   strengthEstimate: StrengthEstimateMode;
   loadStepKg: number;
+  // §11.6 (O-17): the two structural gates checked before equipment and the
+  // switch — see `evaluateExerciseEligibility`.
+  measurementProfile: MeasurementProfile;
+  loadBasis: LoadBasis | null;
 }
 
 export interface StrengthWhatIfInput {
@@ -185,7 +193,10 @@ export interface StrengthWhatIf {
 
 export type StrengthEligibilityRefusal = Extract<
   SuggestionRefusalReasonCode,
-  "EXERCISE_CATEGORY_UNSUPPORTED" | "EXERCISE_ESTIMATE_DISABLED"
+  | "MEASUREMENT_PROFILE_UNSUPPORTED"
+  | "LOAD_BASIS_UNSUPPORTED"
+  | "EXERCISE_CATEGORY_UNSUPPORTED"
+  | "EXERCISE_ESTIMATE_DISABLED"
 >;
 
 export type StrengthEligibility =

@@ -75,7 +75,13 @@ function straight(
   );
 }
 
-const BARBELL = { equipment: "barbell", strengthEstimate: "auto" as const, loadStepKg: 2.5 };
+const BARBELL = {
+  equipment: "barbell",
+  strengthEstimate: "auto" as const,
+  loadStepKg: 2.5,
+  measurementProfile: "load_reps" as const,
+  loadBasis: "unspecified" as const,
+};
 
 // Each entry names the codes it exists to reach, so a future reader can see
 // why the fixture is shaped the way it is.
@@ -245,7 +251,7 @@ const FIXTURES: { name: string; input: StrengthReportInput }[] = [
   {
     name: "an ineligible category -> EXERCISE_CATEGORY_UNSUPPORTED",
     input: {
-      exercise: { equipment: "bodyweight", strengthEstimate: "auto", loadStepKg: 2.5 },
+      exercise: { ...BARBELL, equipment: "bodyweight" },
       sessions: [straight("bw", daysBefore(5), 100, 5, 2)],
       asOfLocalDate: AS_OF,
     },
@@ -253,8 +259,29 @@ const FIXTURES: { name: string; input: StrengthReportInput }[] = [
   {
     name: "the switch turned off -> EXERCISE_ESTIMATE_DISABLED",
     input: {
-      exercise: { equipment: "barbell", strengthEstimate: "off", loadStepKg: 2.5 },
+      exercise: { ...BARBELL, strengthEstimate: "off" },
       sessions: [straight("off", daysBefore(5), 100, 5, 2)],
+      asOfLocalDate: AS_OF,
+    },
+  },
+  {
+    // §11.6 (O-17): unreachable in real product data until Release 2 (no
+    // non-`load_reps` exercise exists yet), but the code must still have a
+    // Release-A fixture, since it is no longer in `RELEASE_B_ONLY_REASON_CODES`.
+    name: "a non-load_reps profile -> MEASUREMENT_PROFILE_UNSUPPORTED",
+    input: {
+      exercise: { ...BARBELL, measurementProfile: "duration", loadBasis: null },
+      sessions: [straight("profile", daysBefore(5), 100, 5, 2)],
+      asOfLocalDate: AS_OF,
+    },
+  },
+  {
+    // §11.6 (O-17): same Release-1 unreachability note — no `assistance`
+    // basis exists in seeded/real data until the Release-2 reconcile.
+    name: "an assistance load basis -> LOAD_BASIS_UNSUPPORTED",
+    input: {
+      exercise: { ...BARBELL, loadBasis: "assistance" },
+      sessions: [straight("basis", daysBefore(5), 100, 5, 2)],
       asOfLocalDate: AS_OF,
     },
   },
@@ -307,7 +334,7 @@ const FIXTURES: { name: string; input: StrengthReportInput }[] = [
   {
     name: "what-if floored to nothing -> BELOW_MINIMUM_LOAD",
     input: {
-      exercise: { equipment: "machine", strengthEstimate: "auto", loadStepKg: 5 },
+      exercise: { ...BARBELL, equipment: "machine", loadStepKg: 5 },
       sessions: [straight("wi4", daysBefore(5), 3, 5, 2)],
       asOfLocalDate: AS_OF,
       whatIf: { reps: 15, rir: 0 },
@@ -331,9 +358,16 @@ function emittedCodes(): Set<string> {
 }
 
 describe("the reason-code enum is exactly §15.4's (I-14, A-19)", () => {
-  it("declares forty-eight distinct codes", () => {
-    expect(STRENGTH_REASON_CODES).toHaveLength(48);
-    expect(new Set(STRENGTH_REASON_CODES).size).toBe(48);
+  it("declares fifty distinct codes (§11.6 O-17: forty-eight, amended by two)", () => {
+    expect(STRENGTH_REASON_CODES).toHaveLength(50);
+    expect(new Set(STRENGTH_REASON_CODES).size).toBe(50);
+  });
+
+  it("§11.6 (O-17): the two new codes are Release-A-reachable, not Release-B-only", () => {
+    for (const code of ["MEASUREMENT_PROFILE_UNSUPPORTED", "LOAD_BASIS_UNSUPPORTED"]) {
+      expect(STRENGTH_REASON_CODES as readonly string[]).toContain(code);
+      expect(RELEASE_B_ONLY_REASON_CODES as readonly string[]).not.toContain(code);
+    }
   });
 
   it("does not re-introduce the five evaluation-era codes §15.4 removed", () => {
@@ -384,7 +418,7 @@ describe("reachability over real fixtures (A-19, Release A half)", () => {
     expect(leaked, `Release-B codes emitted by Release A: ${leaked.join(", ")}`).toEqual([]);
   });
 
-  it("accounts for all forty-eight codes as reached-or-deferred", () => {
+  it("accounts for all fifty codes as reached-or-deferred", () => {
     const emitted = emittedCodes();
     const releaseBOnly = new Set<string>(RELEASE_B_ONLY_REASON_CODES);
     const reached = STRENGTH_REASON_CODES.filter((code) => emitted.has(code));

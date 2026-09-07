@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import type { AppDb } from "@/db/client";
 import { createTestDb } from "./testDb";
-import { exerciseMuscleContributions, exercises, users } from "@/db/schema";
+import {
+  exerciseMuscleContributions,
+  exercises,
+  muscleGroups,
+  sessionExercises,
+  users,
+  workoutSessions,
+} from "@/db/schema";
 import { isUuidv7, newId } from "@/domain/ids/uuidv7";
 import { seedMuscleGroups } from "@/db/seed";
 import {
@@ -11,12 +18,35 @@ import {
   ExerciseNameConflictError,
   ExerciseNotFoundError,
   ExerciseReferencedError,
+  LoadBasisNotSupportedError,
+  MeasurementProfileLockedError,
   RollupContributionNotCarriedError,
   getExercise,
   listExercises,
   setExerciseArchived,
   updateExercise,
 } from "@/server/exercises/service";
+import { createProgram } from "@/server/programs/service";
+import { createTemplate } from "@/server/templates/service";
+import { createPrescription } from "@/server/prescriptions/service";
+
+// Mirrors src/server/exercises/service.ts's own `isPostgresErrorCode` — not
+// exported from there, and only needed here to inspect the raw error shape
+// for the mirror-FK backstop test below.
+function postgresErrorCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  if ("code" in err && typeof err.code === "string") return err.code;
+  return "cause" in err ? postgresErrorCode(err.cause) : undefined;
+}
+
+// Same shape as `postgresErrorCode` above, but for the pg driver's
+// `.constraint` field — needed to distinguish which of two `23503`s (the L-3
+// regression below and the pre-existing mirror-FK backstop) actually fired.
+function postgresErrorConstraint(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  if ("constraint" in err && typeof err.constraint === "string") return err.constraint;
+  return "cause" in err ? postgresErrorConstraint(err.cause) : undefined;
+}
 
 async function insertTestUser(db: AppDb, email = "lifter@example.com") {
   const [user] = await db
@@ -220,6 +250,279 @@ describe("exercises service (PGlite integration)", () => {
     } finally {
       await db.execute(sql`DROP TABLE test_history_fixture`);
     }
+  });
+});
+
+// athletic-measurement-profiles-architecture-evaluation.md §10.3 (the
+// measurementProfile lock), §11.4 (the volumeCounting default), §12.1
+// (A-10).
+describe("exercises service — measurement profile / load basis / volume counting (PGlite integration)", () => {
+  let db: AppDb;
+  let userId: string;
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    await seedMuscleGroups(db);
+    userId = (await insertTestUser(db)).id;
+  });
+
+  it("POST-shaped create without measurementProfile resolves to load_reps / unspecified (I-9)", async () => {
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    expect(created.measurementProfile).toBe("load_reps");
+    expect(created.loadBasis).toBe("unspecified");
+  });
+
+  it("resolves loadBasis to null on a hand-built exercise with no load field", async () => {
+    const created = await createExercise(db, userId, {
+      ...SQUAT_INPUT,
+      name: "Sprint 40m",
+      measurementProfile: "reps",
+      loadBasis: undefined,
+    });
+    expect(created.measurementProfile).toBe("reps");
+    expect(created.loadBasis).toBeNull();
+  });
+
+  it("defaults volumeCounting to auto for load_reps and off for every other profile (O-4(i)/(ii))", async () => {
+    const loadReps = await createExercise(db, userId, SQUAT_INPUT);
+    expect(loadReps.volumeCounting).toBe("auto");
+
+    const reps = await createExercise(db, userId, {
+      ...SQUAT_INPUT,
+      name: "Bodyweight Push-Up",
+      measurementProfile: "reps",
+    });
+    expect(reps.volumeCounting).toBe("off");
+  });
+
+  it("allows both volumeCounting values to be set explicitly on a compatible profile, with history", async () => {
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    expect(created.volumeCounting).toBe("auto");
+
+    const turnedOff = await updateExercise(db, userId, created.id, { volumeCounting: "off" });
+    expect(turnedOff.volumeCounting).toBe("off");
+
+    const turnedOn = await updateExercise(db, userId, created.id, { volumeCounting: "auto" });
+    expect(turnedOn.volumeCounting).toBe("auto");
+  });
+
+  it("allows a loadBasis edit with history at any time, unreferenced or referenced", async () => {
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    const updated = await updateExercise(db, userId, created.id, { loadBasis: "per_hand" });
+    expect(updated.loadBasis).toBe("per_hand");
+
+    // Reference it (session_exercises), then confirm loadBasis is still editable.
+    await db.insert(workoutSessions).values({
+      id: newId(),
+      userId,
+      startedAt: new Date(),
+    });
+    const [session] = await db
+      .select({ id: workoutSessions.id })
+      .from(workoutSessions)
+      .where(eq(workoutSessions.userId, userId));
+    if (!session) throw new Error("expected session");
+    await db.insert(sessionExercises).values({
+      id: newId(),
+      sessionId: session.id,
+      exerciseId: created.id,
+      position: 0,
+      source: "adhoc",
+    });
+
+    const updatedAgain = await updateExercise(db, userId, created.id, { loadBasis: "total" });
+    expect(updatedAgain.loadBasis).toBe("total");
+  });
+
+  it("rejects a loadBasis edit against an unchanged profile that has no load field", async () => {
+    const created = await createExercise(db, userId, {
+      ...SQUAT_INPUT,
+      name: "Bodyweight Push-Up",
+      measurementProfile: "reps",
+    });
+    expect(created.loadBasis).toBeNull();
+
+    await expect(updateExercise(db, userId, created.id, { loadBasis: "total" })).rejects.toThrow(
+      LoadBasisNotSupportedError,
+    );
+  });
+
+  it("allows a measurementProfile change before the exercise is referenced by anything", async () => {
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    const updated = await updateExercise(db, userId, created.id, { measurementProfile: "reps" });
+    expect(updated.measurementProfile).toBe("reps");
+    // Re-derived per createExerciseSchema's own rule: no load field, no basis.
+    expect(updated.loadBasis).toBeNull();
+  });
+
+  it("blocks a measurementProfile change once referenced by a session_exercises row (409 measurement_profile_locked)", async () => {
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    await db.insert(workoutSessions).values({
+      id: newId(),
+      userId,
+      startedAt: new Date(),
+    });
+    const [session] = await db
+      .select({ id: workoutSessions.id })
+      .from(workoutSessions)
+      .where(eq(workoutSessions.userId, userId));
+    if (!session) throw new Error("expected session");
+    await db.insert(sessionExercises).values({
+      id: newId(),
+      sessionId: session.id,
+      exerciseId: created.id,
+      position: 0,
+      source: "adhoc",
+    });
+
+    await expect(
+      updateExercise(db, userId, created.id, { measurementProfile: "reps" }),
+    ).rejects.toThrow(MeasurementProfileLockedError);
+  });
+
+  it("blocks a measurementProfile change once referenced by an exercise_prescriptions row", async () => {
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    const programId = (await createProgram(db, userId, { name: "Program A" })).id;
+    const template = await createTemplate(db, userId, programId, { name: "Push Day" });
+    if (!template) throw new Error("expected template");
+    await createPrescription(db, userId, template.id, {
+      exerciseId: created.id,
+      scheme: { v: 1, scheme: { type: "fixed", sets: 3, reps: 10 } },
+      progression: { strategyId: "manual" },
+    });
+
+    await expect(
+      updateExercise(db, userId, created.id, { measurementProfile: "reps" }),
+    ).rejects.toThrow(MeasurementProfileLockedError);
+  });
+
+  it("the mirror FK (fk_session_exercises_exercise_profile) itself rejects a measurement_profile change once referenced — the raw 23503 the service's catch block maps to MeasurementProfileLockedError as a backstop", async () => {
+    // This calls the DB layer directly, bypassing `updateExercise`'s own
+    // pre-check, to prove the constraint the backstop mapping depends on is
+    // real (not vacuous) — matching Stage 2's real-PostgreSQL NC-5 probe of
+    // the same constraint. Exercising the backstop mapping line itself would
+    // additionally require a genuine concurrent-transaction race (the
+    // pre-check already catches every single-threaded case), which is out
+    // of scope for this PGlite suite.
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    await db.insert(workoutSessions).values({
+      id: newId(),
+      userId,
+      startedAt: new Date(),
+    });
+    const [session] = await db
+      .select({ id: workoutSessions.id })
+      .from(workoutSessions)
+      .where(eq(workoutSessions.userId, userId));
+    if (!session) throw new Error("expected session");
+    await db.insert(sessionExercises).values({
+      id: newId(),
+      sessionId: session.id,
+      exerciseId: created.id,
+      position: 0,
+      source: "adhoc",
+    });
+
+    let code: string | undefined;
+    try {
+      // `loadBasis: null` alongside the profile change so this specifically
+      // isolates the mirror FK — a `reps` profile with the stale `'unspecified'`
+      // basis would trip `ck_exercises_load_basis_presence` (23514) first.
+      await db
+        .update(exercises)
+        .set({ measurementProfile: "reps", loadBasis: null })
+        .where(eq(exercises.id, created.id));
+    } catch (err) {
+      code = postgresErrorCode(err);
+    }
+    expect(code).toBe("23503");
+  });
+
+  // athletic-measurement-profiles-release-1-review.md §5.4, finding L-3.
+  it("does not mis-map a contributions-only PATCH's FK violation to the measurement-profile lock when the muscle taxonomy is incomplete (L-3 regression)", async () => {
+    // `exercise_muscle_contributions.muscle_group_id` carries its own
+    // `ON DELETE RESTRICT` FK to `muscle_groups`, entirely independent of
+    // the mirror FK the backstop test above exists for. A PATCH that only
+    // touches `contributions` — never `measurementProfile` — can raise a
+    // `23503` on THAT constraint if the taxonomy is incomplete (e.g.
+    // mid-migration, or a database that hasn't run the full seed). Before
+    // this fix, `updateExercise`'s catch block mapped ANY `23503` raised in
+    // this function to `MeasurementProfileLockedError`, mis-reporting this
+    // case as a measurement-profile lock the request never touched.
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+
+    // Engineer an incomplete taxonomy: remove a leaf muscle group this
+    // exercise's *current* contributions (quads/glutes) don't reference, so
+    // the delete itself doesn't trip the very same RESTRICT FK.
+    await db.delete(muscleGroups).where(eq(muscleGroups.id, "hamstrings"));
+
+    let caught: unknown;
+    try {
+      await updateExercise(db, userId, created.id, {
+        contributions: [{ muscleGroupId: "hamstrings", role: "primary", weight: 1 }],
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught).not.toBeInstanceOf(MeasurementProfileLockedError);
+    // Confirm this really is the contributions FK firing (not a vacuous
+    // pass) and specifically NOT the mirror FK.
+    expect(postgresErrorCode(caught)).toBe("23503");
+    // Postgres truncates identifiers over 63 bytes (NAMEDATALEN) — the
+    // drizzle-generated name (`..._muscle_groups_id_fk`, 65 bytes) loses its
+    // trailing "fk" at creation time, so the constraint's real name on disk
+    // ends in "_id_" rather than "_id_fk". Confirmed against the actual
+    // error below rather than guessed.
+    expect(postgresErrorConstraint(caught)).toBe(
+      "exercise_muscle_contributions_muscle_group_id_muscle_groups_id_",
+    );
+  });
+
+  it("negative control: the mirror FK's 23503 still carries the exact constraint name the narrowed mapping checks for", async () => {
+    // Companion to the L-3 regression test above — proves the narrower
+    // `isPostgresConstraintViolation` scoping introduced by that fix didn't
+    // stop matching the real profile-lock violation. Same bypass technique
+    // as the "mirror FK ... backstop" test above (direct DB update, no
+    // app-level pre-check): driving this specific mapping through
+    // `updateExercise`'s own catch block would additionally require a
+    // genuine concurrent-transaction race, out of scope for this PGlite
+    // suite (see that test's own comment).
+    const created = await createExercise(db, userId, SQUAT_INPUT);
+    await db.insert(workoutSessions).values({
+      id: newId(),
+      userId,
+      startedAt: new Date(),
+    });
+    const [session] = await db
+      .select({ id: workoutSessions.id })
+      .from(workoutSessions)
+      .where(eq(workoutSessions.userId, userId));
+    if (!session) throw new Error("expected session");
+    await db.insert(sessionExercises).values({
+      id: newId(),
+      sessionId: session.id,
+      exerciseId: created.id,
+      position: 0,
+      source: "adhoc",
+    });
+
+    let caught: unknown;
+    try {
+      // Same isolation rationale as the backstop test above: `loadBasis:
+      // null` alongside the profile change so this specifically isolates
+      // the mirror FK from `ck_exercises_load_basis_presence`.
+      await db
+        .update(exercises)
+        .set({ measurementProfile: "reps", loadBasis: null })
+        .where(eq(exercises.id, created.id));
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(postgresErrorCode(caught)).toBe("23503");
+    expect(postgresErrorConstraint(caught)).toBe("fk_session_exercises_exercise_profile");
   });
 });
 

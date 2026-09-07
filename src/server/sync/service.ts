@@ -1,5 +1,11 @@
 import { and, eq } from "drizzle-orm";
-import { recommendations, sessionExercises, setLogs, workoutSessions } from "@/db/schema";
+import {
+  exercises,
+  recommendations,
+  sessionExercises,
+  setLogs,
+  workoutSessions,
+} from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import {
   bodyweightEntryUpsertPayloadSchema,
@@ -24,6 +30,12 @@ import {
 import type { RecommendationTarget } from "@/domain/progression/engine";
 import { logBodyweight } from "@/server/bodyweight/service";
 import { logRecovery, RecoveryEntryHasNoMetricError } from "@/server/recovery/service";
+import {
+  dimensionsOf,
+  type FieldRequirement,
+  type LoadBasis,
+  type MeasurementProfile,
+} from "@/domain/measurement/profile";
 
 // pwa-offline-strategy.md §5/§6 — the server side of the single execution-
 // fact write path. Every op is a full-row upsert/delete keyed by its own
@@ -49,6 +61,14 @@ export type SyncRejectReason =
   | "position_conflict"
   | "set_number_conflict"
   | "invalid_reference"
+  // athletic-measurement-profiles-architecture-evaluation.md §12.2 — both
+  // dead-letter reasons, added alongside `invalid_reference` (the other
+  // profile/shape-related rejection): a `setLog` op whose effective row
+  // violates its slot's frozen profile or the numeric bounds, or a
+  // `sessionExercise` insert whose payload profile disagrees with the
+  // exercise row (§10.1, I-14).
+  | "invalid_measurement"
+  | "measurement_profile_mismatch"
   | "invalid_lifecycle_transition"
   | "unsupported_operation"
   | "recommendation_conflict"
@@ -69,6 +89,13 @@ export interface SyncBatchResult {
 
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+// §12.2/I-8 — previously unmapped and, per H-17, would fail the WHOLE batch
+// (an unrecognized error propagates and the client retries forever). Both
+// are backstops behind the service's own effective-row validation below:
+// `ck_set_logs_profile_shape` (23514) and a value that rounds into overflow
+// past a numeric column's precision at the DB layer (22003).
+const CHECK_VIOLATION = "23514";
+const NUMERIC_VALUE_OUT_OF_RANGE = "22003";
 
 // See identical helper + rationale in src/server/blocks/service.ts /
 // src/server/exercises/service.ts — drizzle-orm wraps the raw pg driver
@@ -156,22 +183,29 @@ const WORKOUT_SESSION_FIELDS = [
   "clientId",
   "notes",
 ] as const;
-const SESSION_EXERCISE_FIELDS = [
+// Exported for NC-1's unit coverage (§12.2/I-7) — the test asserts these
+// equal the exact expected sets, with a mutation witness proving the
+// assertion is exact-equality, not a subset check.
+export const SESSION_EXERCISE_FIELDS = [
   "sessionId",
   "exerciseId",
   "position",
   "source",
   "prescription",
+  "measurementProfile",
+  "loadBasis",
   "skipped",
   "notes",
 ] as const;
-const SET_LOG_FIELDS = [
+export const SET_LOG_FIELDS = [
   "sessionExerciseId",
   "setNumber",
   "isWarmup",
   "weightKg",
   "reps",
   "rir",
+  "distanceM",
+  "durationS",
   "loggedAt",
   "notes",
 ] as const;
@@ -620,6 +654,34 @@ async function applySessionExerciseUpsert(
           return rejected(opId, "sessionExercise", "session_locked");
         }
 
+        // §10.1/§10.2 — the slot's shape is always the SERVER's own
+        // user-scoped read of the live exercise row, never the payload: the
+        // column's `NOT NULL DEFAULT 'load_reps'` is never used as a
+        // fallback (I-14), so a missing or foreign exercise is checked
+        // explicitly here rather than left to the mirror FK's own `23503`
+        // (which would also refuse it, but only once an insert is actually
+        // attempted).
+        const [exerciseRow] = await tx
+          .select({
+            measurementProfile: exercises.measurementProfile,
+            loadBasis: exercises.loadBasis,
+          })
+          .from(exercises)
+          .where(and(eq(exercises.id, payload.exerciseId), eq(exercises.userId, userId)));
+        if (!exerciseRow) return rejected(opId, "sessionExercise", "invalid_reference");
+        const derivedProfile = exerciseRow.measurementProfile as MeasurementProfile;
+        // Only `measurementProfile` is compared, never `loadBasis`: a basis
+        // that changed between an offline session start and the outbox
+        // flush is a permitted, ordinary event (§10.3), not a disagreement
+        // — the slot's basis is always the value derived here (I-14).
+        if (
+          payload.measurementProfile !== undefined &&
+          payload.measurementProfile !== derivedProfile
+        ) {
+          return rejected(opId, "sessionExercise", "measurement_profile_mismatch");
+        }
+        const derivedLoadBasis = exerciseRow.loadBasis as LoadBasis | null;
+
         // phase-8-review.md B-2 — same lost-response contract as
         // applyWorkoutSessionUpsert above: a retried delivery of THIS
         // exact id no-ops here and falls through to the update path below;
@@ -635,6 +697,8 @@ async function applySessionExerciseUpsert(
             position: payload.position,
             source: payload.source,
             prescription: payload.prescription ?? null,
+            measurementProfile: derivedProfile,
+            loadBasis: derivedLoadBasis,
             skipped: payload.skipped ?? false,
             notes: payload.notes ?? null,
           })
@@ -685,6 +749,20 @@ async function applySessionExerciseUpsert(
     if (isPostgresErrorCode(err, FOREIGN_KEY_VIOLATION)) {
       return rejected(opId, "sessionExercise", "invalid_reference");
     }
+    // §12.2/I-8 backstop — the service check above should always catch a
+    // profile disagreement before this insert runs; if it's ever bypassed
+    // or races, the mirror FK's `23503` is already caught above, and a
+    // shape/bounds violation on this row's own CHECKs is unreachable in
+    // practice (this table carries no per-shape CHECK of its own beyond
+    // measurement-profile/load-basis membership, which the service always
+    // derives from an already-valid `exercises` row) — mapped for
+    // completeness alongside `applySetLogUpsert`'s identical backstop.
+    if (
+      isPostgresErrorCode(err, CHECK_VIOLATION) ||
+      isPostgresErrorCode(err, NUMERIC_VALUE_OUT_OF_RANGE)
+    ) {
+      return rejected(opId, "sessionExercise", "invalid_measurement");
+    }
     throw err;
   }
 }
@@ -698,7 +776,11 @@ async function applySessionExerciseUpsert(
 // restricts the comparison to the fields this op is actually about to write
 // (V-2 — a field a later same-id op will also set is excluded from THIS
 // op's write entirely, see `applySetLogUpsert`, so it must never factor into
-// whether THIS op counts as a relevant edit either).
+// whether THIS op counts as a relevant edit either). `distanceM`/`durationS`
+// are included for §12.3's completeness (the profile-scoped emitter always
+// carries them) but are harmless in practice: progression only ever
+// evaluates `load_reps` slots (`evaluateSession`'s profile skip, §11.3 site
+// 1), and those two columns never hold a value on a `load_reps` row.
 function setLogUpdateChangesEvaluationInputs(
   existing: typeof setLogs.$inferSelect,
   payload: SetLogUpsertPayload,
@@ -709,7 +791,112 @@ function setLogUpdateChangesEvaluationInputs(
   if (writable.has("weightKg") && payload.weightKg !== existing.weightKg) return true;
   if (writable.has("reps") && payload.reps !== existing.reps) return true;
   if (writable.has("rir") && payload.rir !== existing.rir) return true;
+  if (writable.has("distanceM") && payload.distanceM !== existing.distanceM) return true;
+  if (writable.has("durationS") && payload.durationS !== existing.durationS) return true;
   return false;
+}
+
+// §6.4/§13.1 — the row a set op will actually leave behind once its
+// writable fields land: a create's own (defaulted-to-null) payload, or an
+// update's existing values patched by only what `writable` includes.
+// Validating this MERGED row, not the raw op, is what keeps a partial
+// correction deterministic under V-2's `writable` exclusion — the same
+// batch replayed in any order yields the same effective row and the same
+// accept/reject decision, because shape validity depends only on the
+// frozen profile (§13.1).
+interface EffectiveSetRow {
+  weightKg: number | null;
+  reps: number | null;
+  rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
+}
+
+function fieldMatches(requirement: FieldRequirement, value: number | null): boolean {
+  if (requirement === "required") return value !== null;
+  if (requirement === "forbidden") return value === null;
+  return true;
+}
+
+// Mirrors `ck_set_logs_profile_shape` (§8.3) and the numeric CHECKs beside
+// it — the service's own proactive check, so a shape or bounds violation
+// dead-letters as `invalid_measurement` before ever reaching SQL (I-8). The
+// `23514`/`22003` mapping in the catch block below is the last-line backstop
+// for whatever reaches the database anyway (e.g. a stubbed-out service
+// check, NC-3/NC-4).
+function isEffectiveSetRowValid(profile: MeasurementProfile, row: EffectiveSetRow): boolean {
+  const dims = dimensionsOf(profile);
+  if (!fieldMatches(dims.weight, row.weightKg)) return false;
+  if (!fieldMatches(dims.reps, row.reps)) return false;
+  if (!fieldMatches(dims.rir, row.rir)) return false;
+  if (!fieldMatches(dims.distance, row.distanceM)) return false;
+  if (!fieldMatches(dims.duration, row.durationS)) return false;
+  if (row.weightKg !== null && (row.weightKg < 0 || row.weightKg > 9999.99)) return false;
+  if (row.reps !== null && (row.reps < 1 || row.reps > 100)) return false;
+  if (row.rir !== null && (row.rir < 0 || row.rir > 10)) return false;
+  if (row.distanceM !== null && (row.distanceM <= 0 || row.distanceM > 99999.99)) return false;
+  if (row.durationS !== null && (row.durationS <= 0 || row.durationS > 86400)) return false;
+  return true;
+}
+
+// Test seam only — both call sites in `applySetLogUpsert` below go through
+// this mutable holder rather than calling `isEffectiveSetRowValid` bare, so
+// an integration test can force this proactive check to report a
+// shape-invalid row as valid and prove the `23514`/`22003` catch-block
+// mapping further down is independently load-bearing against a REAL
+// `db.insert`/`db.update` round-trip, not just against the raw-insert probes
+// in NC-4's "DB layer" describe block. A `vi.spyOn` on a bare named export
+// does not intercept a module's own internal calls to it (the call binds
+// directly to the local function declaration at load time, never through
+// the export object), which is why this indirection exists at all — normal
+// (non-test) code always reads `setLogPreCheck.isEffectiveSetRowValid`,
+// which is the real function unless a test has overwritten the property.
+export const setLogPreCheck = { isEffectiveSetRowValid };
+
+type SetRowField = keyof EffectiveSetRow;
+const SET_ROW_FIELD_DIMENSION: Record<SetRowField, keyof ReturnType<typeof dimensionsOf>> = {
+  weightKg: "weight",
+  reps: "reps",
+  rir: "rir",
+  distanceM: "distance",
+  durationS: "duration",
+};
+
+// §12.2/§13.2 — called only once `isEffectiveSetRowValid` has already
+// failed for a CREATE, to pick between its two distinct reject reasons. A
+// forbidden field carrying a real value (or an explicit `null` on a
+// required one) is a genuine shape mismatch and wins regardless of what
+// else is absent: an old client's `{weightKg, reps}` op against a
+// new-profile slot carries a FORBIDDEN field (e.g. `reps` on
+// `load_distance`), which is what makes it `invalid_measurement` even
+// though the new profile's own required field (`distanceM`) is also absent
+// (§13.2's rollout-case row). Only when the row is otherwise shape-clean
+// does a merely-ABSENT required field soften to `missing_required_fields`
+// (§12.2's "a duration create carrying only durationS is complete" / "a
+// load_reps create still needs load and reps" framing, and A-18) — an
+// explicit `null` is not "merely absent" and is treated the same as a
+// forbidden-field violation. A bounds violation (unreachable through this
+// schema-parsed payload, since Zod already bounds every present value) is
+// the defensive fallback.
+function classifyCreateFailure(
+  profile: MeasurementProfile,
+  payload: SetLogUpsertPayload,
+  row: EffectiveSetRow,
+): "invalid_measurement" | "missing_required_fields" {
+  const dims = dimensionsOf(profile);
+  let missingRequired = false;
+  for (const field of Object.keys(SET_ROW_FIELD_DIMENSION) as SetRowField[]) {
+    const requirement = dims[SET_ROW_FIELD_DIMENSION[field]];
+    if (requirement === "forbidden" && row[field] !== null) return "invalid_measurement";
+    if (requirement === "required" && row[field] === null) {
+      if (payload[field] === undefined) {
+        missingRequired = true;
+      } else {
+        return "invalid_measurement"; // explicit null on a required field
+      }
+    }
+  }
+  return missingRequired ? "missing_required_fields" : "invalid_measurement";
 }
 
 // domain-model.md §7: SetLog values are user-editable "at any time,
@@ -767,14 +954,15 @@ async function applySetLogUpsert(
         if (
           payload.sessionExerciseId === undefined ||
           payload.setNumber === undefined ||
-          payload.weightKg === undefined ||
-          payload.reps === undefined ||
           payload.loggedAt === undefined
         ) {
           return rejected(opId, "setLog", "missing_required_fields");
         }
         const [parent] = await tx
-          .select({ status: workoutSessions.status })
+          .select({
+            status: workoutSessions.status,
+            measurementProfile: sessionExercises.measurementProfile,
+          })
           .from(sessionExercises)
           .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
           .where(
@@ -785,6 +973,39 @@ async function applySetLogUpsert(
           );
         if (!parent) return rejected(opId, "setLog", "not_found");
         if (parent.status !== "in_progress") return rejected(opId, "setLog", "session_locked");
+
+        // §12.2 — the hard-coded weightKg/reps gate this replaces becomes
+        // profile-scoped: the parent slot's frozen shape (`dimensionsOf`,
+        // §6.4) decides which fields a create must carry, so a `duration`
+        // create needs only `durationS` while a `load_reps` create still
+        // needs both `weightKg` and `reps`. `rir` is never creation-required
+        // for any profile (§6.2), so it never factors into completeness.
+        const parentProfile = parent.measurementProfile as MeasurementProfile;
+        const effectiveRow: EffectiveSetRow = {
+          weightKg: payload.weightKg ?? null,
+          reps: payload.reps ?? null,
+          rir: payload.rir ?? null,
+          distanceM: payload.distanceM ?? null,
+          durationS: payload.durationS ?? null,
+        };
+        // §13.1/§13.2 — the effective row here is simply the full creation
+        // payload (defaulted to null where absent). `classifyCreateFailure`
+        // picks between the two reject reasons: a forbidden field carrying a
+        // real value (or an explicit null on a required one) is
+        // `invalid_measurement` regardless of what else is merely absent —
+        // e.g. an old client's `{weightKg, reps}` op against a `load_distance`
+        // slot carries the FORBIDDEN `reps`, which is what makes it
+        // `invalid_measurement` even though `distanceM` is also absent
+        // (§13.2's rollout-case row) — and only a shape-clean row missing a
+        // required field (never sent at all) softens to
+        // `missing_required_fields`.
+        if (!setLogPreCheck.isEffectiveSetRowValid(parentProfile, effectiveRow)) {
+          return rejected(
+            opId,
+            "setLog",
+            classifyCreateFailure(parentProfile, payload, effectiveRow),
+          );
+        }
 
         // phase-8-review.md B-2 — same lost-response contract as
         // applyWorkoutSessionUpsert/applySessionExerciseUpsert above: this is
@@ -801,9 +1022,12 @@ async function applySetLogUpsert(
             sessionExerciseId: payload.sessionExerciseId,
             setNumber: payload.setNumber,
             isWarmup: payload.isWarmup ?? false,
-            weightKg: payload.weightKg,
-            reps: payload.reps,
-            rir: payload.rir ?? null,
+            weightKg: effectiveRow.weightKg,
+            reps: effectiveRow.reps,
+            rir: effectiveRow.rir,
+            distanceM: effectiveRow.distanceM,
+            durationS: effectiveRow.durationS,
+            measurementProfile: parentProfile,
             loggedAt: new Date(payload.loggedAt),
             notes: payload.notes ?? null,
           })
@@ -853,6 +1077,31 @@ async function applySetLogUpsert(
 
       if (writable.size === 0) return applied(opId, "setLog");
 
+      // §13.1 — the row's frozen profile lives on the row itself (copied
+      // from the parent slot at creation, I-3), so no extra query is
+      // needed. Validated as the MERGED effective row (existing values
+      // patched by only what `writable` will actually write), not the raw
+      // op — this is what makes a partial correction (e.g.
+      // `{durationS: null}`) deterministic under V-2's exclusion: the same
+      // accept/reject decision regardless of replay order.
+      const parentProfile = existingRow.setLog.measurementProfile as MeasurementProfile;
+      const effectiveRow: EffectiveSetRow = {
+        weightKg: writable.has("weightKg")
+          ? (payload.weightKg ?? null)
+          : existingRow.setLog.weightKg,
+        reps: writable.has("reps") ? (payload.reps ?? null) : existingRow.setLog.reps,
+        rir: writable.has("rir") ? (payload.rir ?? null) : existingRow.setLog.rir,
+        distanceM: writable.has("distanceM")
+          ? (payload.distanceM ?? null)
+          : existingRow.setLog.distanceM,
+        durationS: writable.has("durationS")
+          ? (payload.durationS ?? null)
+          : existingRow.setLog.durationS,
+      };
+      if (!setLogPreCheck.isEffectiveSetRowValid(parentProfile, effectiveRow)) {
+        return rejected(opId, "setLog", "invalid_measurement");
+      }
+
       const patch: Partial<typeof setLogs.$inferInsert> = {};
       if (writable.has("setNumber")) patch.setNumber = payload.setNumber;
       if (writable.has("isWarmup")) patch.isWarmup = payload.isWarmup;
@@ -866,6 +1115,8 @@ async function applySetLogUpsert(
       );
 
       if (writable.has("rir")) patch.rir = payload.rir;
+      if (writable.has("distanceM")) patch.distanceM = payload.distanceM;
+      if (writable.has("durationS")) patch.durationS = payload.durationS;
       if (writable.has("loggedAt") && payload.loggedAt !== undefined) {
         patch.loggedAt = new Date(payload.loggedAt);
       }
@@ -890,6 +1141,19 @@ async function applySetLogUpsert(
     }
     if (isPostgresErrorCode(err, FOREIGN_KEY_VIOLATION)) {
       return rejected(opId, "setLog", "invalid_reference");
+    }
+    // §12.2/I-8 — the service's own `isEffectiveSetRowValid` check above
+    // should always catch a shape or bounds violation first; this is the
+    // backstop for whatever reaches SQL anyway (a value that rounds into
+    // overflow past a numeric column's precision, `22003`, or — with the
+    // service check bypassed, as a deliberate test control — the profile
+    // shape CHECK itself, `23514`). Previously unmapped, this would have
+    // failed the WHOLE batch (H-17), the poison-op regression I-8 forbids.
+    if (
+      isPostgresErrorCode(err, CHECK_VIOLATION) ||
+      isPostgresErrorCode(err, NUMERIC_VALUE_OUT_OF_RANGE)
+    ) {
+      return rejected(opId, "setLog", "invalid_measurement");
     }
     throw err;
   }

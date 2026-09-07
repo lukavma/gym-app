@@ -12,6 +12,7 @@
 // other reason code stay off the index (§11.2's "why the index projects
 // `current` only").
 
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import { deriveStrengthReport } from "@/domain/strength/report";
 import type { StrengthEstimateMode, StrengthSessionInput } from "@/domain/strength/types";
 import type { EstimateIndexRowDto, EstimateIndexRowState } from "./types";
@@ -24,6 +25,12 @@ export interface SelectionRowInput {
   position: number;
   loadStepKg: number;
   strengthEstimate: StrengthEstimateMode;
+  // §11.2/§11.6 (O-17) — `deriveStrengthReport`'s eligibility gate now checks
+  // these two ahead of equipment/switch; without them here every selected
+  // exercise would silently read as `measurementProfile: undefined`, failing
+  // the gate's first check and turning every row `not_available`.
+  measurementProfile: MeasurementProfile;
+  loadBasis: LoadBasis | null;
 }
 
 function stateFor(
@@ -50,6 +57,8 @@ export function projectEstimateIndex(
           equipment: row.equipment,
           strengthEstimate: row.strengthEstimate,
           loadStepKg: row.loadStepKg,
+          measurementProfile: row.measurementProfile,
+          loadBasis: row.loadBasis,
         },
         sessions: sessionsByExerciseId.get(row.exerciseId) ?? [],
         asOfLocalDate,

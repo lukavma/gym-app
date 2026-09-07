@@ -10,7 +10,7 @@ Defines how weekly per-muscle training volume is counted, aggregated, displayed 
 
 | Term | Definition |
 |---|---|
-| **Work set** | A logged `SetLog` with `isWarmup = false`, in a session that is not `discarded` |
+| **Work set** | A logged `SetLog` with `isWarmup = false`, in a session that is not `discarded`, **and** the slot's frozen `measurement_profile ∈ {load_reps, reps}`, **and** the exercise's `volume_counting = 'auto'` (athletic-measurement-profiles §11.4/§21.1; `volume_counting`'s creation default is `'auto'` for `load_reps` and **`'off'` for `reps`**) |
 | **Raw direct sets** (per muscle, per week) | Count of work sets of exercises where the muscle has a `primary` contribution |
 | **Effective (fractional) sets** (per muscle, per week) | Σ over work sets of `contributionWeight(exercise, muscle)` |
 | **Contribution weight** | Per (exercise, muscle) decimal in (0, 1]; defaults: primary 1.0, secondary 0.5 |
@@ -18,6 +18,8 @@ Defines how weekly per-muscle training volume is counted, aggregated, displayed 
 | **Unclassified Back** | Σ over work sets of the weight of legacy *direct* `back` contributions — rows on user-created exercises that were deliberately never auto-remapped, or the rare reported reconciliation conflict on a seeded exercise (ADR-010). A separate, visible term of the Back total, never folded into a leaf |
 
 Both raw and effective are surfaced; effective is the primary display number, raw is the sanity anchor ("Chest: 14.0 effective · 12 direct").
+
+**Not the same count as the Metrics dashboard's "work sets."** The Metrics Training card's "work sets" stat is a separate, broader activity count over **every** measurement profile (isWarmup = false, session not discarded — no profile or `volume_counting` gate); this volume model's "work set" is the narrower, muscle-attributable definition above. The Training card's caption changes to spell this distinction out in Release 2 (athletic-measurement-profiles §24.2); its caption is unchanged as of this release.
 
 **Status of the 0.5 default:** a *useful modeling convention* — fractional counting fit dose-response data best in one analysis (EVIDENCE-004), but 0.5 is a best-fitting statistical parameter from one dataset, not a biological constant. It is therefore stored as data on every contribution row (editable per exercise/muscle), never hard-coded in aggregation logic, and labeled `heuristic` wherever explained in UI.
 
@@ -28,6 +30,8 @@ Both raw and effective are surfaced; effective is the primary display number, ra
 ```text
 weeklyVolume(weekStart, weekEnd):
   sets = work sets of non-discarded sessions with startedAt in [weekStart, weekEnd)
+        # "work sets" here applies the §1 gate: isWarmup = false AND
+        # slot.measurement_profile in {load_reps, reps} AND exercise.volume_counting = 'auto'
   for each set:
     for each contribution of set.exercise:
       if kind(contribution.muscle) == 'muscle':          # leaf

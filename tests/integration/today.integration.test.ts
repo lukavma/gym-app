@@ -221,6 +221,201 @@ describe("buildTodayBundle (PGlite integration)", () => {
     expect(bundle.activeSession).toBeNull();
   });
 
+  // athletic-measurement-profiles-architecture-evaluation.md §12.1, A-12.
+  // No seeded athletic exercise exists yet (R3) and the R1 editor never
+  // offers a `distanceRounds`/`durationRounds` scheme (the hard boundary),
+  // so every fixture below is hand-built directly through the service
+  // layer, exactly the pattern `checkPrescriptionCompatibility`'s own
+  // integration coverage already uses.
+  describe("§12.1/A-12 — measurement on the bundle entry, athletic prefill", () => {
+    async function insertCompletedDistanceHistorySession(opts: {
+      userId: string;
+      blockId: string;
+      templateId: string;
+      exercise: { id: string; measurementProfile: string; loadBasis: string | null };
+      startedAt: Date;
+      weightKg: number;
+      distanceM: number;
+    }) {
+      const sessionId = newId();
+      const sessionExerciseId = newId();
+      await db.insert(workoutSessions).values({
+        id: sessionId,
+        userId: opts.userId,
+        blockId: opts.blockId,
+        templateId: opts.templateId,
+        templateName: "Sled Day",
+        weekIndex: 1,
+        isDeload: false,
+        status: "completed",
+        startedAt: opts.startedAt,
+        completedAt: opts.startedAt,
+      });
+      await db.insert(sessionExercises).values({
+        id: sessionExerciseId,
+        sessionId,
+        exerciseId: opts.exercise.id,
+        position: 0,
+        source: "template",
+        measurementProfile: opts.exercise.measurementProfile,
+        loadBasis: opts.exercise.loadBasis,
+      });
+      // The warm-up round comes first so the carry-forward rule ("first
+      // *work* set") has something to skip past (I-13 — no `reps`/`rir` on a
+      // load_distance row, per its shape CHECK).
+      await db.insert(setLogs).values([
+        {
+          id: newId(),
+          sessionExerciseId,
+          setNumber: 1,
+          isWarmup: true,
+          weightKg: 10,
+          distanceM: 10,
+          measurementProfile: opts.exercise.measurementProfile,
+          loggedAt: opts.startedAt,
+        },
+        {
+          id: newId(),
+          sessionExerciseId,
+          setNumber: 2,
+          isWarmup: false,
+          weightKg: opts.weightKg,
+          distanceM: opts.distanceM,
+          measurementProfile: opts.exercise.measurementProfile,
+          loggedAt: opts.startedAt,
+        },
+      ]);
+      return sessionId;
+    }
+
+    it("carries `measurement` on an ordinary load_reps entry", async () => {
+      const user = await insertTestUser(db);
+      const exercise = await createExercise(db, user.id, {
+        name: "Back Squat",
+        equipment: "barbell",
+        mechanics: "compound",
+        laterality: "bilateral",
+        loadStepKg: 2.5,
+        contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+      });
+      const program = await createProgram(db, user.id, { name: "Program A" });
+      const template = await createTemplate(db, user.id, program.id, { name: "Push Day" });
+      if (!template) throw new Error("expected template");
+      const prescription = await createPrescription(db, user.id, template.id, {
+        exerciseId: exercise.id,
+        scheme: fixedScheme,
+        progression: { strategyId: "manual" },
+      });
+      if (!prescription) throw new Error("expected prescription");
+      const block = await createBlock(db, user.id, program.id, {
+        name: "Block A",
+        goal: "general",
+        startDate: "2026-01-01",
+        weeksPlanned: 16,
+        schedule: [{ templateId: template.id }],
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, user.id, block.id);
+
+      const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      expect(bundle.today.exercises[0]!.measurement).toEqual({
+        profile: "load_reps",
+        loadBasis: "unspecified",
+      });
+    });
+
+    it("carries the exercise's basis, and carry-forward on a hand-built load_distance slot uses the first NON-warm-up round's load (prefill.reps null — no reps dimension in `distanceRounds`)", async () => {
+      const user = await insertTestUser(db);
+      const exercise = await createExercise(db, user.id, {
+        name: "Sled Push",
+        equipment: "barbell",
+        mechanics: "compound",
+        laterality: "bilateral",
+        loadStepKg: 2.5,
+        contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+        measurementProfile: "load_distance",
+        loadBasis: "total",
+      });
+      const program = await createProgram(db, user.id, { name: "Program A" });
+      const template = await createTemplate(db, user.id, program.id, { name: "Sled Day" });
+      if (!template) throw new Error("expected template");
+      const prescription = await createPrescription(db, user.id, template.id, {
+        exerciseId: exercise.id,
+        scheme: { v: 1, scheme: { type: "distanceRounds", sets: 4, distanceM: 20 } },
+        progression: { strategyId: "manual" },
+      });
+      if (!prescription) throw new Error("expected prescription");
+      const block = await createBlock(db, user.id, program.id, {
+        name: "Block A",
+        goal: "general",
+        startDate: "2026-01-01",
+        weeksPlanned: 16,
+        schedule: [{ templateId: template.id }],
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, user.id, block.id);
+
+      await insertCompletedDistanceHistorySession({
+        userId: user.id,
+        blockId: block.id,
+        templateId: template.id,
+        exercise,
+        startedAt: new Date("2026-01-14T10:00:00.000Z"),
+        weightKg: 25,
+        distanceM: 20,
+      });
+
+      const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      const entry = bundle.today.exercises[0]!;
+      expect(entry.measurement).toEqual({ profile: "load_distance", loadBasis: "total" });
+      // The warm-up round's 10 kg is skipped; the first WORK round's 25 kg
+      // carries forward (H-12 — never coerced, never the warm-up's load).
+      expect(entry.prefill.loadKg).toBe(25);
+      expect(entry.prefill.reps).toBeNull();
+    });
+
+    it("prefill.loadKg AND prefill.reps are both null for a `duration`/`durationRounds` slot (no load dimension, no reps dimension)", async () => {
+      const user = await insertTestUser(db);
+      const exercise = await createExercise(db, user.id, {
+        name: "Plank",
+        equipment: "other",
+        mechanics: "isolation",
+        laterality: "bilateral",
+        loadStepKg: 2.5,
+        contributions: [{ muscleGroupId: "abs", role: "primary", weight: 1 }],
+        measurementProfile: "duration",
+      });
+      expect(exercise.loadBasis).toBeNull();
+      const program = await createProgram(db, user.id, { name: "Program A" });
+      const template = await createTemplate(db, user.id, program.id, { name: "Core Day" });
+      if (!template) throw new Error("expected template");
+      const prescription = await createPrescription(db, user.id, template.id, {
+        exerciseId: exercise.id,
+        scheme: { v: 1, scheme: { type: "durationRounds", sets: 3, durationS: 60 } },
+        progression: { strategyId: "manual" },
+      });
+      if (!prescription) throw new Error("expected prescription");
+      const block = await createBlock(db, user.id, program.id, {
+        name: "Block A",
+        goal: "general",
+        startDate: "2026-01-01",
+        weeksPlanned: 16,
+        schedule: [{ templateId: template.id }],
+      });
+      if (!block) throw new Error("expected block");
+      await activateBlock(db, user.id, block.id);
+
+      const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));
+      if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+      const entry = bundle.today.exercises[0]!;
+      expect(entry.measurement).toEqual({ profile: "duration", loadBasis: null });
+      expect(entry.prefill.loadKg).toBeNull();
+      expect(entry.prefill.reps).toBeNull();
+    });
+  });
+
   // implementation-plan.md Phase 5 — effective-modifier resolution.
   describe("deload / week-override modifiers (Phase 5)", () => {
     async function setUpBlock(user: { id: string }, deload?: DeloadConfig) {

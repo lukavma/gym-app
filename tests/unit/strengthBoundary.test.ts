@@ -34,6 +34,14 @@ function under(file: string, dir: string): boolean {
 
 const DOMAIN_STRENGTH = path.join(SRC_ROOT, "domain", "strength");
 const DOMAIN_SCHEMES = path.join(SRC_ROOT, "domain", "schemes");
+// athletic-measurement-profiles-architecture-evaluation.md I-10 — "domain/
+// strength ... may import [domain/measurement]; it may not import any of
+// them." Not used yet: this stage only creates the vocabulary module, and
+// `eligibility.ts` starts calling `isProfileEligibleForE1rm` in the later
+// stage that implements O-17's amended "profile → basis → equipment →
+// switch" gate order. Declared now so that stage's real import does not fail
+// the self-containment check below.
+const DOMAIN_MEASUREMENT = path.join(SRC_ROOT, "domain", "measurement");
 const DOMAIN_PROGRESSION = path.join(SRC_ROOT, "domain", "progression");
 const DOMAIN_VOLUME = path.join(SRC_ROOT, "domain", "volume");
 const DOMAIN_SYNC = path.join(SRC_ROOT, "domain", "sync");
@@ -152,14 +160,20 @@ describe("the seed reconcile is deploy-time only (ADR-011, ADR-010's mechanism)"
 });
 
 describe("the pure module is self-contained (§14.5)", () => {
-  it("reaches nothing outside src/domain/strength, and does not reach progression at all", () => {
+  it("reaches nothing outside src/domain/strength or src/domain/measurement, and does not reach progression at all", () => {
     const { visited, reachedFrom } = walkImportGraph(DOMAIN_STRENGTH_FILES);
     // Witness that the walk really traversed edges rather than stopping at
     // the roots: `report.ts` reaches `observation.ts` reaches `primitives.ts`.
     expect(visited.has(path.join(DOMAIN_STRENGTH, "primitives.ts"))).toBe(true);
     expect(visited.size).toBeGreaterThan(DOMAIN_STRENGTH_FILES.length - 1);
 
-    const offenders = [...visited].filter((file) => !under(file, DOMAIN_STRENGTH));
+    // I-10 pre-approves exactly one outside directory: src/domain/measurement
+    // (zero-import itself, so this can never smuggle in a second forbidden
+    // hop — `measurementBoundary.test.ts` proves that module reaches nothing
+    // beyond its own directory).
+    const offenders = [...visited].filter(
+      (file) => !under(file, DOMAIN_STRENGTH) && !under(file, DOMAIN_MEASUREMENT),
+    );
     if (offenders.length > 0) {
       throw new Error(
         `src/domain/strength reaches outside itself:\n${offenders
@@ -192,6 +206,21 @@ describe("the pure module is self-contained (§14.5)", () => {
     }
     expect(schemeImports).toEqual([]);
     expect(existsSync(DOMAIN_SCHEMES)).toBe(true);
+  });
+
+  it("the widened allowance is measurement-specific, not a blanket bypass", () => {
+    expect(existsSync(DOMAIN_MEASUREMENT)).toBe(true);
+    // NEGATIVE CONTROL: a forbidden edge into a DIFFERENT outside directory
+    // must still be caught after the widening above.
+    const from = path.join(DOMAIN_STRENGTH, "report.ts");
+    const to = path.join(SRC_ROOT, "domain", "volume", "aggregate.ts");
+    const { visited } = walkImportGraph(DOMAIN_STRENGTH_FILES, {
+      extraEdges: [{ from, to }],
+    });
+    const offenders = [...visited].filter(
+      (file) => !under(file, DOMAIN_STRENGTH) && !under(file, DOMAIN_MEASUREMENT),
+    );
+    expect(offenders).toContain(to);
   });
 });
 

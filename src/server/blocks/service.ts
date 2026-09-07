@@ -720,6 +720,15 @@ export async function getBlockSummary(
       .orderBy(asc(setLogs.setNumber));
     const firstWorkSetBySessionExercise = new Map<string, number>();
     for (const s of setRows) {
+      // athletic-measurement-profiles §11.3 — this before/after-load summary
+      // is a numeric-domain consumer of the same shape as the named sites
+      // (strength/progression/volume): a non-`load_reps` slot has no load to
+      // report, so it's excluded here rather than the null being coerced to
+      // `0` (I-13/H-12). `weightKg` is `number | null` since migration 0013;
+      // `setLogs.measurementProfile` mirrors the parent slot's frozen profile
+      // (composite FK), so no join is needed to gate on it.
+      if (s.measurementProfile !== "load_reps") continue;
+      if (s.weightKg === null) continue;
       if (!firstWorkSetBySessionExercise.has(s.sessionExerciseId)) {
         firstWorkSetBySessionExercise.set(s.sessionExerciseId, s.weightKg);
       }

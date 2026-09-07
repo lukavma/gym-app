@@ -77,6 +77,8 @@ interface PerformedExercise {
 
 Determinism rules: no `Date.now()`, no randomness, no IO inside `evaluate`. Everything time-like arrives as data. Same inputs + same strategy version ⇒ same output, byte for byte.
 
+**SQL → domain boundary rule (I-13, athletic measurement profiles).** `PerformedExercise.workSets[].weightKg` is `number`, never `number | null` — `performedSetSchema` is unchanged and stays non-nullable. At every SQL→domain boundary that assembles `EvaluationContext` (the engine's history window included), a row whose frozen slot `measurement_profile` cannot supply a non-null `weightKg`/`reps` pair is excluded **before** mapping into `PerformedExercise`; a null load or rep count is never coerced to `0` or `1` to force it into shape (`athletic-measurement-profiles-architecture-evaluation.md` §11.3, §18.1 I-13). This is what keeps `evaluate()` itself unchanged in Release 1: it never sees a non-`load_reps` set, because §5's precondition removes the slot before context assembly is even attempted.
+
 ### Output
 
 ```ts
@@ -214,6 +216,7 @@ No evaluation, no records. Prefill = carry-forward chain (`prescription-model.md
 onSessionCompleted(session):                        # application service, server-side normally
   if session.isDeload and engineDefaults.skipDeload → no evaluations          # heuristic default
   for each sessionExercise with prescription.progression.strategyId ≠ 'manual', not skipped:
+     if sessionExercise.measurement_profile ≠ 'load_reps' → continue          # profile precondition, before scheme/strategy dispatch
      ctx = assembleContext(sessionExercise)         # repo queries OUTSIDE the pure core
      draft = registry[strategyId].evaluate(ctx, config)
      if draft.action ≠ 'none' or draft.reasonCodes ≠ []:
@@ -221,6 +224,7 @@ onSessionCompleted(session):                        # application service, serve
         persist Recommendation(draft, strategyId, version, config, classification, computedBy)
 ```
 
+- **Measurement profile precondition (athletic measurement profiles, Release 1).** `evaluateSession` `continue`s past any slot whose frozen `measurement_profile` is not `load_reps`, producing no row, before any scheme or strategy dispatch — the profile gate runs first, ahead of the existing `strategyId ≠ 'manual'` / `not skipped` checks. No strategy, config schema or output shape changes; a non-`load_reps` slot is simply never evaluated. Unobservable in Release 1 (no non-`load_reps` exercise exists yet).
 - **When:** on session completion (server). If completion happens offline, the identical domain code runs client-side against the cached context bundle and the resulting record syncs up flagged `computedBy: 'client'` (determinism + versioning make the two paths equivalent).
 - **Set edits after evaluation:** while the recommendation is `pending`, an edit to the source session re-runs evaluation and supersedes. After a Decision, no automatic recomputation ever (the user's choice stands); the user can explicitly "recalculate", which supersedes with a fresh record.
 - **Missing evaluation at next workout** (e.g. sync race): prefill falls back to carry-forward; no fabricated recommendation.

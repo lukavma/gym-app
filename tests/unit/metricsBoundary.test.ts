@@ -100,12 +100,25 @@ describe("the pure module is self-contained (§16 I-12)", () => {
   // `StrengthEstimateMode` type is reached via `@/domain/strength/types`'s
   // own re-export instead). A permitted-but-unused entry would let a real
   // future import slip in unnoticed by this allowlist's own intent.
+  // athletic-measurement-profiles-architecture-evaluation.md I-10 — "domain/
+  // metrics ... may import [domain/measurement]; it may not import any of
+  // them." None of these four specifiers is used yet (this stage only
+  // creates the vocabulary module); pre-declared per O-17/§11.2 so the later
+  // stage that threads `measurementProfile`/`loadBasis` through
+  // `selectionService.ts`'s `isSelectionEligible` does not fail this
+  // allowlist. Unlike L-8's removed `@/domain/strength/estimateMode` entry
+  // (genuinely unused with no planned use), this one has a named future
+  // caller and a named future symbol.
   const ALLOWED_OUTSIDE_SPECIFIERS = new Set([
     "@/domain/volume/aggregate",
     "@/domain/volume/weekBuckets",
     "@/domain/strength/report",
     "@/domain/strength/types",
     "@/domain/strength/primitives",
+    "@/domain/measurement/profile",
+    "@/domain/measurement/compatibility",
+    "@/domain/measurement/capabilities",
+    "@/domain/measurement/format",
   ]);
   const SELECTION_ALLOWED_OUTSIDE_SPECIFIERS = new Set([
     ...ALLOWED_OUTSIDE_SPECIFIERS,

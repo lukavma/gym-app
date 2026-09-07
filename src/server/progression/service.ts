@@ -27,6 +27,7 @@ import type {
   RecommendationTarget,
 } from "@/domain/progression/engine";
 import type { DecisionChosen } from "@/domain/progression/workingTargets";
+import { DEFAULT_MEASUREMENT_PROFILE } from "@/domain/measurement/profile";
 
 // progression-engine.md §5 — the impure half of "onSessionCompleted": repo
 // queries assemble the EvaluationContext OUTSIDE the pure core, the domain's
@@ -113,23 +114,58 @@ function parseSnapshot(prescription: unknown): PrescriptionSnapshotData | null {
   return parsed.success ? parsed.data.snapshot : null;
 }
 
-async function getWorkSetsByExercise(
-  db: AppDb,
-  sessionExerciseIds: string[],
-): Promise<Map<string, PerformedSet[]>> {
+// The raw shape `getWorkSetsByExercise`'s join produces, one row per set —
+// `measurementProfile` is the PARENT SLOT's (`session_exercises`), not the
+// set row's own mirrored column, matching §11.3 site #1's exact wording.
+export interface WorkSetSourceRow {
+  sessionExerciseId: string;
+  weightKg: number | null;
+  reps: number | null;
+  rir: number | null;
+  measurementProfile: string;
+}
+
+// §11.3 site #1 (I-13) — the pure half of the SQL→domain boundary, split out
+// so NC-10's mixed-profile equality/count assertions exercise the actual
+// mapping rule without a database. Keeps only `load_reps` slots, excluded
+// BEFORE any `PerformedSet` is built (never map-then-filter, so a null
+// weight/reps never transiently touches the numeric fields).
+export function mapWorkSetRows(rows: readonly WorkSetSourceRow[]): Map<string, PerformedSet[]> {
   const result = new Map<string, PerformedSet[]>();
-  if (sessionExerciseIds.length === 0) return result;
-  const rows = await db
-    .select()
-    .from(setLogs)
-    .where(and(inArray(setLogs.sessionExerciseId, sessionExerciseIds), eq(setLogs.isWarmup, false)))
-    .orderBy(asc(setLogs.setNumber));
   for (const row of rows) {
+    if (row.measurementProfile !== DEFAULT_MEASUREMENT_PROFILE) continue;
+    // The DB's own ck_set_logs_profile_shape guarantees a load_reps row's
+    // weight_kg/reps are non-null (§8.3) — this narrows the post-migration
+    // `number | null` columns as a runtime invariant, not a coercion
+    // (I-13/H-12); a row that ever disagreed is skipped, never fabricated
+    // into a `0`/`1` set (matches the existing `RESTRICT FK — unreachable`
+    // defensive-skip idiom below in this file).
+    if (row.weightKg === null || row.reps === null) continue;
     const list = result.get(row.sessionExerciseId) ?? [];
     list.push({ weightKg: row.weightKg, reps: row.reps, rir: row.rir });
     result.set(row.sessionExerciseId, list);
   }
   return result;
+}
+
+async function getWorkSetsByExercise(
+  db: AppDb,
+  sessionExerciseIds: string[],
+): Promise<Map<string, PerformedSet[]>> {
+  if (sessionExerciseIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      sessionExerciseId: setLogs.sessionExerciseId,
+      weightKg: setLogs.weightKg,
+      reps: setLogs.reps,
+      rir: setLogs.rir,
+      measurementProfile: sessionExercises.measurementProfile,
+    })
+    .from(setLogs)
+    .innerJoin(sessionExercises, eq(setLogs.sessionExerciseId, sessionExercises.id))
+    .where(and(inArray(setLogs.sessionExerciseId, sessionExerciseIds), eq(setLogs.isWarmup, false)))
+    .orderBy(asc(setLogs.setNumber));
+  return mapWorkSetRows(rows);
 }
 
 // progression-engine.md §2 — "same exercise, completed non-discarded

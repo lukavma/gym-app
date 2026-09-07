@@ -1,9 +1,10 @@
 import { z } from "zod";
 
-// prescription-model.md §2 — MVP SetScheme variants. `perSet` and
-// `fixedPlusAmrap` are reserved (post-MVP, prescription-model.md §2) — do
-// not implement here.
-export const SCHEME_TYPES = ["fixed", "repRange"] as const;
+// prescription-model.md §2 — MVP SetScheme variants, plus the athletic
+// measurement profiles evaluation §9.1's two additive variants
+// (distanceRounds/durationRounds). `perSet` and `fixedPlusAmrap` are
+// reserved (post-MVP, prescription-model.md §2) — do not implement here.
+export const SCHEME_TYPES = ["fixed", "repRange", "distanceRounds", "durationRounds"] as const;
 export type SchemeType = (typeof SCHEME_TYPES)[number];
 
 const SETS_MIN = 1;
@@ -28,11 +29,32 @@ const repRangeSchemeShape = z.object({
   maxReps: z.number().int().min(REPS_MIN).max(REPS_MAX),
 });
 
+// §9.1 — distance/duration-basis exercises round-count instead of counting
+// reps. 99999.99 m / 86400 s (24h) are the column ceilings (§8), not
+// meaningful training values — the point is the numeric(*, 2) column can
+// hold whatever's validated here.
+const distanceRoundsSchemeSchema = z.object({
+  type: z.literal("distanceRounds"),
+  sets: z.number().int().min(SETS_MIN).max(SETS_MAX),
+  distanceM: z.number().gt(0).max(99999.99).multipleOf(0.01),
+});
+
+const durationRoundsSchemeSchema = z.object({
+  type: z.literal("durationRounds"),
+  sets: z.number().int().min(SETS_MIN).max(SETS_MAX),
+  durationS: z.number().gt(0).max(86400).multipleOf(0.01),
+});
+
 // prescription-model.md §6 — repRange additionally requires minReps <=
 // maxReps and a span sanity cap. Applied via superRefine (not per-member
 // .refine()) so the union stays a plain z.discriminatedUnion.
 export const setSchemeSchema = z
-  .discriminatedUnion("type", [fixedSchemeSchema, repRangeSchemeShape])
+  .discriminatedUnion("type", [
+    fixedSchemeSchema,
+    repRangeSchemeShape,
+    distanceRoundsSchemeSchema,
+    durationRoundsSchemeSchema,
+  ])
   .superRefine((data, ctx) => {
     if (data.type !== "repRange") return;
     if (data.maxReps < data.minReps) {
@@ -66,7 +88,18 @@ export function wrapScheme(scheme: SetScheme): SetSchemeEnvelope {
 }
 
 // prescription-model.md §2 — "renders '5 × 5'" / "renders '3 × 8–12'".
+// §9.1 — renders "4 × 20 m" / "3 × 60 s" for the two athletic variants. A
+// switch (not an if/else) so a fifth variant fails to compile here instead
+// of silently falling through to the wrong branch.
 export function formatScheme(scheme: SetScheme): string {
-  if (scheme.type === "fixed") return `${scheme.sets} × ${scheme.reps}`;
-  return `${scheme.sets} × ${scheme.minReps}–${scheme.maxReps}`;
+  switch (scheme.type) {
+    case "fixed":
+      return `${scheme.sets} × ${scheme.reps}`;
+    case "repRange":
+      return `${scheme.sets} × ${scheme.minReps}–${scheme.maxReps}`;
+    case "distanceRounds":
+      return `${scheme.sets} × ${scheme.distanceM} m`;
+    case "durationRounds":
+      return `${scheme.sets} × ${scheme.durationS} s`;
+  }
 }

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { rirBandSchema } from "../schemes/rirBand";
 import type { SchemeType, SetScheme } from "../schemes/setScheme";
+import { profileSupportsScheme, strategySupportsProfile } from "../measurement/compatibility";
+import type { MeasurementProfile } from "../measurement/profile";
 
 // progression-engine.md §2/§4 — strategy registry. This module holds only
 // the strategy IDs, their config schemas, `supportsScheme`, and config
@@ -62,13 +64,22 @@ export const STRATEGY_CONFIG_SCHEMAS = {
   manual: manualConfigSchema,
 } as const;
 
-// prescription-model.md §2 compatibility table — every MVP strategy
-// supports every MVP scheme type today (only the reserved, unimplemented
-// `perSet` variant would ever return false). Kept as a real function, not a
-// hardcoded `true`, so the prescription editor and Phase 4's engine share
-// one source of truth as scheme variants are added later.
-export function supportsScheme(_strategyId: StrategyId, schemeType: SchemeType): boolean {
-  return schemeType === "fixed" || schemeType === "repRange";
+// measurement-profiles-architecture-evaluation.md §9.2 — the compatibility
+// table is now two-dimensional: a scheme type is only ever offered for
+// profiles it structurally fits (`profileSupportsScheme`, the table's rows),
+// and a strategy only ever runs on profiles it's registered against
+// (`strategySupportsProfile`, the table's columns — v1: load-progression and
+// rep-progression are `load_reps`-only, N-13). Both live in
+// `domain/measurement/compatibility.ts`, the single source §9.2 names; this
+// function composes them rather than re-deriving the table, so the
+// prescription editor and the engine share one source of truth as scheme
+// variants and strategies are added later.
+export function supportsScheme(
+  profile: MeasurementProfile,
+  strategyId: StrategyId,
+  schemeType: SchemeType,
+): boolean {
+  return profileSupportsScheme(profile, schemeType) && strategySupportsProfile(strategyId, profile);
 }
 
 export interface ExerciseLoadContext {

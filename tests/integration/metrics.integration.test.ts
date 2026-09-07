@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import type { AppDb } from "@/db/client";
 import { createTestDb, createTestDbWithStatementLog } from "./testDb";
-import { bodyweightEntries, users, workoutSessions } from "@/db/schema";
+import { bodyweightEntries, sessionExercises, setLogs, users, workoutSessions } from "@/db/schema";
 import { newId } from "@/domain/ids/uuidv7";
 import { createExercise } from "@/server/exercises/service";
 import { applySyncBatch } from "@/server/sync/service";
@@ -243,6 +243,69 @@ describe("getMetricsDashboard", () => {
 
     const metrics = await getMetricsDashboard(db, userId, AS_OF);
     expect(metrics.training.weeks[0]).toMatchObject({ sessionsCompleted: 1, workSets: 1 });
+  });
+
+  // §11.2's Training-card row / §11.3 site #4 — the Training card is an
+  // ACTIVITY count structurally independent of the profile/volume_counting
+  // gate added to `aggregateVolume`: `TrainingSetRow` carries only
+  // `{sessionId, isWarmup}`, so it cannot even express a profile filter.
+  // O-6's caption change is Release 2 (§21.2) — not asserted here — but the
+  // counting RULE itself ("every exercise type counts as a set") is already
+  // today's behaviour and must not regress once Volume grows its own gate.
+  // Raw inserts (not `buildSessionOps`, which is fixed to the `load_reps`
+  // sync payload shape) so the set matches its profile's exact CHECK shape.
+  it("O-6 / §11.2: a non-load_reps, volume-excluded exercise's sets still count on the Training card", async () => {
+    const pushup = await createExercise(db, userId, {
+      name: "Hand-built Push-Up",
+      equipment: "other",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "reps",
+      contributions: [{ muscleGroupId: "chest", role: "primary", weight: 1 }],
+    });
+    expect(pushup.volumeCounting).toBe("off"); // O-4(ii) — closed by default.
+
+    const startedAt = new Date(daysBefore(2));
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    await db.insert(workoutSessions).values({
+      id: sessionId,
+      userId,
+      templateName: "Ad-hoc",
+      weekIndex: 1,
+      isDeload: false,
+      status: "completed",
+      startedAt,
+      completedAt: startedAt,
+    });
+    await db.insert(sessionExercises).values({
+      id: sessionExerciseId,
+      sessionId,
+      exerciseId: pushup.id,
+      position: 0,
+      source: "adhoc",
+      measurementProfile: "reps",
+      loadBasis: null,
+    });
+    await db.insert(setLogs).values(
+      [1, 2, 3].map((setNumber) => ({
+        id: newId(),
+        sessionExerciseId,
+        setNumber,
+        isWarmup: false,
+        measurementProfile: "reps",
+        weightKg: null,
+        reps: 20,
+        loggedAt: startedAt,
+      })),
+    );
+
+    const metrics = await getMetricsDashboard(db, userId, AS_OF);
+    // Training counts all 3 sets — the profile/switch gate never reaches it.
+    expect(metrics.training.weeks[0]).toMatchObject({ sessionsCompleted: 1, workSets: 3 });
+    // Volume excludes every one of them (volumeCounting = 'off').
+    expect(metrics.volume.weeks[0]?.leaves.chest).toEqual({ effective: 0, raw: 0 });
   });
 
   it("A-11: metrics.volume.weeks deep-equals getWeeklyVolumeReport(...).weeks.slice(0,2) for the same now, with an in-progress deload session", async () => {

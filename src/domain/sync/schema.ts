@@ -13,6 +13,14 @@ import {
 import { strategyIdSchema } from "../progression/registry";
 import { dateOnlySchema, bodyweightWeightKgSchema } from "../bodyweight/schema";
 import { sleepHoursSchema, recoveryFiveScaleSchema } from "../recovery/schema";
+import { LOAD_BASES, MEASUREMENT_PROFILES } from "../measurement/profile";
+
+// athletic-measurement-profiles-architecture-evaluation.md §9.4/§12.2 —
+// `profile.ts` is zero-import/framework-agnostic (I-10) and exports no Zod
+// schemas of its own, so these are built here from its plain-TS vocabulary
+// tuples, mirroring `prescriptionSnapshot.ts`'s identical local schemas.
+const measurementProfileSchema = z.enum(MEASUREMENT_PROFILES);
+const loadBasisSchema = z.enum(LOAD_BASES);
 
 // pwa-offline-strategy.md — the single write path for execution facts.
 // Every session/session-exercise/set-log mutation, online or offline, goes
@@ -90,6 +98,14 @@ export const sessionExerciseUpsertPayloadSchema = z
     position: z.number().int().min(0).optional(),
     source: sessionExerciseSourceSchema.optional(),
     prescription: prescriptionSnapshotSchema.nullable().optional(),
+    // §10.1/§10.2/§12.2 — read on insert only, to derive and compare
+    // against the exercise row (never written on update, I-3). `loadBasis`
+    // is validated for shape but never read at all: the slot's basis is
+    // always the value the server derives from the live exercise row at
+    // insert (I-14). Both keys exist purely so `sessionExerciseFullRowOp`
+    // keeps a fixed key set (§12.3, W-1) — neither carries authority here.
+    measurementProfile: measurementProfileSchema.optional(),
+    loadBasis: loadBasisSchema.nullable().optional(),
     skipped: z.boolean().optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
   })
@@ -102,9 +118,16 @@ export const setLogUpsertPayloadSchema = z
     sessionExerciseId: uuidv7Schema,
     setNumber: z.number().int().min(1).optional(),
     isWarmup: z.boolean().optional(),
-    weightKg: z.number().min(0).max(9999.99).optional(),
-    reps: z.number().int().min(1).max(100).optional(),
+    // §6.1/§12.2 — nullable as of athletic-measurement-profiles: required
+    // only for the profiles whose shape needs them, enforced against the
+    // parent slot's frozen profile by the sync service (`dimensionsOf`),
+    // not by this schema. No `multipleOf` tightening on `weightKg` in v1
+    // (O-15, accepted).
+    weightKg: z.number().min(0).max(9999.99).nullable().optional(),
+    reps: z.number().int().min(1).max(100).nullable().optional(),
     rir: z.number().int().min(0).max(10).nullable().optional(),
+    distanceM: z.number().gt(0).max(99999.99).multipleOf(0.01).nullable().optional(),
+    durationS: z.number().gt(0).max(86400).multipleOf(0.01).nullable().optional(),
     loggedAt: z.string().datetime({ offset: true }).optional(),
     notes: z.string().trim().max(2000).nullable().optional(),
   })

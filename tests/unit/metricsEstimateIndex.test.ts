@@ -43,6 +43,8 @@ function selectionRow(overrides: Partial<SelectionRowInput> = {}): SelectionRowI
     position: 1,
     loadStepKg: 2.5,
     strengthEstimate: "auto",
+    measurementProfile: "load_reps",
+    loadBasis: "unspecified",
     ...overrides,
   };
 }
@@ -130,7 +132,13 @@ describe("projectEstimateIndex (M-4)", () => {
   });
 
   it("A-9 / I-3: currentE1rmKg, confidence and latestPoolAgeDays equal deriveStrengthReport's own values for the in-window subset, for 0/1/2/3/5 observations in window", () => {
-    const exercise = { equipment: "barbell", strengthEstimate: "auto" as const, loadStepKg: 2.5 };
+    const exercise = {
+      equipment: "barbell",
+      strengthEstimate: "auto" as const,
+      loadStepKg: 2.5,
+      measurementProfile: "load_reps" as const,
+      loadBasis: "unspecified" as const,
+    };
 
     for (const inWindowCount of [0, 1, 2, 3, 5]) {
       const allSessions: StrengthSessionInput[] = [];

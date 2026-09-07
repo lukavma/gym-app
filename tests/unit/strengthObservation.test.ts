@@ -49,20 +49,36 @@ function observe(sets: StrengthSetInput[], options: { isDeload?: boolean } = {})
   return result;
 }
 
-describe("evaluateExerciseEligibility (V-3, A-30)", () => {
+// A default `load_reps` / `unspecified` shape, so each test below overrides
+// only the field(s) its scenario is about (§11.6 / O-17's four-field input).
+function exerciseInput(
+  overrides: Partial<Parameters<typeof evaluateExerciseEligibility>[0]> = {},
+): Parameters<typeof evaluateExerciseEligibility>[0] {
+  return {
+    equipment: "barbell",
+    strengthEstimate: "auto",
+    loadStepKg: 2.5,
+    measurementProfile: "load_reps",
+    loadBasis: "unspecified",
+    ...overrides,
+  };
+}
+
+describe("evaluateExerciseEligibility (V-3, A-30, §11.6 O-17)", () => {
   it("admits the four load-bearing equipment categories under 'auto'", () => {
     for (const equipment of ["barbell", "dumbbell", "cable", "machine"]) {
-      expect(
-        evaluateExerciseEligibility({ equipment, strengthEstimate: "auto", loadStepKg: 2.5 }),
-      ).toEqual({ eligible: true });
+      expect(evaluateExerciseEligibility(exerciseInput({ equipment }))).toEqual({
+        eligible: true,
+      });
     }
   });
 
   it("refuses bodyweight and other, whatever the switch says", () => {
     for (const equipment of ["bodyweight", "other"]) {
-      expect(
-        evaluateExerciseEligibility({ equipment, strengthEstimate: "auto", loadStepKg: 2.5 }),
-      ).toEqual({ eligible: false, reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED" });
+      expect(evaluateExerciseEligibility(exerciseInput({ equipment }))).toEqual({
+        eligible: false,
+        reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED",
+      });
     }
   });
 
@@ -70,30 +86,91 @@ describe("evaluateExerciseEligibility (V-3, A-30)", () => {
     // NEGATIVE CONTROL for V-3's "the switch can only disable": if `'auto'`
     // were read as "estimate regardless", the first assertion would come back
     // eligible.
-    expect(
-      evaluateExerciseEligibility({
-        equipment: "bodyweight",
-        strengthEstimate: "auto",
-        loadStepKg: 2.5,
-      }),
-    ).toEqual({ eligible: false, reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED" });
-    expect(
-      evaluateExerciseEligibility({
-        equipment: "barbell",
-        strengthEstimate: "off",
-        loadStepKg: 2.5,
-      }),
-    ).toEqual({ eligible: false, reasonCode: "EXERCISE_ESTIMATE_DISABLED" });
+    expect(evaluateExerciseEligibility(exerciseInput({ equipment: "bodyweight" }))).toEqual({
+      eligible: false,
+      reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED",
+    });
+    expect(evaluateExerciseEligibility(exerciseInput({ strengthEstimate: "off" }))).toEqual({
+      eligible: false,
+      reasonCode: "EXERCISE_ESTIMATE_DISABLED",
+    });
   });
 
-  it("reports the category refusal first when both gates fail (§9.6 order)", () => {
+  // A-4 — the amended §11.6 (O-17) order is profile -> basis -> equipment ->
+  // switch. Each step below deliberately also fails EVERY later gate, so a
+  // regression that reordered the checks (or fell through to a later one)
+  // would report the wrong code instead of merely happening to agree.
+  describe("ordering: each code wins even when every later gate also fails", () => {
+    it("MEASUREMENT_PROFILE_UNSUPPORTED wins over a failing basis/equipment/switch", () => {
+      expect(
+        evaluateExerciseEligibility(
+          exerciseInput({
+            measurementProfile: "duration",
+            loadBasis: null,
+            equipment: "other",
+            strengthEstimate: "off",
+          }),
+        ),
+      ).toEqual({ eligible: false, reasonCode: "MEASUREMENT_PROFILE_UNSUPPORTED" });
+    });
+
+    it("LOAD_BASIS_UNSUPPORTED wins over a failing equipment/switch, once the profile passes", () => {
+      expect(
+        evaluateExerciseEligibility(
+          exerciseInput({
+            measurementProfile: "load_reps",
+            loadBasis: "assistance",
+            equipment: "other",
+            strengthEstimate: "off",
+          }),
+        ),
+      ).toEqual({ eligible: false, reasonCode: "LOAD_BASIS_UNSUPPORTED" });
+    });
+
+    it("EXERCISE_CATEGORY_UNSUPPORTED wins over a failing switch, once profile and basis pass (§9.6 order preserved)", () => {
+      expect(
+        evaluateExerciseEligibility(exerciseInput({ equipment: "other", strengthEstimate: "off" })),
+      ).toEqual({ eligible: false, reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED" });
+    });
+
+    it("EXERCISE_ESTIMATE_DISABLED is reached last, once every earlier gate passes", () => {
+      expect(evaluateExerciseEligibility(exerciseInput({ strengthEstimate: "off" }))).toEqual({
+        eligible: false,
+        reasonCode: "EXERCISE_ESTIMATE_DISABLED",
+      });
+    });
+  });
+
+  // A-15's structural half: the Release-2 reconcile doesn't exist yet, so
+  // this is proven against hand-built fixtures rather than the seeded
+  // Assisted Pull-Up itself.
+  describe("A-15 structural proof (assisted pull-up shape, pre-reconcile fixture)", () => {
+    it("an assistance-basis exercise now refuses with LOAD_BASIS_UNSUPPORTED", () => {
+      expect(
+        evaluateExerciseEligibility(
+          exerciseInput({ equipment: "machine", loadBasis: "assistance" }),
+        ),
+      ).toEqual({ eligible: false, reasonCode: "LOAD_BASIS_UNSUPPORTED" });
+    });
+
+    it("an unspecified-basis exercise with bad equipment is unchanged: EXERCISE_CATEGORY_UNSUPPORTED", () => {
+      expect(
+        evaluateExerciseEligibility(
+          exerciseInput({ equipment: "other", loadBasis: "unspecified" }),
+        ),
+      ).toEqual({ eligible: false, reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED" });
+    });
+  });
+
+  // NC-11's eligibility half — every LATER gate passes (eligible equipment,
+  // switch left at its default), so a refusal here can only come from the
+  // profile check itself, not from a coincidentally-also-failing later gate.
+  it("NC-11: strength_estimate='auto' on a load_distance exercise still refuses, on MEASUREMENT_PROFILE_UNSUPPORTED", () => {
     expect(
-      evaluateExerciseEligibility({
-        equipment: "other",
-        strengthEstimate: "off",
-        loadStepKg: 2.5,
-      }),
-    ).toEqual({ eligible: false, reasonCode: "EXERCISE_CATEGORY_UNSUPPORTED" });
+      evaluateExerciseEligibility(
+        exerciseInput({ measurementProfile: "load_distance", loadBasis: "total" }),
+      ),
+    ).toEqual({ eligible: false, reasonCode: "MEASUREMENT_PROFILE_UNSUPPORTED" });
   });
 });
 
