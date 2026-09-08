@@ -58,6 +58,8 @@ function makeSet(setNumber: number, weightKg: number): ActiveSessionSetDto {
     weightKg,
     reps: 8,
     rir: 2,
+    distanceM: null,
+    durationS: null,
     loggedAt: new Date(Date.UTC(2026, 7, 26, 10, setNumber)).toISOString(),
     notes: null,
   };
@@ -91,6 +93,7 @@ function makeSession(sets: ActiveSessionSetDto[]): {
         notes: null,
         loadStepKg: 2.5,
         recommendation: null,
+        measurement: { profile: "load_reps", loadBasis: "unspecified" },
         sets,
       },
     ],

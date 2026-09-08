@@ -1290,6 +1290,8 @@ describe("set deletion renumbering (PGlite integration)", () => {
       weightKg: 100 + setNumber,
       reps: 8,
       rir: 2,
+      distanceM: null,
+      durationS: null,
       loggedAt: startedAt,
       notes: null,
     }));

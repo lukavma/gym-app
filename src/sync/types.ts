@@ -13,6 +13,7 @@ import type {
   RecommendationAction,
   RecommendationTarget,
 } from "@/domain/progression/engine";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 
 // Mirrors src/server/today/service.ts's response shapes by contract — the
 // `sync` element cannot import `server` (eslint.config.mjs boundaries: only
@@ -21,9 +22,17 @@ import type {
 
 export interface HistorySetSummaryDto {
   setNumber: number;
-  weightKg: number;
-  reps: number;
+  // Release 2 (athletic-measurement-profiles-architecture-evaluation.md
+  // §21.2) — widened to number|null and to carry distanceM/durationS,
+  // mirroring src/server/today/service.ts's HistorySetDto (§11.3 site #5's
+  // "a null is never coerced" rule, generalised to this embedded-history
+  // shape too). Every existing `load_reps` value stays a plain number; only
+  // the new profiles ever produce a null here.
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
   isWarmup: boolean;
 }
 
@@ -99,15 +108,35 @@ export interface TodayBundleExerciseEntryDto {
   // a DTO change.
   previousPerformance: HistorySessionSummaryDto[];
   history: HistorySessionSummaryDto[];
+  // athletic-measurement-profiles-architecture-evaluation.md §12.1 — read
+  // from the exercise row. Optional here for the same H-10 reason the
+  // server's own mirror (src/server/today/service.ts's
+  // TodayBundleExerciseEntry) types it optional: a bundle cached (SW or
+  // IndexedDB `bundleCache`) before this feature shipped has no such key at
+  // all, and must keep parsing identically. The server always populates it
+  // on a live response; `startSession` (activeSession.ts) is what defaults
+  // an absent value when freezing it into `ActiveSessionExerciseDto.measurement`.
+  measurement?: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
 }
 
 export interface ActiveSessionSetDto {
   id: string;
   setNumber: number;
   isWarmup: boolean;
-  weightKg: number;
-  reps: number;
+  // Release 2 (athletic-measurement-profiles-architecture-evaluation.md
+  // §21.2) — widened to number|null and to carry distanceM/durationS, the
+  // client mirror of the server's ActiveSessionSetDto (src/server/today/
+  // service.ts, itself mirroring HistorySetDto's §11.3 site #5 rule: a null
+  // is never coerced to 0). A pre-upgrade cached aggregate has plain
+  // numbers here and no distanceM/durationS keys at all;
+  // normalizeActiveSession in src/sync/activeSession.ts (the bundleCache
+  // "sanitise on read" precedent) fills the new keys with null on every
+  // read, never touching the existing values.
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
   loggedAt: string;
   notes: string | null;
 }
@@ -129,6 +158,16 @@ export interface ActiveSessionExerciseDto {
   // bundle's pendingRecommendation at session start, updated locally when a
   // decision is made (progression-engine.md §7). Null when none exists.
   recommendation: RecommendationDto | null;
+  // Release 2 (athletic-measurement-profiles-architecture-evaluation.md
+  // §21.2, §12.1) — the slot's measurement profile/load basis, FROZEN once
+  // at `startSession` from the bundle entry's own `measurement` (never
+  // re-derived live from the current exercise row afterward, same
+  // snapshot-on-use discipline as `prescription` — ADR-007). A pre-upgrade
+  // cached aggregate has no such key; normalizeActiveSession defaults it to
+  // `{ profile: "load_reps", loadBasis: "unspecified" }`
+  // (DEFAULT_MEASUREMENT_PROFILE / DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE),
+  // exactly what every pre-Release-2 row already was.
+  measurement: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
   sets: ActiveSessionSetDto[];
 }
 

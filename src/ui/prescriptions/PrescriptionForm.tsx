@@ -3,27 +3,30 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/ui/Button";
-import type { SchemeType } from "@/domain/schemes/setScheme";
+import type { SchemeType, SetScheme } from "@/domain/schemes/setScheme";
 import { DEFAULT_HYPERTROPHY_TARGET_RIR } from "@/domain/schemes/rirBand";
-import {
-  STRATEGY_DISPLAY_NAMES,
-  STRATEGY_IDS,
-  type StrategyId,
-} from "@/domain/progression/registry";
+import { STRATEGY_DISPLAY_NAMES, type StrategyId } from "@/domain/progression/registry";
 import { MAX_BASELINE_LOAD_KG } from "@/domain/prescriptions/schema";
+import { dimensionsOf } from "@/domain/measurement/profile";
 import { decimalPlaceCount, parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import type { ExerciseDto } from "@/ui/exercises/types";
+import { schemeTypesForProfile, strategyIdsForProfile } from "./formOptions";
 import type { PrescriptionDto } from "./types";
 
 type Status = "loading" | "ready" | "submitting" | "not_found";
 
-// Hard Release-1 boundary — the schema/engine accept distanceRounds/
-// durationRounds (§9.1) but the prescription editor must not offer them:
-// every exercise's profile selector is present-but-disabled, fixed to
-// "Load + Reps", so `fixed`/`repRange` are the only schemes any exercise in
-// this release can actually use. Local, not derived from `SCHEME_TYPES`, so
-// a future scheme addition there doesn't silently widen this dropdown too.
-const EDITABLE_SCHEME_TYPES = ["fixed", "repRange"] as const satisfies readonly SchemeType[];
+// setScheme.ts's `distanceRoundsSchemeSchema` / `durationRoundsSchemeSchema`
+// ceilings — column ceilings (`numeric(*, 2)`), not meaningful training
+// values, same convention as `MAX_BASELINE_LOAD_KG` above.
+const MAX_SCHEME_DISTANCE_M = 99999.99;
+const MAX_SCHEME_DURATION_S = 86400;
+
+const SCHEME_TYPE_LABELS: Record<SchemeType, string> = {
+  fixed: "Fixed sets × reps",
+  repRange: "Rep range",
+  distanceRounds: "Distance rounds",
+  durationRounds: "Duration rounds",
+};
 
 interface PrescriptionFormProps {
   mode: "create" | "edit";
@@ -51,6 +54,13 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
   const [reps, setReps] = useState("10");
   const [minReps, setMinReps] = useState("8");
   const [maxReps, setMaxReps] = useState("12");
+  // Athletic Measurement Profiles Release 2 (A-11b, §15.2) — the
+  // `distanceRounds` / `durationRounds` per-round targets, unlocked
+  // alongside `fixed`/`repRange` above. Text + `inputMode="decimal"` through
+  // `sanitizeDecimalDraft`/`parseDecimalInput`, same guard convention as
+  // `baselineLoadKg` below (§15.2).
+  const [schemeDistanceM, setSchemeDistanceM] = useState("");
+  const [schemeDurationS, setSchemeDurationS] = useState("");
   const [rirEnabled, setRirEnabled] = useState(false);
   const [rirMin, setRirMin] = useState(String(DEFAULT_HYPERTROPHY_TARGET_RIR.min));
   const [rirMax, setRirMax] = useState(String(DEFAULT_HYPERTROPHY_TARGET_RIR.max));
@@ -84,11 +94,9 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
         setResolvedTemplateId(p.templateId);
         setExerciseId(p.exerciseId);
         setSchemeType(p.scheme.scheme.type);
-        // The editor only ever writes fixed/repRange (see
-        // EDITABLE_SCHEME_TYPES above); distanceRounds/durationRounds can't
-        // reach here in Release 1 (no exercise can carry a non-load_reps
-        // profile), so they're left at their form defaults rather than
-        // given fields this editor doesn't expose.
+        // Release 2 (A-11b): the editor now writes all four scheme types,
+        // gated per exercise profile by `schemeTypesForProfile` below —
+        // populate whichever this prescription actually holds.
         if (p.scheme.scheme.type === "fixed") {
           setSets(String(p.scheme.scheme.sets));
           setReps(String(p.scheme.scheme.reps));
@@ -96,6 +104,12 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
           setSets(String(p.scheme.scheme.sets));
           setMinReps(String(p.scheme.scheme.minReps));
           setMaxReps(String(p.scheme.scheme.maxReps));
+        } else if (p.scheme.scheme.type === "distanceRounds") {
+          setSets(String(p.scheme.scheme.sets));
+          setSchemeDistanceM(String(p.scheme.scheme.distanceM));
+        } else if (p.scheme.scheme.type === "durationRounds") {
+          setSets(String(p.scheme.scheme.sets));
+          setSchemeDurationS(String(p.scheme.scheme.durationS));
         }
         if (p.targetRir) {
           setRirEnabled(true);
@@ -119,29 +133,100 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
     };
   }, [mode, prescriptionId]);
 
-  const needsRepCap = strategyId === "rep-progression" && schemeType === "fixed";
+  // A-11b — every offered option, in both selects, is derived from the
+  // target exercise's profile through the same tables the server-side gate
+  // checks (`schemeTypesForProfile`/`strategyIdsForProfile`, reusing
+  // `profileSupportsScheme`/`strategySupportsProfile`). A profile with no
+  // exercise selected yet, or whose exercise hasn't loaded into `exercises`
+  // yet, defaults to `load_reps` — the widest, most permissive set, so nothing
+  // is ever hidden that a real selection wouldn't need. Derived rather than
+  // stored so a mid-edit exercise switch can never leave `schemeType`/
+  // `strategyId` pointing at a now-incompatible option: `effectiveSchemeType`/
+  // `effectiveStrategyId` (not the raw state) drive the select's value, the
+  // scheme fields shown, and what `handleSubmit` sends.
+  const selectedExercise = exercises.find((ex) => ex.id === exerciseId);
+  const profile = selectedExercise?.measurementProfile ?? "load_reps";
+  const availableSchemeTypes = schemeTypesForProfile(profile);
+  const availableStrategyIds = strategyIdsForProfile(profile);
+  // The `as` casts document a guarantee `schemeTypesForProfile`/
+  // `strategyIdsForProfile` already hold (every profile supports at least
+  // one scheme type, §9.2, and `manual` supports every profile) — the same
+  // "guaranteed non-empty" convention `domain/measurement/format.ts` uses
+  // for its own array access under `noUncheckedIndexedAccess`.
+  const effectiveSchemeType: SchemeType = availableSchemeTypes.includes(schemeType)
+    ? schemeType
+    : (availableSchemeTypes[0] as SchemeType);
+  const effectiveStrategyId: StrategyId = availableStrategyIds.includes(strategyId)
+    ? strategyId
+    : (availableStrategyIds[0] as StrategyId);
+
+  // §9.3 — the RIR-band checkbox and baseline load are hidden where the
+  // profile has no such field, reusing `dimensionsOf` (the same table
+  // `checkPrescriptionCompatibility`'s server-side gate reads) rather than a
+  // second UI-side rule.
+  const dims = dimensionsOf(profile);
+  const rirSupported = dims.rir !== "forbidden";
+  const baselineLoadSupported = dims.weight !== "forbidden";
+
+  const needsRepCap = effectiveStrategyId === "rep-progression" && effectiveSchemeType === "fixed";
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
 
-    const scheme =
-      schemeType === "fixed"
-        ? { type: "fixed" as const, sets: Number(sets), reps: Number(reps) }
-        : {
-            type: "repRange" as const,
-            sets: Number(sets),
-            minReps: Number(minReps),
-            maxReps: Number(maxReps),
-          };
+    let scheme: SetScheme;
+    if (effectiveSchemeType === "fixed") {
+      scheme = { type: "fixed", sets: Number(sets), reps: Number(reps) };
+    } else if (effectiveSchemeType === "repRange") {
+      scheme = {
+        type: "repRange",
+        sets: Number(sets),
+        minReps: Number(minReps),
+        maxReps: Number(maxReps),
+      };
+    } else if (effectiveSchemeType === "distanceRounds") {
+      const parsed = parseDecimalInput(schemeDistanceM);
+      if (
+        parsed === null ||
+        parsed <= 0 ||
+        parsed > MAX_SCHEME_DISTANCE_M ||
+        decimalPlaceCount(schemeDistanceM) > 2
+      ) {
+        setError(
+          `Enter a valid distance greater than 0, up to ${MAX_SCHEME_DISTANCE_M} m, with at most 2 decimal places.`,
+        );
+        return;
+      }
+      scheme = { type: "distanceRounds", sets: Number(sets), distanceM: parsed };
+    } else {
+      const parsed = parseDecimalInput(schemeDurationS);
+      if (
+        parsed === null ||
+        parsed <= 0 ||
+        parsed > MAX_SCHEME_DURATION_S ||
+        decimalPlaceCount(schemeDurationS) > 2
+      ) {
+        setError(
+          `Enter a valid duration greater than 0, up to ${MAX_SCHEME_DURATION_S} s, with at most 2 decimal places.`,
+        );
+        return;
+      }
+      scheme = { type: "durationRounds", sets: Number(sets), durationS: parsed };
+    }
 
     const config: Record<string, unknown> = {};
     if (needsRepCap && repCap.trim() !== "") config.repCap = Number(repCap);
 
     // L-4 remediation — a comma-typed baseline must never silently clear an
     // existing one on edit; empty still means "no baseline" (unchanged).
+    // §9.3 (item 2, Release 2) — when the profile has no weight field the
+    // control is hidden entirely (`baselineLoadSupported` below), so the
+    // text state is never read; same "unspecified" vs "explicitly cleared"
+    // shape as before.
     let baselineLoadKgValue: number | null | undefined;
-    if (baselineLoadKg.trim() === "") {
+    if (!baselineLoadSupported) {
+      baselineLoadKgValue = mode === "create" ? undefined : null;
+    } else if (baselineLoadKg.trim() === "") {
       baselineLoadKgValue = mode === "create" ? undefined : null;
     } else {
       const parsed = parseDecimalInput(baselineLoadKg);
@@ -167,14 +252,15 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
     const payload = {
       exerciseId,
       scheme: { v: 1 as const, scheme },
-      targetRir: rirEnabled
-        ? { min: Number(rirMin), max: Number(rirMax) }
-        : mode === "create"
-          ? undefined
-          : null,
+      targetRir:
+        rirSupported && rirEnabled
+          ? { min: Number(rirMin), max: Number(rirMax) }
+          : mode === "create"
+            ? undefined
+            : null,
       baselineLoadKg: baselineLoadKgValue,
       restSeconds: emptyOr(mode, restSeconds, Number),
-      progression: { strategyId, config },
+      progression: { strategyId: effectiveStrategyId, config },
       notes: emptyOr(mode, notes, (v) => v),
     };
 
@@ -268,16 +354,26 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
         </select>
       </label>
 
+      {/*
+        A-11b (Release 2) — options are the exercise's own compatible set
+        (`availableSchemeTypes`, derived above from `schemeTypesForProfile`),
+        never a fixed two-entry list. For `load_reps`/`reps` this renders
+        exactly as before (`Fixed sets × reps` / `Rep range`); a
+        `load_distance`/`distance_time` exercise offers only `distanceRounds`
+        ("Distance rounds"), a `duration`/`load_duration` exercise only
+        `durationRounds` ("Duration rounds") — never both, and never
+        `fixed`/`repRange`, matching §9.2.
+      */}
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Scheme
         <select
-          value={schemeType}
+          value={effectiveSchemeType}
           onChange={(e) => setSchemeType(e.target.value as SchemeType)}
           className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
         >
-          {EDITABLE_SCHEME_TYPES.map((t) => (
+          {availableSchemeTypes.map((t) => (
             <option key={t} value={t}>
-              {t === "fixed" ? "Fixed sets × reps" : "Rep range"}
+              {SCHEME_TYPE_LABELS[t]}
             </option>
           ))}
         </select>
@@ -297,7 +393,7 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
           />
         </label>
-        {schemeType === "fixed" ? (
+        {effectiveSchemeType === "fixed" && (
           <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
             Reps
             <input
@@ -311,7 +407,8 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
               className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
             />
           </label>
-        ) : (
+        )}
+        {effectiveSchemeType === "repRange" && (
           <>
             <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
               Min reps
@@ -341,55 +438,93 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
             </label>
           </>
         )}
+        {effectiveSchemeType === "distanceRounds" && (
+          <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
+            Distance per round (m)
+            <input
+              type="text"
+              inputMode="decimal"
+              required
+              value={schemeDistanceM}
+              onChange={(e) => setSchemeDistanceM(sanitizeDecimalDraft(e.target.value))}
+              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+            />
+          </label>
+        )}
+        {effectiveSchemeType === "durationRounds" && (
+          <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
+            Duration per round (s)
+            <input
+              type="text"
+              inputMode="decimal"
+              required
+              value={schemeDurationS}
+              onChange={(e) => setSchemeDurationS(sanitizeDecimalDraft(e.target.value))}
+              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+            />
+          </label>
+        )}
       </div>
 
-      <label className="flex items-center gap-2 text-sm text-slate-400">
-        <input
-          type="checkbox"
-          checked={rirEnabled}
-          onChange={(e) => setRirEnabled(e.target.checked)}
-        />
-        Set target RIR band
-      </label>
-      {rirEnabled && (
-        <div className="flex gap-2">
-          <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
-            Min RIR
+      {/* §9.3 (item 2, Release 2) — hidden where `dimensionsOf(profile).rir`
+          is `"forbidden"` (every profile but `load_reps`/`reps`), reusing
+          the same table the server-side gate reads. */}
+      {rirSupported && (
+        <>
+          <label className="flex items-center gap-2 text-sm text-slate-400">
             <input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={10}
-              value={rirMin}
-              onChange={(e) => setRirMin(e.target.value)}
-              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+              type="checkbox"
+              checked={rirEnabled}
+              onChange={(e) => setRirEnabled(e.target.checked)}
             />
+            Set target RIR band
           </label>
-          <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
-            Max RIR
-            <input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={10}
-              value={rirMax}
-              onChange={(e) => setRirMax(e.target.value)}
-              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
-            />
-          </label>
-        </div>
+          {rirEnabled && (
+            <div className="flex gap-2">
+              <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
+                Min RIR
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={10}
+                  value={rirMin}
+                  onChange={(e) => setRirMin(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+                />
+              </label>
+              <label className="flex flex-1 flex-col gap-1 text-sm text-slate-300">
+                Max RIR
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={10}
+                  value={rirMax}
+                  onChange={(e) => setRirMax(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+                />
+              </label>
+            </div>
+          )}
+        </>
       )}
 
-      <label className="flex flex-col gap-1 text-sm text-slate-300">
-        Baseline load (kg, optional)
-        <input
-          type="text"
-          inputMode="decimal"
-          value={baselineLoadKg}
-          onChange={(e) => setBaselineLoadKg(sanitizeDecimalDraft(e.target.value))}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
-        />
-      </label>
+      {/* §9.3 (item 2, Release 2) — hidden where `dimensionsOf(profile).weight`
+          is `"forbidden"` (`reps`/`distance_time`/`duration`); shown for
+          `load_reps` (unchanged) and now also `load_distance`/`load_duration`. */}
+      {baselineLoadSupported && (
+        <label className="flex flex-col gap-1 text-sm text-slate-300">
+          Baseline load (kg, optional)
+          <input
+            type="text"
+            inputMode="decimal"
+            value={baselineLoadKg}
+            onChange={(e) => setBaselineLoadKg(sanitizeDecimalDraft(e.target.value))}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+          />
+        </label>
+      )}
 
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Rest (seconds, optional)
@@ -403,14 +538,22 @@ export function PrescriptionForm({ mode, templateId, prescriptionId }: Prescript
         />
       </label>
 
+      {/*
+        A-11b (Release 2) — options are the exercise's compatible strategy
+        set (`availableStrategyIds`, derived above from
+        `strategyIdsForProfile`). For a `reps` exercise this reduces to
+        `["manual"]` (O-11): `load-progression`/`rep-progression` are never
+        offered, as a consequence of the same rule the server checks, not a
+        `reps`-specific branch here.
+      */}
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Progression strategy
         <select
-          value={strategyId}
+          value={effectiveStrategyId}
           onChange={(e) => setStrategyId(e.target.value as StrategyId)}
           className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
         >
-          {STRATEGY_IDS.map((id) => (
+          {availableStrategyIds.map((id) => (
             <option key={id} value={id}>
               {STRATEGY_DISPLAY_NAMES[id]}
             </option>

@@ -1,6 +1,11 @@
 import { newId } from "@/domain/ids/uuidv7";
 import { buildSetLogDeletePayload, buildSetLogUpsertPayload } from "./payloadBuilders";
 import { planSetDeletion, type NumberedSet } from "./setNumbering";
+import {
+  DEFAULT_MEASUREMENT_PROFILE,
+  measuredFieldsForProfile,
+  type MeasurementProfile,
+} from "@/domain/measurement/profile";
 
 // Finding D — the one place that turns "delete this set" into the sequence of
 // outbox ops that keeps PostgreSQL contiguous. Shared by the in-session path
@@ -16,9 +21,18 @@ import { planSetDeletion, type NumberedSet } from "./setNumbering";
 // history screen's HistorySetDetail both satisfy this structurally.
 export interface SetLogRowFields extends NumberedSet {
   isWarmup: boolean;
-  weightKg: number;
-  reps: number;
+  // Release 2 (athletic-measurement-profiles-architecture-evaluation.md
+  // §21.2) — widened to number|null alongside ActiveSessionSetDto and
+  // HistorySetDetail (both of which structurally satisfy this interface),
+  // matching the server's own "a null is never coerced" rule (I-13/H-12).
+  // Which of these five keys actually reaches the wire is decided by the
+  // caller's `profile` argument below (O-13, §12.3) — this interface only
+  // states the full shape a caller may hold locally.
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
   loggedAt: string;
   notes: string | null;
 }
@@ -51,11 +65,20 @@ export function buildSetDeletionOps<T extends SetLogRowFields>({
   sessionExerciseId,
   setId,
   sets,
+  // Defaults to `load_reps` so every pre-existing caller/test that predates
+  // this parameter (only `load_reps` slots ever existed then) keeps
+  // building the identical nine-key row without having to name the profile
+  // explicitly. Every real production caller (activeSession.ts's
+  // `deleteSet`, corrections.ts's `deleteHistorySet`) passes the parent
+  // slot's actual frozen `measurement.profile` — never relies on this
+  // default.
+  profile = DEFAULT_MEASUREMENT_PROFILE,
   newOpId = newId,
 }: {
   sessionExerciseId: string;
   setId: string;
   sets: readonly T[];
+  profile?: MeasurementProfile;
   newOpId?: () => string;
 }): SetDeletionOps<T> {
   const plan = planSetDeletion(sets, setId);
@@ -79,11 +102,13 @@ export function buildSetDeletionOps<T extends SetLogRowFields>({
         sessionExerciseId,
         setNumber: set.setNumber,
         isWarmup: set.isWarmup,
-        weightKg: set.weightKg,
-        reps: set.reps,
-        rir: set.rir,
         loggedAt: set.loggedAt,
         notes: set.notes,
+        // O-13 (§12.3) — profile-scoped: only the frozen profile's
+        // permitted keys are emitted, `null` for an absent optional one,
+        // forbidden keys omitted entirely. For `load_reps` this is exactly
+        // {weightKg, reps, rir}, byte for byte.
+        ...measuredFieldsForProfile(profile, set),
       }),
     });
   }

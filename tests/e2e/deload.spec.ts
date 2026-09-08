@@ -83,9 +83,9 @@ test.describe("deload week overrides (F4)", () => {
     page,
   }) => {
     async function logOneSet(kg: string, reps: string, rir: string): Promise<void> {
-      await page.getByLabel("kg").fill(kg);
-      await page.getByLabel("reps").fill(reps);
-      await page.getByLabel("RIR").fill(rir);
+      await page.getByLabel("Weight in kilograms").fill(kg);
+      await page.getByLabel("Repetitions").fill(reps);
+      await page.getByLabel("Reps in reserve").fill(rir);
       await page.getByRole("button", { name: "Log", exact: true }).click();
     }
 
@@ -196,7 +196,9 @@ test.describe("deload week overrides (F4)", () => {
         // deload target, not the raw (pre-deload) recommended target.
         await expect(page.getByRole("button", { name: /^Accept/ })).not.toBeVisible();
         await expect(page.getByText(`Increase load: ${expectedTarget} kg`)).not.toBeVisible();
-        await expect(page.getByLabel("kg")).toHaveValue(String(expectedDeloadTarget));
+        await expect(page.getByLabel("Weight in kilograms")).toHaveValue(
+          String(expectedDeloadTarget),
+        );
 
         // Logging the deload's first work set must not implicitly decide the
         // pending recommendation.

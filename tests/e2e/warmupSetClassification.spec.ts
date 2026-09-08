@@ -19,8 +19,8 @@ function exerciseCard(page: Page, index: number): Locator {
 }
 
 async function logSet(card: Locator, kg: string, reps: string): Promise<void> {
-  await card.getByLabel("kg").fill(kg);
-  await card.getByLabel("reps").fill(reps);
+  await card.getByLabel("Weight in kilograms").fill(kg);
+  await card.getByLabel("Repetitions").fill(reps);
   await card.getByRole("button", { name: "Log", exact: true }).click();
 }
 
@@ -236,7 +236,7 @@ test.describe("warm-up set toggle on a phone-sized viewport", () => {
 
     const card = exerciseCard(page, 0);
     await expect(card.getByLabel("Warm-up set")).toBeVisible();
-    await expect(card.getByLabel("kg")).toBeVisible();
+    await expect(card.getByLabel("Weight in kilograms")).toBeVisible();
     await expect(card.getByRole("button", { name: "Log", exact: true })).toBeVisible();
 
     await expect

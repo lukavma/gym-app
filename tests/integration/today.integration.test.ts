@@ -14,7 +14,8 @@ import {
 } from "@/server/blocks/service";
 import type { DeloadConfig } from "@/domain/blocks/schema";
 import { createPrescription } from "@/server/prescriptions/service";
-import { buildTodayBundle } from "@/server/today/service";
+import { buildTodayBundle, getActiveSession } from "@/server/today/service";
+import { applySyncBatch } from "@/server/sync/service";
 import { newId } from "@/domain/ids/uuidv7";
 
 // MEDIUM-5 — the implementation report claimed test coverage for
@@ -212,6 +213,82 @@ describe("buildTodayBundle (PGlite integration)", () => {
     expect(exerciseDto.notes).toBe("left knee twinge");
     expect(exerciseDto.sets).toHaveLength(1);
     expect(exerciseDto.sets[0]).toMatchObject({ id: setId, weightKg: 105, reps: 3, rir: 1 });
+  });
+
+  // H-1 remediation (athletic-measurement-profiles-release-2-review.md
+  // §5.1) — getActiveSession's own ActiveSessionExerciseDto must carry the
+  // slot's FROZEN measurement, read from `session_exercises`' own typed
+  // `measurement_profile`/`load_basis` columns (already selected by the
+  // existing query) — a DIFFERENT gap from buildTodayBundle's
+  // `TodayBundleExerciseEntry.measurement`, covered separately below.
+  // Without this fix, a cross-device adopt / post-eviction resume of a
+  // non-`load_reps` session had no `measurement` to adopt at all, so the
+  // client's own normalization silently defaulted it to
+  // `load_reps`/`unspecified` — exactly the defect this proves fixed.
+  // Driven through the real sync write path (`applySyncBatch`), the same
+  // convention measurementSync.integration.test.ts's own `createAdhocSlot`/
+  // "a duration create without weightKg/reps applies" case uses.
+  it("H-1 — getActiveSession's own exercise DTO carries the slot's frozen non-load_reps measurement", async () => {
+    const user = await insertTestUser(db);
+    const exercise = await createExercise(db, user.id, {
+      name: "Plank",
+      equipment: "bodyweight",
+      mechanics: "isolation",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "duration",
+      contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+    });
+
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    const startedAt = new Date("2026-01-15T10:00:00.000Z").toISOString();
+    const applied = await applySyncBatch(db, user.id, [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: { id: sessionId, startedAt },
+      },
+      {
+        opId: newId(),
+        entity: "sessionExercise",
+        operation: "upsert",
+        // measurementProfile/loadBasis deliberately omitted — derived
+        // silently from the exercise's own "duration" profile (NC-14(c)),
+        // exactly like a real ad-hoc add.
+        payload: {
+          id: sessionExerciseId,
+          sessionId,
+          exerciseId: exercise.id,
+          position: 0,
+          source: "adhoc",
+        },
+      },
+      {
+        opId: newId(),
+        entity: "setLog",
+        operation: "upsert",
+        payload: {
+          id: newId(),
+          sessionExerciseId,
+          setNumber: 1,
+          isWarmup: false,
+          durationS: 45,
+          loggedAt: startedAt,
+        },
+      },
+    ]);
+    expect(applied.rejected).toEqual([]);
+
+    const active = await getActiveSession(db, user.id);
+    if (!active) throw new Error("expected activeSession");
+    const exerciseDto = active.exercises[0]!;
+    // The fix under test: previously this key was entirely absent from the
+    // server DTO, and the client's own normalization silently defaulted it
+    // to load_reps/unspecified — masking exactly this case.
+    expect(exerciseDto.measurement).toEqual({ profile: "duration", loadBasis: null });
+    expect(exerciseDto.sets[0]).toMatchObject({ durationS: 45 });
   });
 
   it("resolves no_schedule with a null activeSession when the user has no active program", async () => {

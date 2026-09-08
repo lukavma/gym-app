@@ -303,6 +303,8 @@ describe("strength report over real SQL (PGlite integration)", () => {
           weightKg: row.weightKg,
           reps: row.reps,
           rir: row.rir,
+          distanceM: row.distanceM,
+          durationS: row.durationS,
           loggedAt: row.loggedAt.toISOString(),
           notes: row.notes,
         };

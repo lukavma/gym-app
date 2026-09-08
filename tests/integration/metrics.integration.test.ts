@@ -4,12 +4,12 @@ import type { AppDb } from "@/db/client";
 import { createTestDb, createTestDbWithStatementLog } from "./testDb";
 import { bodyweightEntries, sessionExercises, setLogs, users, workoutSessions } from "@/db/schema";
 import { newId } from "@/domain/ids/uuidv7";
-import { createExercise } from "@/server/exercises/service";
+import { createExercise, updateExercise } from "@/server/exercises/service";
 import { applySyncBatch } from "@/server/sync/service";
 import { getWeeklyVolumeReport } from "@/server/volume/service";
 import { getExerciseStrengthReport } from "@/server/strength/service";
 import { getMetricsDashboard } from "@/server/metrics/service";
-import { replaceSelection } from "@/server/metrics/selectionService";
+import { InvalidSelectionExerciseError, replaceSelection } from "@/server/metrics/selectionService";
 import { seedMuscleGroups, seedVolumePresets } from "@/db/seed";
 import type { MetricsDashboardDto } from "@/domain/metrics/types";
 import type { SyncOpEnvelope } from "@/domain/sync/schema";
@@ -835,5 +835,128 @@ describe("getMetricsDashboard — statement counts (A-12) and no-write guarantee
     expect(step9).toMatch(
       /order by "session_exercises"\."exercise_id" asc, "workout_sessions"\."started_at" asc, "session_exercises"\."position" asc, "set_logs"\."set_number" asc/i,
     );
+  });
+});
+
+// O-6 / A-16 (athletic-measurement-profiles-architecture-evaluation.md
+// §21.2, §11.6) — Release 2's Training caption gains "Every exercise type
+// counts as a set" because the Training card already counts every
+// non-warm-up attempt regardless of measurement profile (no profile filter,
+// unchanged since Release 1); Strength selection, by contrast, structurally
+// refuses anything but `load_reps`/non-`assistance`. Both halves proven
+// against the same real query paths this dashboard already exercises above.
+describe("O-6 / A-16 — measurement profiles reach Metrics (Release 2)", () => {
+  it("Training counts a non-load_reps attempt as a work set while Strength selection refuses the same exercise", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const userId = (await insertTestUser(db)).id;
+
+    const plank = await createExercise(db, userId, {
+      name: "Plank",
+      equipment: "bodyweight",
+      mechanics: "isolation",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      measurementProfile: "duration",
+      contributions: [{ muscleGroupId: "abs", role: "primary", weight: 1 }],
+    });
+
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    const setId = newId();
+    const startedAt = daysBefore(2);
+    const completedAt = new Date(Date.parse(startedAt) + 3_600_000).toISOString();
+    const ops: SyncOpEnvelope[] = [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: {
+          id: sessionId,
+          blockId: null,
+          templateId: null,
+          templateName: null,
+          weekIndex: null,
+          isDeload: false,
+          startedAt,
+        },
+      },
+      {
+        opId: newId(),
+        entity: "sessionExercise",
+        operation: "upsert",
+        payload: {
+          id: sessionExerciseId,
+          sessionId,
+          exerciseId: plank.id,
+          position: 0,
+          source: "adhoc",
+          prescription: null,
+        },
+      },
+      {
+        opId: newId(),
+        entity: "setLog",
+        operation: "upsert",
+        payload: {
+          id: setId,
+          sessionExerciseId,
+          setNumber: 1,
+          isWarmup: false,
+          durationS: 45,
+          loggedAt: startedAt,
+        },
+      },
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: { id: sessionId, status: "completed", completedAt },
+      },
+    ];
+    const result = await applySyncBatch(db, userId, ops);
+    expect(result.rejected).toEqual([]);
+
+    // Training counts it — no profile filter in the query or the domain.
+    const metrics = await getMetricsDashboard(db, userId, AS_OF);
+    expect(metrics.training.weeks[0]).toMatchObject({ sessionsCompleted: 1, workSets: 1 });
+
+    // Strength selection structurally refuses it — MEASUREMENT_PROFILE_UNSUPPORTED,
+    // ahead of the equipment check (O-17's amended ordering), surfaces here as
+    // a rejected add, never a silent skip.
+    await expect(replaceSelection(db, userId, [plank.id])).rejects.toBeInstanceOf(
+      InvalidSelectionExerciseError,
+    );
+  });
+
+  it("a retained (already-selected) row shows not_available, not turned_off, once its basis becomes structurally ineligible", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const userId = (await insertTestUser(db)).id;
+
+    const exercise = await createExercise(db, userId, {
+      name: "Assisted Pull-Up (custom)",
+      equipment: "machine",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 5,
+      contributions: [{ muscleGroupId: "lats", role: "primary", weight: 1 }],
+    });
+    // Eligible while `loadBasis` is still 'unspecified' — selectable.
+    await replaceSelection(db, userId, [exercise.id]);
+
+    // The reconcile's own move (§14.3): a gate, not a lock — permitted even
+    // on an already-selected row, and even with history.
+    await updateExercise(db, userId, exercise.id, { loadBasis: "assistance" });
+
+    // §11.5's exemption keeps the already-selected row in place; its
+    // rendered state must be "not_available" (LOAD_BASIS_UNSUPPORTED is not
+    // EXERCISE_ESTIMATE_DISABLED), never the switched-off copy.
+    const metrics = await getMetricsDashboard(db, userId, AS_OF);
+    expect(metrics.strength.selection).toHaveLength(1);
+    expect(metrics.strength.selection[0]).toMatchObject({
+      exerciseId: exercise.id,
+      state: "not_available",
+    });
   });
 });

@@ -237,13 +237,16 @@ test.describe("warm-up card: in-workout execution", () => {
     // from the snapshot, so taps 2 and 3 are "focus is unnecessary — just
     // press Log" plus the confirmation the app itself shows.
     // `{ exact: true }` throughout this spec, unlike the older specs' bare
-    // getByLabel("reps"): a warm-up item's accessible name is its label plus
+    // getByLabel(...): a warm-up item's accessible name is its label plus
     // its instruction, so a routine item reading "Horizontal rotation — 10
-    // controlled reps" makes a substring match ambiguous with the set-entry
-    // field. Exact matching pins it to the input that is actually labelled
-    // "reps".
-    const kg = page.getByLabel("kg", { exact: true });
-    const reps = page.getByLabel("reps", { exact: true });
+    // controlled reps" makes a substring match against "Repetitions"
+    // ambiguous with the set-entry field. Exact matching pins it to the
+    // input that is actually labelled "Repetitions" (Athletic Measurement
+    // Profiles Release 2 gave the weight/reps inputs real aria-labels —
+    // "Weight in kilograms" / "Repetitions" — where they previously had none;
+    // see ExerciseCard.tsx).
+    const kg = page.getByLabel("Weight in kilograms", { exact: true });
+    const reps = page.getByLabel("Repetitions", { exact: true });
     await expect(kg).not.toHaveValue("");
     await expect(reps).not.toHaveValue("");
     const prefilledKg = await kg.inputValue();
@@ -411,8 +414,8 @@ test.describe("warm-up card: in-workout execution", () => {
     await tickWarmupItem(page, 0, `${UPPER_STANDARD} · 1/3`);
     await expect(page.getByRole("button", { name: "Hide warm-up" })).toBeVisible();
 
-    await page.getByLabel("kg", { exact: true }).fill("100");
-    await page.getByLabel("reps", { exact: true }).fill("8");
+    await page.getByLabel("Weight in kilograms", { exact: true }).fill("100");
+    await page.getByLabel("Repetitions", { exact: true }).fill("8");
     await page.getByRole("button", { name: "Log" }).click();
     await expect(page.getByText("100 kg × 8")).toBeVisible();
 
@@ -449,8 +452,8 @@ test.describe("warm-up card: in-workout execution", () => {
       }
     });
 
-    await page.getByLabel("kg", { exact: true }).fill("100");
-    await page.getByLabel("reps", { exact: true }).fill("5");
+    await page.getByLabel("Weight in kilograms", { exact: true }).fill("100");
+    await page.getByLabel("Repetitions", { exact: true }).fill("5");
     await page.getByRole("button", { name: "Log" }).click();
     await expect(page.getByText("100 kg × 5")).toBeVisible();
 
@@ -507,8 +510,8 @@ test.describe("warm-up card: in-workout execution", () => {
     await tickWarmupItem(page, 0, `${UPPER_STANDARD} · 1/3`);
     expect(await readLocalWarmupState(page)).not.toBe("NO_SESSION");
 
-    await page.getByLabel("kg", { exact: true }).fill("100");
-    await page.getByLabel("reps", { exact: true }).fill("5");
+    await page.getByLabel("Weight in kilograms", { exact: true }).fill("100");
+    await page.getByLabel("Repetitions", { exact: true }).fill("5");
     await page.getByRole("button", { name: "Log" }).click();
     await expect(page.getByText("100 kg × 5")).toBeVisible();
 
@@ -645,8 +648,8 @@ test.describe("warm-up card: in-workout execution", () => {
     expect(await readLocalWarmupState(page)).toBeNull();
 
     // The workout itself is completely normal.
-    await page.getByLabel("kg", { exact: true }).fill("100");
-    await page.getByLabel("reps", { exact: true }).fill("5");
+    await page.getByLabel("Weight in kilograms", { exact: true }).fill("100");
+    await page.getByLabel("Repetitions", { exact: true }).fill("5");
     await page.getByRole("button", { name: "Log" }).click();
     await expect(page.getByText("100 kg × 5")).toBeVisible();
 
@@ -729,8 +732,8 @@ test.describe("warm-up card: cold-offline execution", () => {
         await page.getByRole("button", { name: "Undo skip" }).click();
 
         // The workout itself still works offline.
-        await page.getByLabel("kg", { exact: true }).fill("102.5");
-        await page.getByLabel("reps", { exact: true }).fill("5");
+        await page.getByLabel("Weight in kilograms", { exact: true }).fill("102.5");
+        await page.getByLabel("Repetitions", { exact: true }).fill("5");
         await page.getByRole("button", { name: "Log" }).click();
         await expect(page.getByText("102.5 kg × 5")).toBeVisible();
       } finally {
@@ -780,8 +783,8 @@ test.describe("warm-up card: cross-device adoption (O-3, accepted v1 behavior)",
       await pageA.waitForURL(/\/today\/workout$/);
       await warmupChecklistCheckboxes(pageA).nth(0).click();
       await expect(pageA.getByText(`${UPPER_STANDARD} · 1/3`)).toBeVisible();
-      await pageA.getByLabel("kg", { exact: true }).fill("100");
-      await pageA.getByLabel("reps", { exact: true }).fill("5");
+      await pageA.getByLabel("Weight in kilograms", { exact: true }).fill("100");
+      await pageA.getByLabel("Repetitions", { exact: true }).fill("5");
       await pageA.getByRole("button", { name: "Log" }).click();
       await expect(pageA.getByText("100 kg × 5")).toBeVisible();
       await waitForOutboxDrained(pageA);

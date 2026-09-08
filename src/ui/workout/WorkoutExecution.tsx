@@ -6,6 +6,7 @@ import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import { ExerciseCard } from "./ExerciseCard";
 import { AddAdhocExercise } from "./AddAdhocExercise";
 import { WarmupCardForSession } from "./WarmupCard";
+import { getRefusedCountAfterRefresh } from "./refusedSetCount";
 
 interface WorkoutExecutionProps {
   // Supplied only by the offline app shell (src/ui/OfflineShell.tsx), which
@@ -50,6 +51,27 @@ export function WorkoutExecution({ navigate }: WorkoutExecutionProps) {
 
   async function handleComplete() {
     if (!window.confirm("Complete this workout?")) return;
+    // M-2 (athletic-measurement-profiles-release-2-review.md) — reads the
+    // refused counts via getRefusedCountAfterRefresh (src/ui/workout/refusedSetCount.ts),
+    // which awaits a real refreshSessionBlocked() before reading them, rather
+    // than a stale hook-bound snapshot — see that module's comment for why.
+    // O-16 (§13.4) — completion stays possible (never silently blocked) even
+    // with sets/slots still dead-lettered, but the athlete must explicitly
+    // confirm the drop: nothing here discards the dead letter or the
+    // aggregate early — completeSession() runs exactly as before, and the
+    // dead letters themselves are untouched and stay reachable from
+    // /sync-issues regardless of what's chosen here.
+    const refusedCount = await getRefusedCountAfterRefresh();
+    if (refusedCount > 0) {
+      const noun = refusedCount === 1 ? "set" : "sets";
+      if (
+        !window.confirm(
+          `${refusedCount} unsaved ${noun} couldn't sync and will be dropped from this workout's totals if you complete it now. They stay visible on Sync issues so you can retry or discard them there. Complete anyway?`,
+        )
+      ) {
+        return;
+      }
+    }
     setBusy(true);
     try {
       await complete();

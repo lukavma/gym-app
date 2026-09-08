@@ -13,6 +13,7 @@ import {
 } from "@/server/sync/service";
 import { getHistorySessionDetail } from "@/server/history/service";
 import { newId } from "@/domain/ids/uuidv7";
+import type { SyncOpEnvelope } from "@/domain/sync/schema";
 import {
   MEASUREMENT_PROFILES,
   dimensionsOf,
@@ -660,6 +661,166 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
     });
   });
 
+  // O-13 (§12.3) — R2's client-emission half of NC-6, extending the
+  // reconnect-idempotence pattern `sync.integration.test.ts:517` already
+  // established for `load_reps` ("submitting a complete multi-op reconnect
+  // batch three times converges with zero rejections and byte-identical
+  // rows every time") to a batch of `distance_time`/`load_distance` setLog
+  // ops — the profile-scoped shapes a real client's outbox resend
+  // (`flushOutbox`, "resends the whole pending outbox unchanged when a
+  // reply is lost") would actually replay.
+  describe("NC-6 — full reconnect batch with distance/duration sets replayed three times", () => {
+    it("zero rejections and byte-identical rows across three submissions of the same batch", async () => {
+      const distanceTime = await createProfiledExercise(
+        db,
+        userId,
+        "Ultra Row NC6",
+        "distance_time",
+      );
+      const loadDistance = await createProfiledExercise(
+        db,
+        userId,
+        "Sled Push NC6",
+        "load_distance",
+      );
+      const sessionId = await createInProgressSession(db, userId);
+      const distanceTimeSlot = await createAdhocSlot(db, userId, sessionId, distanceTime.id, 0, {
+        measurementProfile: "distance_time",
+      });
+      const loadDistanceSlot = await createAdhocSlot(db, userId, sessionId, loadDistance.id, 1, {
+        measurementProfile: "load_distance",
+        loadBasis: "unspecified",
+      });
+      expect(distanceTimeSlot.result.rejected).toEqual([]);
+      expect(loadDistanceSlot.result.rejected).toEqual([]);
+
+      const loggedAt = new Date().toISOString();
+      const setIds = [newId(), newId(), newId(), newId()];
+      // Every op here is deliberately the FULL profile-scoped row a real
+      // client's `setLogFullRowOp`/renumber-upsert emitter would send for
+      // these two profiles — `distance_time` (distanceM + durationS, no
+      // weightKg/reps/rir) and `load_distance` (weightKg + distanceM, no
+      // reps/rir/durationS) — not a hand-minimized fixture.
+      const ops: SyncOpEnvelope[] = [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setIds[0]!,
+            sessionExerciseId: distanceTimeSlot.sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            distanceM: 400,
+            durationS: 90,
+            loggedAt,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setIds[1]!,
+            sessionExerciseId: distanceTimeSlot.sessionExerciseId,
+            setNumber: 2,
+            isWarmup: false,
+            distanceM: 400,
+            durationS: 88.5,
+            loggedAt,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setIds[2]!,
+            sessionExerciseId: loadDistanceSlot.sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 40,
+            distanceM: 20,
+            loggedAt,
+            notes: null,
+          },
+        },
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setIds[3]!,
+            sessionExerciseId: loadDistanceSlot.sessionExerciseId,
+            setNumber: 2,
+            isWarmup: true,
+            weightKg: 20,
+            distanceM: 10,
+            loggedAt,
+            notes: "easy warm-up round",
+          },
+        },
+      ];
+
+      async function snapshotSetRows() {
+        return db
+          .select({
+            id: setLogs.id,
+            sessionExerciseId: setLogs.sessionExerciseId,
+            setNumber: setLogs.setNumber,
+            isWarmup: setLogs.isWarmup,
+            weightKg: setLogs.weightKg,
+            reps: setLogs.reps,
+            rir: setLogs.rir,
+            distanceM: setLogs.distanceM,
+            durationS: setLogs.durationS,
+            notes: setLogs.notes,
+          })
+          .from(setLogs)
+          .where(eq(setLogs.sessionExerciseId, distanceTimeSlot.sessionExerciseId))
+          .orderBy(setLogs.setNumber);
+      }
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const result = await applySyncBatch(db, userId, ops);
+        expect(result.rejected).toEqual([]);
+        expect(result.applied.sort()).toEqual(ops.map((op) => op.opId).sort());
+      }
+
+      const distanceTimeRows = await snapshotSetRows();
+      expect(distanceTimeRows).toMatchObject([
+        { setNumber: 1, weightKg: null, reps: null, rir: null, distanceM: 400, durationS: 90 },
+        { setNumber: 2, weightKg: null, reps: null, rir: null, distanceM: 400, durationS: 88.5 },
+      ]);
+
+      const loadDistanceRows = await db
+        .select()
+        .from(setLogs)
+        .where(eq(setLogs.sessionExerciseId, loadDistanceSlot.sessionExerciseId))
+        .orderBy(setLogs.setNumber);
+      expect(
+        loadDistanceRows.map((r) => [
+          r.setNumber,
+          r.isWarmup,
+          r.weightKg,
+          r.distanceM,
+          r.reps,
+          r.durationS,
+        ]),
+      ).toEqual([
+        [1, false, 40, 20, null, null],
+        [2, true, 20, 10, null, null],
+      ]);
+
+      // Exactly one row per set id — replaying the identical batch three
+      // times converged, it did not accumulate duplicates.
+      const allSetRows = [...(await snapshotSetRows()), ...loadDistanceRows];
+      expect(new Set(allSetRows.map((r) => r.id)).size).toBe(setIds.length);
+    });
+  });
+
   describe("NC-14 — session-exercise insert derivation vs. an exercise edited after the client froze its bundle", () => {
     it("(a) a load-basis change after freeze applies with the LIVE basis, and set ops on the slot apply normally", async () => {
       const exercise = await createProfiledExercise(db, userId, "Farmer's Carry", "load_distance");
@@ -943,16 +1104,18 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
 
   // A-13 — history read/correct/delete on a load_distance slot, entirely
   // through direct sync-batch calls (bypassing the client). The renumbering
-  // ops below are hand-built, NOT via `buildSetDeletionOps`
-  // (src/domain/sync/setDeletionOps.ts, a hard Release-1 boundary): that
-  // builder's own `SetLogRowFields` requires `reps: number`, which a
-  // `load_distance` row can never satisfy (`reps` is forbidden for this
-  // profile, §6.2) — the client-side profile-scoped emitter is Release 2's
-  // job (O-13, §12.3). What's asserted here is that the SERVER already
-  // accepts and stores a profile-scoped full row correctly when given one,
-  // which is all this stage owns.
+  // ops below are still hand-built rather than via `buildSetDeletionOps`
+  // (src/domain/sync/setDeletionOps.ts) purely to keep this describe block's
+  // existing fixtures independent of the client emitter; O-13 (§12.3) has
+  // since been implemented — `buildSetDeletionOps`'s renumber upserts and
+  // `setLogFullRowOp` now build exactly this profile-scoped shape, covered
+  // directly by tests/unit/setDeletion.test.ts and
+  // tests/unit/sync/setLogEmission.test.ts. What's asserted here is that the
+  // SERVER accepts and stores a profile-scoped full row correctly when given
+  // one — a property those client-side unit tests cannot exercise, since
+  // they don't touch a real database.
   describe("A-13 — history read/correct/delete on a load_distance slot", () => {
-    it("reads, corrects and deletes-with-renumbering, preserving distanceM on the survivors", async () => {
+    it("reads, corrects and deletes-with-renumbering, preserving distanceM AND durationS on the survivors, in ascending order", async () => {
       const exercise = await createProfiledExercise(db, userId, "Sled Push A13", "load_distance");
       const sessionId = await createInProgressSession(db, userId);
       const { sessionExerciseId, result: slotResult } = await createAdhocSlot(
@@ -965,10 +1128,14 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
 
       const loggedAt = new Date().toISOString();
       const setIds = [newId(), newId(), newId()];
+      // `load_distance`'s `durationS` is optional (§6.2), not forbidden —
+      // populated here (unlike the rest of this describe block's other
+      // cases) specifically so this test can prove renumbering preserves
+      // BOTH distance-bearing fields, not only `distanceM`.
       const rounds = [
-        { weightKg: 25, distanceM: 20 },
-        { weightKg: 27, distanceM: 30 },
-        { weightKg: 29, distanceM: 40 },
+        { weightKg: 25, distanceM: 20, durationS: 12 },
+        { weightKg: 27, distanceM: 30, durationS: 15 },
+        { weightKg: 29, distanceM: 40, durationS: 18 },
       ];
       const createResult = await applySyncBatch(
         db,
@@ -984,6 +1151,7 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
             isWarmup: false,
             weightKg: round.weightKg,
             distanceM: round.distanceM,
+            durationS: round.durationS,
             loggedAt,
           },
         })),
@@ -992,7 +1160,7 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
 
       // Read (before any correction) — the parent slot's frozen measurement
       // and the profile-scoped fields the shape CHECK guarantees (`reps`
-      // null, no `durationS` for `load_distance`).
+      // null for `load_distance`).
       const complete1 = await applySyncBatch(db, userId, [
         {
           opId: newId(),
@@ -1011,11 +1179,11 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
         loadBasis: "unspecified",
       });
       expect(
-        exerciseDetail.sets.map((s) => [s.setNumber, s.weightKg, s.distanceM, s.reps]),
+        exerciseDetail.sets.map((s) => [s.setNumber, s.weightKg, s.distanceM, s.durationS, s.reps]),
       ).toEqual([
-        [1, 25, 20, null],
-        [2, 27, 30, null],
-        [3, 29, 40, null],
+        [1, 25, 20, 12, null],
+        [2, 27, 30, 15, null],
+        [3, 29, 40, 18, null],
       ]);
 
       // Correct — a partial upsert (distanceM only), the same shape
@@ -1033,10 +1201,12 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
       detail = await getHistorySessionDetail(db, userId, sessionId);
       exerciseDetail = detail!.exercises[0]!;
       expect(exerciseDetail.sets.find((s) => s.id === setIds[1])?.distanceM).toBe(35);
+      // The correction touched only distanceM — durationS is untouched.
+      expect(exerciseDetail.sets.find((s) => s.id === setIds[1])?.durationS).toBe(15);
 
       // Delete the FIRST round and hand-build the renumbering upserts a
       // profile-aware client emitter would send — full profile-scoped rows
-      // (distanceM included, reps/durationS omitted) for each survivor,
+      // (distanceM AND durationS included, reps omitted) for each survivor,
       // ascending order (the same ordering `buildSetDeletionOps` uses and
       // `uq_set_number`'s per-op-commit check requires).
       const deleteAndRenumber = await applySyncBatch(db, userId, [
@@ -1057,6 +1227,7 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
             isWarmup: false,
             weightKg: 27,
             distanceM: 35,
+            durationS: 15,
             loggedAt,
             notes: null,
           },
@@ -1072,6 +1243,7 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
             isWarmup: false,
             weightKg: 29,
             distanceM: 40,
+            durationS: 18,
             loggedAt,
             notes: null,
           },
@@ -1082,14 +1254,248 @@ describe("measurement-profile-aware sync (PGlite integration)", () => {
       detail = await getHistorySessionDetail(db, userId, sessionId);
       exerciseDetail = detail!.exercises[0]!;
       // The deleted round is gone; the survivors are contiguously
-      // renumbered and their `distanceM` — including the corrected 35, not
-      // the original 30, and not the deleted round's 20 — survived intact
-      // (I-13/H-12: nothing here was fabricated or dropped).
-      expect(exerciseDetail.sets.map((s) => [s.setNumber, s.id, s.weightKg, s.distanceM])).toEqual([
-        [1, setIds[1], 27, 35],
-        [2, setIds[2], 29, 40],
+      // renumbered in ASCENDING order and both `distanceM` (including the
+      // corrected 35, not the original 30, and not the deleted round's 20)
+      // AND `durationS` survived intact (I-13/H-12: nothing here was
+      // fabricated or dropped) — A-13's binding assertion.
+      expect(
+        exerciseDetail.sets.map((s) => [s.setNumber, s.id, s.weightKg, s.distanceM, s.durationS]),
+      ).toEqual([
+        [1, setIds[1], 27, 35, 15],
+        [2, setIds[2], 29, 40, 18],
       ]);
-      expect(exerciseDetail.sets.every((s) => s.reps === null && s.durationS === null)).toBe(true);
+      expect(exerciseDetail.sets.every((s) => s.reps === null)).toBe(true);
+      // Ascending order, explicitly: each survivor's setNumber, distanceM
+      // and durationS all increase together across the renumbered list.
+      for (let i = 1; i < exerciseDetail.sets.length; i++) {
+        const prev = exerciseDetail.sets[i - 1]!;
+        const cur = exerciseDetail.sets[i]!;
+        expect(cur.setNumber).toBeGreaterThan(prev.setNumber);
+        expect(cur.distanceM!).toBeGreaterThan(prev.distanceM!);
+        expect(cur.durationS!).toBeGreaterThan(prev.durationS!);
+      }
+    });
+
+    // NC-7 (§13.5) — partial-correction shape rules: the effective-row
+    // validation (not the schema, which accepts every field as optional/
+    // nullable for every profile) is what makes an omitted-optional
+    // correction apply and an explicit-null-on-a-required-field correction
+    // reject, extending this describe block's own "distanceM only" partial
+    // correction above with the remaining combinations.
+    it("NC-7 — a partial {durationS: null} on load_distance applies (optional, absent)", async () => {
+      const exercise = await createProfiledExercise(db, userId, "Sled Push NC7a", "load_distance");
+      const sessionId = await createInProgressSession(db, userId);
+      const { sessionExerciseId, result: slotResult } = await createAdhocSlot(
+        db,
+        userId,
+        sessionId,
+        exercise.id,
+      );
+      expect(slotResult.rejected).toEqual([]);
+
+      const setId = newId();
+      const created = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 30,
+            distanceM: 50,
+            loggedAt: new Date().toISOString(),
+          },
+        },
+      ]);
+      expect(created.rejected).toEqual([]);
+
+      const correction = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: { id: setId, sessionExerciseId, durationS: null },
+        },
+      ]);
+      expect(correction.rejected).toEqual([]);
+
+      const [row] = await db.select().from(setLogs).where(eq(setLogs.id, setId));
+      expect(row).toMatchObject({ weightKg: 30, distanceM: 50, durationS: null });
+    });
+
+    it("NC-7 — a partial {distanceM: null} on the same load_distance slot rejects (required)", async () => {
+      const exercise = await createProfiledExercise(db, userId, "Sled Push NC7b", "load_distance");
+      const sessionId = await createInProgressSession(db, userId);
+      const { sessionExerciseId, result: slotResult } = await createAdhocSlot(
+        db,
+        userId,
+        sessionId,
+        exercise.id,
+      );
+      expect(slotResult.rejected).toEqual([]);
+
+      const setId = newId();
+      const created = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 30,
+            distanceM: 50,
+            loggedAt: new Date().toISOString(),
+          },
+        },
+      ]);
+      expect(created.rejected).toEqual([]);
+
+      const opId = newId();
+      const correction = await applySyncBatch(db, userId, [
+        {
+          opId,
+          entity: "setLog",
+          operation: "upsert",
+          payload: { id: setId, sessionExerciseId, distanceM: null },
+        },
+      ]);
+      expect(correction.rejected).toEqual([
+        { opId, entity: "setLog", reason: "invalid_measurement" },
+      ]);
+
+      // Rejected — the row is untouched, not partially cleared.
+      const [row] = await db.select().from(setLogs).where(eq(setLogs.id, setId));
+      expect(row).toMatchObject({ weightKg: 30, distanceM: 50 });
+    });
+
+    it("NC-7 — a partial {reps: null} on load_reps rejects (required)", async () => {
+      const exercise = await createProfiledExercise(db, userId, "Bench Press NC7c", "load_reps");
+      const sessionId = await createInProgressSession(db, userId);
+      const { sessionExerciseId, result: slotResult } = await createAdhocSlot(
+        db,
+        userId,
+        sessionId,
+        exercise.id,
+      );
+      expect(slotResult.rejected).toEqual([]);
+
+      const setId = newId();
+      const created = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 100,
+            reps: 5,
+            rir: 2,
+            loggedAt: new Date().toISOString(),
+          },
+        },
+      ]);
+      expect(created.rejected).toEqual([]);
+
+      const opId = newId();
+      const correction = await applySyncBatch(db, userId, [
+        {
+          opId,
+          entity: "setLog",
+          operation: "upsert",
+          payload: { id: setId, sessionExerciseId, reps: null },
+        },
+      ]);
+      expect(correction.rejected).toEqual([
+        { opId, entity: "setLog", reason: "invalid_measurement" },
+      ]);
+
+      const [row] = await db.select().from(setLogs).where(eq(setLogs.id, setId));
+      expect(row).toMatchObject({ weightKg: 100, reps: 5 });
+    });
+
+    it("NC-7 — a full-row edit trailed by a partial correction preserves the fields the correction omitted", async () => {
+      const exercise = await createProfiledExercise(db, userId, "Sled Push NC7d", "load_distance");
+      const sessionId = await createInProgressSession(db, userId);
+      const { sessionExerciseId, result: slotResult } = await createAdhocSlot(
+        db,
+        userId,
+        sessionId,
+        exercise.id,
+      );
+      expect(slotResult.rejected).toEqual([]);
+
+      const setId = newId();
+      const loggedAt = new Date().toISOString();
+      const created = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 30,
+            distanceM: 50,
+            loggedAt,
+            notes: "first pull",
+          },
+        },
+      ]);
+      expect(created.rejected).toEqual([]);
+
+      // Full-row edit — a real client's `setLogFullRowOp` re-sending every
+      // profile-scoped key after e.g. the athlete edited the weight.
+      const fullRowEdit = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: {
+            id: setId,
+            sessionExerciseId,
+            setNumber: 1,
+            isWarmup: false,
+            weightKg: 32.5,
+            distanceM: 50,
+            loggedAt,
+            notes: "first pull",
+          },
+        },
+      ]);
+      expect(fullRowEdit.rejected).toEqual([]);
+
+      // Trailing partial correction — `correctHistorySet`'s shape: only the
+      // one field the athlete actually touched (notes), nothing else named.
+      const partialCorrection = await applySyncBatch(db, userId, [
+        {
+          opId: newId(),
+          entity: "setLog",
+          operation: "upsert",
+          payload: { id: setId, sessionExerciseId, notes: "felt heavier than usual" },
+        },
+      ]);
+      expect(partialCorrection.rejected).toEqual([]);
+
+      // The full-row edit's weightKg survives the partial correction that
+      // never named it — an omitted field is "preserve", never "clear"
+      // (D-03's field-level merge).
+      const [row] = await db.select().from(setLogs).where(eq(setLogs.id, setId));
+      expect(row).toMatchObject({
+        weightKg: 32.5,
+        distanceM: 50,
+        notes: "felt heavier than usual",
+      });
     });
   });
 });

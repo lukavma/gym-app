@@ -39,6 +39,22 @@ export function buildSetLogUpsertPayload(input: SetLogUpsertPayload): SetLogUpse
   return setLogUpsertPayloadSchema.parse(input);
 }
 
+// O-13 (athletic-measurement-profiles-architecture-evaluation.md §12.3) —
+// closes the "never schema-parsed client-side" gap at
+// `src/sync/corrections.ts`'s `correctHistorySet` (previously built its
+// payload as a bare object literal, no `.parse()` at all). `correctHistorySet`
+// stays the one PARTIAL emitter (not a full-row builder, §12.3's last
+// paragraph): it never determines or applies a profile's permitted-key set —
+// `setLogUpsertPayloadSchema` already models every field but `id`/
+// `sessionExerciseId` as optional/nullable, which is exactly a partial
+// correction's shape, so this reuses that same schema rather than a new one.
+// Whether a given correction is valid for the parent slot's frozen profile
+// (e.g. `{reps: null}` on a `load_reps` set) is decided server-side by the
+// effective-row validation (`dimensionsOf`), not here.
+export function buildSetLogCorrectionPayload(input: SetLogUpsertPayload): SetLogUpsertPayload {
+  return setLogUpsertPayloadSchema.parse(input);
+}
+
 export function buildSetLogDeletePayload(input: SetLogDeletePayload): SetLogDeletePayload {
   return setLogDeletePayloadSchema.parse(input);
 }

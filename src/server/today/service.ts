@@ -113,12 +113,17 @@ export interface ActiveSessionSetDto {
   // Widened alongside `HistorySetDto` (§11.3 site #5's own rule, generalised
   // to this display DTO too — not itself a named site, but the identical
   // "map a set_logs row into a numeric field" shape): a null is never
-  // coerced (I-13/H-12). The client's own mirror (`src/sync/types.ts`,
-  // untouched per the hard boundary) stays `number` — Release 1's real
-  // client never persists or reads a non-`load_reps` active-session set.
+  // coerced (I-13/H-12). Release 2 — the client's own mirror
+  // (`src/sync/types.ts`'s `ActiveSessionSetDto`) is widened the same way.
   weightKg: number | null;
   reps: number | null;
   rir: number | null;
+  // Release 2 remediation — this pair was missing here even though
+  // `HistorySetDto` above already carries it; added to close the gap so a
+  // non-`load_reps` active session's cross-device adopt/resume renders its
+  // full row instead of silently dropping distance/duration.
+  distanceM: number | null;
+  durationS: number | null;
   loggedAt: string;
   notes: string | null;
 }
@@ -139,6 +144,18 @@ export interface ActiveSessionExerciseDto {
   // decided during this session) — carried so a cross-device adopt/resume
   // keeps the decision flow (progression-engine.md §7). Null when none.
   recommendation: RecommendationDto | null;
+  // H-1 remediation (athletic-measurement-profiles-release-2-review.md §5.1)
+  // — the slot's own FROZEN measurement shape, read from `session_exercises`'
+  // typed `measurement_profile`/`load_basis` columns (already selected by
+  // getActiveSession's `db.select().from(sessionExercises)`, just unused
+  // before this fix). Mirrors `TodayBundleExerciseEntry.measurement` above,
+  // but non-optional here: unlike a bundle, which can be served from a
+  // pre-Release-2 cache, this DTO is always freshly built from the live DB
+  // row, so there is no "old shape" case on the server side to tolerate.
+  // Without this, a cross-device adopt or post-eviction resume of a
+  // non-`load_reps` session fell back to the client's pre-upgrade default
+  // (`load_reps`/`unspecified`) and rendered the wrong inputs.
+  measurement: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
   sets: ActiveSessionSetDto[];
 }
 
@@ -373,6 +390,8 @@ export async function getActiveSession(
       weightKg: s.weightKg,
       reps: s.reps,
       rir: s.rir,
+      distanceM: s.distanceM,
+      durationS: s.durationS,
       loggedAt: s.loggedAt.toISOString(),
       notes: s.notes,
     });
@@ -404,6 +423,14 @@ export async function getActiveSession(
         session.isDeload,
         recommendationByExercise.get(e.exerciseId) ?? null,
       ),
+      // H-1 remediation — the slot's own frozen profile/load basis, already
+      // selected above as `e.measurementProfile`/`e.loadBasis`; previously
+      // dropped on the floor here, which is exactly what left a resumed
+      // non-`load_reps` session with no `measurement` to adopt.
+      measurement: {
+        profile: e.measurementProfile as MeasurementProfile,
+        loadBasis: e.loadBasis as LoadBasis | null,
+      },
       sets: setsBySessionExercise.get(e.id) ?? [],
     })),
   };

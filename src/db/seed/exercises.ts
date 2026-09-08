@@ -3,8 +3,11 @@ import { and, eq } from "drizzle-orm";
 import {
   DEFAULT_CONTRIBUTION_WEIGHT,
   DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT,
+  resolveLoadBasis,
 } from "@/domain/exercises/schema";
 import { DEFAULT_STRENGTH_ESTIMATE_MODE } from "@/domain/strength/estimateMode";
+import { DEFAULT_MEASUREMENT_PROFILE } from "@/domain/measurement/profile";
+import type { VolumeCounting } from "@/domain/measurement/profile";
 import { exerciseCatalogSeedLog, exerciseMuscleContributions, exercises, users } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import { EXERCISE_CATALOG } from "./exerciseCatalog";
@@ -90,21 +93,34 @@ export async function seedExerciseCatalogForUser(db: AppDb, userId: string): Pro
     const newItems = EXERCISE_CATALOG.filter((item) => !applied.has(item.slug));
     if (newItems.length === 0) return;
 
-    const rows = newItems.map((item) => ({
-      id: slugToUuid(`exercise:${userId}`, item.slug),
-      userId,
-      name: item.name,
-      equipment: item.equipment,
-      mechanics: item.mechanics,
-      laterality: item.laterality ?? "bilateral",
-      loadStepKg: DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT[item.equipment],
-      // ADR-011 — new seeds get the catalog's value; omitted falls through to
-      // the column's `'auto'` default. Rows seeded before this column existed
-      // are reconciled once by `reconcileStrengthEstimates`, because the
-      // ledger above makes them unreachable from here forever.
-      strengthEstimate: item.strengthEstimate ?? DEFAULT_STRENGTH_ESTIMATE_MODE,
-      isSeeded: true,
-    }));
+    const rows = newItems.map((item) => {
+      // athletic-measurement-profiles-architecture-evaluation.md §14.4 — new
+      // seeds get the catalog's explicit value (the three legacy entries in
+      // Release 2, or a Release-3 athletic entry); omitted falls through to
+      // the same defaults `createExercise` applies (`resolveLoadBasis`,
+      // §11.4's profile-dependent `volumeCounting`). Rows seeded before these
+      // columns existed are reconciled once by `reconcileMeasurementProfiles`
+      // (measurement) / `reconcileStrengthEstimates` (the switch), because
+      // the ledger above makes them unreachable from here forever.
+      const measurementProfile = item.measurementProfile ?? DEFAULT_MEASUREMENT_PROFILE;
+      const loadBasis = resolveLoadBasis(measurementProfile, item.loadBasis);
+      const volumeCounting: VolumeCounting =
+        item.volumeCounting ?? (measurementProfile === "load_reps" ? "auto" : "off");
+      return {
+        id: slugToUuid(`exercise:${userId}`, item.slug),
+        userId,
+        name: item.name,
+        equipment: item.equipment,
+        mechanics: item.mechanics,
+        laterality: item.laterality ?? "bilateral",
+        loadStepKg: DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT[item.equipment],
+        strengthEstimate: item.strengthEstimate ?? DEFAULT_STRENGTH_ESTIMATE_MODE,
+        measurementProfile,
+        loadBasis,
+        volumeCounting,
+        isSeeded: true,
+      };
+    });
 
     // Arbiter-less `onConflictDoNothing` — deliberately *not*
     // `{ target: exercises.id }`. A slug's row can be absent while its name

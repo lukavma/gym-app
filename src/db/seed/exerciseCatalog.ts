@@ -1,6 +1,7 @@
 import type { Equipment, Laterality, Mechanics } from "@/domain/exercises/schema";
 import type { StrengthEstimateMode } from "@/domain/strength/estimateMode";
 import type { LeafMuscleGroupSlug } from "@/domain/exercises/muscleGroups";
+import type { LoadBasis, MeasurementProfile, VolumeCounting } from "@/domain/measurement/profile";
 
 // Release 2 (ADR-010): the catalog targets leaves only — a rollup slug
 // (`back`) can never be a *seeded* contribution. Legacy direct `back` rows
@@ -28,6 +29,24 @@ export interface SeedCatalogExercise {
   // so `src/db/seed/reconcileStrengthEstimates.ts` carries the matching
   // one-shot, id-keyed reconcile for them (ADR-010's mechanism).
   strengthEstimate?: StrengthEstimateMode;
+  // athletic-measurement-profiles-architecture-evaluation.md §14.4 — omitted
+  // means the column's `load_reps` default (the ~90 pre-existing entries,
+  // untouched: §14.4's "not touched" clause). Set EXPLICITLY only for the
+  // three legacy catalog entries `src/db/seed/reconcileMeasurementProfiles.ts`
+  // also reconciles on an EXISTING database (`bodyweight-plank`,
+  // `dumbbell-farmers-carry`, `machine-assisted-pull-up`) — the fresh-seed
+  // half of the same fact, so `pnpm db:seed` on a clean database inserts them
+  // already-correctly-shaped and the reconcile is a no-op there (A-17).
+  measurementProfile?: MeasurementProfile;
+  // Omitted resolves the same way `resolveLoadBasis` does for a caller that
+  // didn't classify it: `'unspecified'` when the profile carries a load
+  // field, `null` when it doesn't. Set EXPLICITLY only for the same three
+  // legacy entries as `measurementProfile` above.
+  loadBasis?: LoadBasis;
+  // Omitted resolves to the same profile-dependent default
+  // `createExercise` applies (§11.4, O-4(i)/(ii)): `'auto'` for `load_reps`,
+  // `'off'` otherwise. Set EXPLICITLY only for the same three legacy entries.
+  volumeCounting?: VolumeCounting;
   contributions: SeedContribution[];
 }
 
@@ -452,6 +471,12 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     name: "Plank",
     equipment: "bodyweight",
     mechanics: "isolation",
+    // A held isometric — no load, no reps, just time (§14.4, Release 2).
+    // `loadBasis` is omitted: `duration` has no load field, so it resolves to
+    // `null`, never a value the `ck_exercises_load_basis_presence` CHECK
+    // would reject.
+    measurementProfile: "duration",
+    volumeCounting: "off",
     contributions: [
       { muscleGroupId: "abs", role: "primary" },
       { muscleGroupId: "lower_back", role: "secondary" },
@@ -639,6 +664,11 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     // Time/distance work: the reps logged against a carry are fabricated, so
     // no reps-to-failure input exists (revision §6.1, PI-005).
     strengthEstimate: "off",
+    // §14.4, Release 2 — a carry's load is per hand, not total, and it has no
+    // rep count worth counting as hypertrophy volume.
+    measurementProfile: "load_distance",
+    loadBasis: "per_hand",
+    volumeCounting: "off",
     contributions: [
       { muscleGroupId: "forearms", role: "primary" },
       { muscleGroupId: "traps", role: "secondary" },
@@ -881,8 +911,15 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
     mechanics: "compound",
     // The logged load is the ASSISTANCE, a non-negative number whose meaning
     // is inverted and unmodelled — a larger number is an easier set, so no
-    // equation can consume it (revision §6.1).
+    // equation can consume it (revision §6.1). `strengthEstimate: 'off'` is
+    // now redundant with `loadBasis: 'assistance'` below (both structurally
+    // refuse the same exercise) and is left in place rather than removed
+    // (athletic-measurement-profiles-architecture-evaluation.md §11.6).
     strengthEstimate: "off",
+    // §14.4, Release 2 — profile stays `load_reps` (a rep IS real here); only
+    // the basis changes, so its rendered Strength refusal becomes
+    // LOAD_BASIS_UNSUPPORTED instead of EXERCISE_ESTIMATE_DISABLED (§11.6).
+    loadBasis: "assistance",
     contributions: [
       { muscleGroupId: "lats", role: "primary" },
       { muscleGroupId: "biceps", role: "secondary" },

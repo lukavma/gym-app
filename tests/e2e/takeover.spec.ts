@@ -27,8 +27,8 @@ test("device B discovers device A's live in-progress session and takeover conver
     // Device A starts and logs a set — a real, live in_progress session.
     await pageA.getByRole("button", { name: "Start workout" }).click();
     await pageA.waitForURL(/\/today\/workout$/);
-    await pageA.getByLabel("kg").fill("60");
-    await pageA.getByLabel("reps").fill("10");
+    await pageA.getByLabel("Weight in kilograms").fill("60");
+    await pageA.getByLabel("Repetitions").fill("10");
     await pageA.getByRole("button", { name: "Log" }).click();
     await expect(pageA.getByText("60 kg × 10", { exact: true })).toBeVisible();
     await waitForOutboxDrained(pageA);
@@ -45,8 +45,8 @@ test("device B discovers device A's live in-progress session and takeover conver
 
     await pageB.getByRole("button", { name: "Start workout" }).click();
     await pageB.waitForURL(/\/today\/workout$/);
-    await pageB.getByLabel("kg").fill("65");
-    await pageB.getByLabel("reps").fill("8");
+    await pageB.getByLabel("Weight in kilograms").fill("65");
+    await pageB.getByLabel("Repetitions").fill("8");
     await pageB.getByRole("button", { name: "Log" }).click();
     await expect(pageB.getByText("65 kg × 8", { exact: true })).toBeVisible();
     await waitForOutboxDrained(pageB);

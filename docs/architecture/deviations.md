@@ -52,3 +52,17 @@ Records genuine contradictions between binding spec documents (not ordinary scop
 - a dedicated sync-contract redesign during later hardening.
 
 **Follow-up (what a correct future change requires):** not a one-line fix. It needs an explicit design covering (1) a client-generated write timestamp added to the sync op contract and to the payload builders; (2) server-side full-row conditional updates gated on that timestamp (`… WHERE updated_at <= :clientUpdatedAt`, or an equivalent guarded upsert) instead of unconditional field patches; (3) conflict tests that actually exercise divergent concurrent edits, including the history-correction path; and (4) compatibility with operations already queued in the offline outbox at upgrade time — old ops without a timestamp must still apply deterministically. Until that design exists, do not partially implement it.
+
+---
+
+## D-04: Release-2 seeded-exercise reconcile runs during the App Service swap window
+
+**Status:** Accepted, disclosed exposure (O-5, `docs/reviews/athletic-measurement-profiles-architecture-evaluation.md` §14.3) — not a bug to fix.
+
+**Conflict:** none — this is not a contradiction between binding documents. It is recorded here per the Release-2 documentation checklist (§24.2) as a known, disclosed operational exposure carried into production rather than mitigated, so it is not mistaken for an oversight during a later review.
+
+**Exposure:** the seeded-exercise measurement-profile reconcile (`src/db/seed/reconcileMeasurementProfiles.ts`) runs in the Release-2 `db:seed` step while the Release-1 build still serves (`deploy.yml`'s seed-before-swap order). Release 1 already derives slot profiles server-side and validates set shapes, so during that window an ad-hoc add of the seeded Plank from the still-serving Release-1 client creates a `duration` slot, and its `kg · reps` set ops are refused `invalid_measurement`; the mirror composite FK (O-14) guarantees no mis-frozen slot can result. The window is bounded by the App Service swap duration only.
+
+**Resolution (accepted risk):** ship the reconcile in the Release-2 seed step as designed. The post-deploy one-shot reconcile and the never-convert-until-referenced alternatives were considered and rejected — both were judged higher-cost than a swap-duration window with no data-integrity failure mode, for a single-account app where the reconcile's own predicates (§14.3) are state-gated and idempotent.
+
+**Revisit triggers — either of these reopens this deviation:** a second account, or a deploy pipeline with a post-swap step.

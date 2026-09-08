@@ -34,7 +34,13 @@ export const METRICS_PAGE_COPY = {
   trainingHeading: "Training",
   fullHistoryLink: "Full history",
   trainingSoFarSuffix: "(so far)",
-  trainingCaption: "Completed workouts only. Warm-up sets not counted.",
+  // O-6 (Release 2) — "Every exercise type counts as a set" appended so the
+  // athlete isn't surprised when a non-load_reps attempt (a duration hold, a
+  // distance/time round) shows up in the Training card's work-set count:
+  // `aggregateTrainingWeeks` counts every non-warm-up attempt regardless of
+  // measurement profile (no profile filter, §21.2).
+  trainingCaption:
+    "Completed workouts only. Warm-up sets not counted. Every exercise type counts as a set.",
   sessionsWord: "sessions",
   sessionWord: "session",
   workSetsWord: "work sets",

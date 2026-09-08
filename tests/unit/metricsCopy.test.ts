@@ -141,7 +141,7 @@ describe("copy rules (§15, A-20)", () => {
   it("must-appear: the current-week suffix, and every card's required caption", () => {
     expect(METRICS_PAGE_COPY.trainingSoFarSuffix).toBe("(so far)");
     expect(METRICS_PAGE_COPY.trainingCaption).toBe(
-      "Completed workouts only. Warm-up sets not counted.",
+      "Completed workouts only. Warm-up sets not counted. Every exercise type counts as a set.",
     );
     expect(METRICS_PAGE_COPY.volumeCaptionContribution).toBe("Under current contribution weights.");
     expect(METRICS_PAGE_COPY.volumeCaptionInProgress).toBe("Includes the workout in progress.");

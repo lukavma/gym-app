@@ -7,10 +7,21 @@ import { Button } from "@/ui/Button";
 import {
   EQUIPMENT_TYPES,
   LATERALITY_TYPES,
+  LOAD_BASES,
   MAX_LOAD_STEP_KG,
+  MEASUREMENT_PROFILES,
   MECHANICS_TYPES,
   STRENGTH_ESTIMATE_MODES,
+  VOLUME_COUNTING_MODES,
+  type LoadBasis,
+  type MeasurementProfile,
+  type VolumeCounting,
 } from "@/domain/exercises/schema";
+import { loadBasisRequired } from "@/domain/measurement/profile";
+import {
+  isProfileEligibleForE1rm,
+  isProfileEligibleForVolume,
+} from "@/domain/measurement/capabilities";
 import { decimalPlaceCount, parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
 import {
   ContributionEditor,
@@ -38,6 +49,43 @@ const STRENGTH_ESTIMATE_LABELS: Record<(typeof STRENGTH_ESTIMATE_MODES)[number],
   off: "Off for this exercise",
 };
 
+// athletic-measurement-profiles-architecture-evaluation.md §15.1's six
+// profiles, given a label rather than the raw enum value.
+const MEASUREMENT_PROFILE_LABELS: Record<MeasurementProfile, string> = {
+  load_reps: "Load + Reps",
+  reps: "Reps only",
+  load_distance: "Load + Distance",
+  distance_time: "Distance + Time",
+  duration: "Duration",
+  load_duration: "Load + Duration",
+};
+
+// §7.1's display convention, applied to the select itself. `unspecified` is
+// never offered on create (DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE is the
+// service's own concern, not a choice this form makes for a new row) — it
+// only ever appears as an edit-mode option, and only for an exercise that
+// was migrated with it (see `showUnspecifiedLoadBasis` below).
+const LOAD_BASIS_LABELS: Record<LoadBasis, string> = {
+  total: "Total load",
+  per_hand: "Per hand",
+  assistance: "Assistance",
+  unspecified: "Unspecified (as entered)",
+};
+const CHOOSABLE_LOAD_BASES = LOAD_BASES.filter((value) => value !== "unspecified");
+
+const VOLUME_COUNTING_LABELS: Record<VolumeCounting, string> = {
+  auto: "Automatic (counts toward weekly muscle volume)",
+  off: "Off for this exercise",
+};
+
+// §10.3 / §11.2, verbatim — the exact copy the athlete sees once the
+// server's `409 measurement_profile_locked` (reused, not re-derived) tells
+// this form the exercise is referenced.
+const MEASUREMENT_PROFILE_LOCKED_COPY =
+  "Used in history or a template — create a new exercise to change how it is measured.";
+
+const STRUCTURALLY_UNAVAILABLE_COPY = "Not available for this measurement profile.";
+
 export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
   const router = useRouter();
   const [status, setStatus] = useState<Status>(mode === "edit" ? "loading" : "ready");
@@ -54,6 +102,24 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
   // not accept it, so a new exercise never has to answer this question.
   const [strengthEstimate, setStrengthEstimate] =
     useState<(typeof STRENGTH_ESTIMATE_MODES)[number]>("auto");
+  // Athletic Measurement Profiles Release 2 (§15.1). `savedMeasurementProfile`
+  // is what the row last persisted as — used to revert the select if a save
+  // comes back `409 measurement_profile_locked` (see `measurementProfileLocked`
+  // below, and its use in `handleSubmit`).
+  const [measurementProfile, setMeasurementProfile] = useState<MeasurementProfile>("load_reps");
+  const [savedMeasurementProfile, setSavedMeasurementProfile] =
+    useState<MeasurementProfile>("load_reps");
+  // §10.3's lock is discovered reactively, from the server's own `409`, not
+  // pre-computed — this form has no "is this exercise referenced?" read of
+  // its own, and adding one is out of this stage's scope. Load-basis edits
+  // are a gate, not a lock (§7.2), so they stay enabled regardless of this.
+  const [measurementProfileLocked, setMeasurementProfileLocked] = useState(false);
+  const [loadBasis, setLoadBasis] = useState<LoadBasis>("total");
+  // §7.1 — `unspecified` is offered only for a row that was migrated with
+  // it; once true for this exercise it stays offered for the rest of the
+  // edit session even if the athlete picks something else and back.
+  const [showUnspecifiedLoadBasis, setShowUnspecifiedLoadBasis] = useState(false);
+  const [volumeCounting, setVolumeCounting] = useState<VolumeCounting>("auto");
   const [notes, setNotes] = useState("");
   const [contributions, setContributions] = useState<ContributionRow[]>([
     emptyContributionRow("primary"),
@@ -82,6 +148,11 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
         setLaterality(ex.laterality);
         setLoadStepKg(String(ex.loadStepKg));
         setStrengthEstimate(ex.strengthEstimate);
+        setMeasurementProfile(ex.measurementProfile);
+        setSavedMeasurementProfile(ex.measurementProfile);
+        if (ex.loadBasis !== null) setLoadBasis(ex.loadBasis);
+        setShowUnspecifiedLoadBasis(ex.loadBasis === "unspecified");
+        setVolumeCounting(ex.volumeCounting);
         setNotes(ex.notes ?? "");
         setArchivedAt(ex.archivedAt);
         setContributions(
@@ -169,6 +240,22 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
       // so sending it on create would be a blanket 400 (§14.4 adds the field
       // to the UPDATE schema only).
       strengthEstimate: mode === "edit" ? strengthEstimate : undefined,
+      // Sent on both create and edit — `createExerciseSchema` defaults it,
+      // `updateExerciseSchema` compares it against the row's current value
+      // to apply the §10.3 lock. Present even while the select is disabled
+      // (locked): it is then always equal to `savedMeasurementProfile`, a
+      // same-value no-op patch.
+      measurementProfile,
+      // Omitted (not `null` — `loadBasisSchema` has no `.nullable()`) when
+      // the profile has no load field; the server's own `resolveLoadBasis`
+      // then nulls the column from `measurementProfile` alone (§7.1). This
+      // is how "send null" (item 2) is actually achieved for a non-nullable
+      // enum column.
+      loadBasis: isLoadBearing ? loadBasis : undefined,
+      // Edit-only, same reasoning as `strengthEstimate` above —
+      // `createExerciseSchema` deliberately has no such key (§11.4: the
+      // service, not the caller, picks the create-time default).
+      volumeCounting: mode === "edit" ? volumeCounting : undefined,
       notes: notes.trim() === "" ? undefined : notes,
       contributions: contributionsResult.contributions,
     };
@@ -190,7 +277,15 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
         return;
       }
 
-      if (res.status === 409) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (res.status === 409 && body?.error === "measurement_profile_locked") {
+        // §10.3, reactive discovery (see the state's own comment): the
+        // attempted change is refused, so the select reverts to what the
+        // row actually holds and locks from here on.
+        setMeasurementProfileLocked(true);
+        setMeasurementProfile(savedMeasurementProfile);
+        setError(MEASUREMENT_PROFILE_LOCKED_COPY);
+      } else if (res.status === 409) {
         setError("An active exercise with this name already exists.");
       } else if (res.status === 422) {
         setError(
@@ -251,6 +346,16 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
       setDeleting(false);
     }
   }
+
+  // §7.1's presence rule, reused rather than re-derived (`isLoadBearing` ===
+  // "does this profile have a load field at all").
+  const isLoadBearing = loadBasisRequired(measurementProfile);
+  const effectiveLoadBasis: LoadBasis | null = isLoadBearing ? loadBasis : null;
+  const strengthEstimateEligible = isProfileEligibleForE1rm(measurementProfile, effectiveLoadBasis);
+  const volumeCountingEligible = isProfileEligibleForVolume(measurementProfile);
+  const loadBasisOptions = showUnspecifiedLoadBasis
+    ? [...CHOOSABLE_LOAD_BASES, "unspecified" as const]
+    : CHOOSABLE_LOAD_BASES;
 
   if (status === "loading") {
     return <p className="text-center text-sm text-slate-400">Loading…</p>;
@@ -353,67 +458,151 @@ export function ExerciseForm({ mode, exerciseId }: ExerciseFormProps) {
       </label>
 
       {/*
-        ADR-011 / estimated-1RM revision §14.4 (O-2, O-4): the opt-out lives
-        in the EDIT form only — `createExerciseSchema` deliberately does not
-        take it, and a new row gets the column's 'auto' default.
+        athletic-measurement-profiles-architecture-evaluation.md §15.1 —
+        Release 2 unlocks this select (Release 1 shipped it present but
+        locked to `load_reps`). It renders in both create and edit mode.
 
-        Placed AFTER `ContributionEditor` on purpose. `muscleTaxonomyV2.spec.ts`
-        addresses the contribution pickers positionally
-        (`page.locator("select").nth(3)` / `.nth(5)`), so a new <select> above
-        them silently shifts every one of those indices. Keeping this one last
-        leaves the existing spec's numbering intact.
-      */}
-      {mode === "edit" && (
-        <label className="flex flex-col gap-1 text-sm text-slate-300">
-          Strength estimate
-          <select
-            value={strengthEstimate}
-            onChange={(e) =>
-              setStrengthEstimate(e.target.value as (typeof STRENGTH_ESTIMATE_MODES)[number])
-            }
-            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
-          >
-            {STRENGTH_ESTIMATE_MODES.map((value) => (
-              <option key={value} value={value}>
-                {STRENGTH_ESTIMATE_LABELS[value]}
-              </option>
-            ))}
-          </select>
-          <span className="text-xs text-slate-500">
-            Turn this off where the logged number is not a load the body lifts — assisted machines,
-            carries, timed work. Off always wins; automatic only estimates where the equipment type
-            allows.
-          </span>
-        </label>
-      )}
-
-      {/*
-        athletic-measurement-profiles-architecture-evaluation.md §15.1 /
-        §21.1 — Release 1 ships this selector present but locked to
-        `load_reps`; it renders in both create and edit mode (unlike
-        Strength estimate, which is edit-only). Placed AFTER the
-        Strength-estimate `<select>` above for the same reason that select
-        sits where it does (see its own comment): `muscleTaxonomyV2.spec.ts`
-        addresses this form's `<select>`s positionally
-        (`page.locator("select").nth(3)` / `.nth(5)`), so a new `<select>`
-        anywhere earlier would silently renumber them. Its value is never
-        read into the submit payload — `createExerciseSchema` already
-        defaults `measurementProfile` to `load_reps`, and the field is
-        locked, so there is nothing for this control to report.
+        Placement is a deliberate judgment call: §15.1's prose puts this
+        selector "directly under Equipment", but every one of this form's
+        `<select>`s from Equipment through the last contribution row is
+        addressed positionally by `tests/e2e/muscleTaxonomyV2.spec.ts`
+        (`page.locator("select").nth(3)` / `.nth(5)`, matching the fixed
+        Equipment/Mechanics/Laterality trio plus two selects per
+        contribution row). Kept AFTER `ContributionEditor`, exactly where
+        Release 1 already placed it for this same reason, so nothing in
+        that spec needs to change. Strength estimate and Volume counting
+        (both edit-only, both new-to-this-form or newly gated here) sit
+        alongside it for the same reason — all four are added/changed only
+        in this trailing group, never inserted earlier.
       */}
       <label className="flex flex-col gap-1 text-sm text-slate-300">
         Measurement profile
         <select
-          value="load_reps"
-          disabled
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 opacity-60 outline-none"
+          value={measurementProfile}
+          disabled={mode === "edit" && measurementProfileLocked}
+          onChange={(e) => setMeasurementProfile(e.target.value as MeasurementProfile)}
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400 disabled:opacity-60"
         >
-          <option value="load_reps">Load + Reps</option>
+          {MEASUREMENT_PROFILES.map((value) => (
+            <option key={value} value={value}>
+              {MEASUREMENT_PROFILE_LABELS[value]}
+            </option>
+          ))}
         </select>
         <span className="text-xs text-slate-500">
-          Load + Reps — more measurement types coming later.
+          {mode === "edit" && measurementProfileLocked
+            ? MEASUREMENT_PROFILE_LOCKED_COPY
+            : "Choose the shape this exercise's sets are logged in — locked once the exercise is used in a workout or template."}
         </span>
       </label>
+
+      {isLoadBearing && (
+        <label className="flex flex-col gap-1 text-sm text-slate-300">
+          Load basis
+          <select
+            value={loadBasis}
+            onChange={(e) => setLoadBasis(e.target.value as LoadBasis)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+          >
+            {loadBasisOptions.map((value) => (
+              <option key={value} value={value}>
+                {LOAD_BASIS_LABELS[value]}
+              </option>
+            ))}
+          </select>
+          {mode === "edit" && (
+            <span className="text-xs text-slate-500">
+              Changing this affects future sessions and strength estimates only — past sessions keep
+              the load basis they were logged with.
+            </span>
+          )}
+        </label>
+      )}
+
+      {/*
+        ADR-011 / estimated-1RM revision §14.4 (O-2, O-4): the opt-out lives
+        in the EDIT form only — `createExerciseSchema` deliberately does not
+        take it, and a new row gets the column's 'auto' default. §11.1/§15.1
+        (item 4, Release 2): replaced by a static line — never a disabled
+        `<select>` — when `isProfileEligibleForE1rm` already structurally
+        refuses this profile/basis combination, so the athlete is never shown
+        an enabling control for an engine that can't run.
+
+        Regression fix (Athletic Measurement Profiles Release 2 e2e stage):
+        this used to be a `<label>Strength estimate<select>…` — Release 2's
+        conditional-eligibility rework replaced it with a `<div><span>` (a
+        static line needs no control to label), which silently dropped the
+        select's only accessible name. `aria-label` on the `<select>` itself
+        restores it without disturbing the surrounding markup or the
+        positional `<select>` indices `muscleTaxonomyV2.spec.ts` addresses
+        (strengthPage.spec.ts's "the library row links to the page, and the
+        edit form's toggle turns it off" — `getByLabel("Strength estimate")`
+        — is what caught this).
+      */}
+      {mode === "edit" && (
+        <div className="flex flex-col gap-1 text-sm text-slate-300">
+          <span>Strength estimate</span>
+          {strengthEstimateEligible ? (
+            <>
+              <select
+                aria-label="Strength estimate"
+                value={strengthEstimate}
+                onChange={(e) =>
+                  setStrengthEstimate(e.target.value as (typeof STRENGTH_ESTIMATE_MODES)[number])
+                }
+                className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+              >
+                {STRENGTH_ESTIMATE_MODES.map((value) => (
+                  <option key={value} value={value}>
+                    {STRENGTH_ESTIMATE_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">
+                Turn this off where the logged number is not a load the body lifts — assisted
+                machines, carries, timed work. Off always wins; automatic only estimates where the
+                equipment type allows.
+              </span>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500">{STRUCTURALLY_UNAVAILABLE_COPY}</p>
+          )}
+        </div>
+      )}
+
+      {/*
+        §11.4 / §15.1 (item 4/5, Release 2) — edit-only like Strength
+        estimate above, for the same reason (a new row's default is the
+        service's own §11.4 rule, not a caller choice). Same static-line
+        replacement when `isProfileEligibleForVolume` structurally refuses.
+      */}
+      {mode === "edit" && (
+        <div className="flex flex-col gap-1 text-sm text-slate-300">
+          <span>Volume counting</span>
+          {volumeCountingEligible ? (
+            <>
+              <select
+                aria-label="Volume counting"
+                value={volumeCounting}
+                onChange={(e) => setVolumeCounting(e.target.value as VolumeCounting)}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-base text-slate-50 outline-none focus:border-slate-400"
+              >
+                {VOLUME_COUNTING_MODES.map((value) => (
+                  <option key={value} value={value}>
+                    {VOLUME_COUNTING_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">
+                Turn this off to exclude this exercise&rsquo;s sets from weekly muscle-volume
+                totals.
+              </span>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500">{STRUCTURALLY_UNAVAILABLE_COPY}</p>
+          )}
+        </div>
+      )}
 
       {mode === "edit" && exerciseId && (
         <Link

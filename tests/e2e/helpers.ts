@@ -206,3 +206,145 @@ export async function deleteAllRecoveryEntries(page: Page): Promise<void> {
     await page.request.delete(`/api/recovery/${entry.id}`);
   }
 }
+
+// Athletic Measurement Profiles Release 2 (docs/reviews/athletic-measurement-
+// profiles-architecture-evaluation.md §15.1/§21.2, A-21..A-24) — shared setup
+// for the six-profile e2e coverage. `POST /api/exercises` already accepts
+// `measurementProfile`/`loadBasis` on create (createExerciseSchema, R2), so a
+// non-`load_reps` fixture exercise needs no ExerciseForm UI drive — that form
+// is its own, already-passing acceptance surface (muscleTaxonomyV2.spec.ts).
+export interface MeasurementExerciseInput {
+  name: string;
+  equipment: string;
+  mechanics?: string;
+  laterality?: string;
+  measurementProfile: string;
+  loadBasis?: string;
+}
+
+export async function createMeasurementExercise(
+  page: Page,
+  input: MeasurementExerciseInput,
+): Promise<{ id: string; name: string }> {
+  const res = await page.request.post("/api/exercises", {
+    data: {
+      name: input.name,
+      equipment: input.equipment,
+      mechanics: input.mechanics ?? "compound",
+      laterality: input.laterality ?? "bilateral",
+      measurementProfile: input.measurementProfile,
+      ...(input.loadBasis !== undefined ? { loadBasis: input.loadBasis } : {}),
+      // Contribution choice is arbitrary and irrelevant to this feature —
+      // "quads" matches the existing e2e convention (metrics.spec.ts,
+      // strengthPage.spec.ts) rather than inventing a new one.
+      contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const { exercise } = (await res.json()) as { exercise: { id: string; name: string } };
+  return exercise;
+}
+
+// Generalizes active-schedule-edit.spec.ts's local `createTemplateWithPrescription`
+// to an arbitrary scheme envelope, so a distance/duration-basis exercise can be
+// prescribed a compatible `distanceRounds`/`durationRounds` scheme (§9.1)
+// instead of only `fixed`.
+export async function createTemplateWithScheme(
+  page: Page,
+  programId: string,
+  exerciseId: string,
+  name: string,
+  scheme: unknown,
+): Promise<string> {
+  const templateRes = await page.request.post(`/api/programs/${programId}/templates`, {
+    data: { name },
+  });
+  expect(templateRes.ok(), `create template ${name}`).toBe(true);
+  const { template } = (await templateRes.json()) as { template: { id: string } };
+
+  const prescriptionRes = await page.request.post(`/api/templates/${template.id}/prescriptions`, {
+    data: { exerciseId, scheme, progression: { strategyId: "manual" } },
+  });
+  expect(prescriptionRes.ok(), `create prescription for ${name}`).toBe(true);
+  return template.id;
+}
+
+export interface ActiveProgramInfo {
+  blockId: string;
+  programId: string;
+  originalSchedulePayload: { templateId: string; weekdays?: number[] }[];
+}
+
+// ADR-004 ("at most one active program/block per user") means a measurement-
+// profile e2e cannot spin up its own independent active block, same
+// constraint active-schedule-edit.spec.ts documents. Read the shared seed
+// block/program first (before a temporary template can even be created,
+// since creating one needs the programId) — the override itself is applied
+// afterwards by `applyScheduleOverride` once a templateId exists.
+export async function getActiveProgramInfo(page: Page): Promise<ActiveProgramInfo> {
+  const bundleRes = await page.request.get("/api/today-bundle");
+  expect(bundleRes.ok()).toBe(true);
+  const bundle = (await bundleRes.json()) as { today: { kind: string; blockId?: string } };
+  if (bundle.today.kind !== "scheduled" || !bundle.today.blockId) {
+    throw new Error(`expected a scheduled today with a blockId, got ${bundle.today.kind}`);
+  }
+  const blockId = bundle.today.blockId;
+
+  const blockRes = await page.request.get(`/api/blocks/${blockId}`);
+  expect(blockRes.ok()).toBe(true);
+  const { block } = (await blockRes.json()) as {
+    block: {
+      programId: string;
+      schedule: { templateId: string; position: number; weekdays: number[] | null }[];
+    };
+  };
+  const originalSchedulePayload = block.schedule
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((e) => ({ templateId: e.templateId, weekdays: e.weekdays ?? undefined }));
+
+  return { blockId, programId: block.programId, originalSchedulePayload };
+}
+
+// Temporarily repoints the shared seed block's schedule at a single
+// rotation-mode entry (no `weekdays`, exactly like tests/e2e/seed.ts's own
+// original entry) so Today resolves the given template regardless of which
+// calendar day the suite runs on. Playwright is pinned to `workers: 1`
+// (serial), so no other spec observes the intermediate state. Pair with
+// `restoreSchedule` in a `finally` block.
+export async function applyScheduleOverride(
+  page: Page,
+  blockId: string,
+  templateId: string,
+): Promise<void> {
+  const res = await page.request.patch(`/api/blocks/${blockId}`, {
+    data: { schedule: [{ templateId }] },
+  });
+  expect(res.ok(), await res.text()).toBe(true);
+}
+
+export async function restoreSchedule(
+  page: Page,
+  blockId: string,
+  originalSchedulePayload: { templateId: string; weekdays?: number[] }[],
+): Promise<void> {
+  await page.request.patch(`/api/blocks/${blockId}`, {
+    data: { schedule: originalSchedulePayload },
+  });
+}
+
+// H-2 remediation (docs/reviews/athletic-measurement-profiles-release-2-review.md)
+// — the ad-hoc "+ Add exercise" search/pick flow, driven through the real UI
+// (AddAdhocExercise.tsx), scoped to ONE named exercise rather than
+// warmupSetClassification.spec.ts's own "+ Add exercise" helper (which just
+// takes whichever result comes first — fine there, since it never cares
+// which exercise it gets). A workout can already show scheduled exercises on
+// screen by the time this runs, so this searches by the exercise's own
+// (test-run-unique) name and clicks that exact result.
+export async function addAdhocExerciseByName(page: Page, exerciseName: string): Promise<void> {
+  await page.getByRole("button", { name: "+ Add exercise" }).click();
+  await page.getByPlaceholder("Search exercises…").fill(exerciseName);
+  const result = page.getByRole("button", { name: exerciseName, exact: true });
+  await result.waitFor();
+  await result.click();
+}

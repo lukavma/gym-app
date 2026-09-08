@@ -5,6 +5,7 @@ import {
   buildSessionExerciseUpsertPayload,
   buildSetLogUpsertPayload,
   buildSetLogDeletePayload,
+  buildSetLogCorrectionPayload,
 } from "@/domain/sync/payloadBuilders";
 import {
   workoutSessionUpsertPayloadSchema,
@@ -229,5 +230,57 @@ describe("buildSetLogDeletePayload", () => {
   it("parses a deleteSet-shaped payload", () => {
     const payload = buildSetLogDeletePayload({ id: setId });
     expect(setLogDeletePayloadSchema.safeParse(payload).success).toBe(true);
+  });
+});
+
+// O-13 (athletic-measurement-profiles-architecture-evaluation.md §12.3) —
+// closes the "never schema-parsed client-side" gap `correctHistorySet`
+// (src/sync/corrections.ts) previously had: it built its payload as a bare
+// object literal, with no `.parse()` at all. `buildSetLogCorrectionPayload`
+// reuses `setLogUpsertPayloadSchema` itself (a correction IS exactly that
+// schema's partial shape — every field but `id`/`sessionExerciseId` is
+// already optional/nullable there), rather than a second schema.
+describe("buildSetLogCorrectionPayload", () => {
+  it("parses a correctHistorySet-shaped partial payload (weight/reps/rir only)", () => {
+    const payload = buildSetLogCorrectionPayload({
+      id: setId,
+      sessionExerciseId,
+      weightKg: 102.5,
+      reps: 4,
+      rir: 1,
+      isWarmup: false,
+      notes: "bumped weight",
+    });
+    expect(setLogUpsertPayloadSchema.safeParse(payload).success).toBe(true);
+  });
+
+  it("parses a single-field distance/duration correction (the load_distance/duration case)", () => {
+    const payload = buildSetLogCorrectionPayload({
+      id: setId,
+      sessionExerciseId,
+      durationS: null,
+    });
+    expect(payload).toEqual({ id: setId, sessionExerciseId, durationS: null });
+  });
+
+  it("throws instead of silently returning when the required sessionExerciseId is missing", () => {
+    expect(() =>
+      // @ts-expect-error — intentionally omitting the required
+      // `sessionExerciseId`, mirroring BLOCKER-1's original shape for the
+      // other builders.
+      buildSetLogCorrectionPayload({ id: setId, weightKg: 100 }),
+    ).toThrow();
+  });
+
+  it("throws on an out-of-range value the previous, unvalidated object literal would have let through silently", () => {
+    expect(() =>
+      buildSetLogCorrectionPayload({
+        id: setId,
+        sessionExerciseId,
+        // `reps` max is 100 (setLogUpsertPayloadSchema) — this used to reach
+        // the outbox (and the wire) completely unchecked.
+        reps: 999,
+      }),
+    ).toThrow();
   });
 });

@@ -30,8 +30,8 @@ test("ops queued during an expired session are retained, surfaced, and drain aft
 
   // Queue a mutation with no way to reach the server yet.
   await context.setOffline(true);
-  await page.getByLabel("kg").fill("70");
-  await page.getByLabel("reps").fill("9");
+  await page.getByLabel("Weight in kilograms").fill("70");
+  await page.getByLabel("Repetitions").fill("9");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("70 kg × 9", { exact: true })).toBeVisible();
 

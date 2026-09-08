@@ -19,9 +19,9 @@ import { login, ensureNoActiveSession, waitForOutboxDrained } from "./helpers";
 // 60 + loadStepKg.
 
 async function logOneSet(page: Page, kg: string, reps: string, rir: string): Promise<void> {
-  await page.getByLabel("kg").fill(kg);
-  await page.getByLabel("reps").fill(reps);
-  await page.getByLabel("RIR").fill(rir);
+  await page.getByLabel("Weight in kilograms").fill(kg);
+  await page.getByLabel("Repetitions").fill(reps);
+  await page.getByLabel("Reps in reserve").fill(rir);
   await page.getByRole("button", { name: "Log", exact: true }).click();
 }
 
@@ -98,10 +98,10 @@ test.describe("progression recommendations (F7)", () => {
       await page.getByRole("button", { name: "Start workout" }).click();
       await page.waitForURL(/\/today\/workout$/);
       await expect(page.getByText("All prescribed reps completed")).toBeVisible();
-      await expect(page.getByLabel("kg")).toHaveValue(String(expectedTarget));
+      await expect(page.getByLabel("Weight in kilograms")).toHaveValue(String(expectedTarget));
 
       // Implicit accept: just log the first work set at the prefilled load.
-      await page.getByLabel("RIR").fill("2");
+      await page.getByLabel("Reps in reserve").fill("2");
       await page.getByRole("button", { name: "Log", exact: true }).click();
       await expect(page.getByText(`Accepted ${expectedTarget} kg`)).toBeVisible();
 

@@ -48,7 +48,16 @@ export function AddAdhocExercise({ disabled = false }: { disabled?: boolean }) {
   async function handleAdd(exercise: ExerciseDto) {
     setBusy(true);
     try {
-      await addAdhocExercise(exercise.id, exercise.name);
+      // H-2 remediation (athletic-measurement-profiles-release-2-review.md) —
+      // `exercise` is a full ExerciseDto, already carrying its own real
+      // measurement profile/load basis; forward those instead of letting the
+      // sync layer silently freeze the load_reps/unspecified default onto a
+      // non-load_reps exercise (which the server then rejects as
+      // measurement_profile_mismatch).
+      await addAdhocExercise(exercise.id, exercise.name, {
+        profile: exercise.measurementProfile,
+        loadBasis: exercise.loadBasis,
+      });
       setOpen(false);
       setSearch("");
     } finally {

@@ -280,7 +280,15 @@ test.describe("strength estimate page (phone-sized viewport)", () => {
 
     // Turn the estimate off from the edit form.
     await page.goto(`/exercises/${exercise.id}`);
-    await page.getByLabel("Strength estimate").selectOption("off");
+    // `{ exact: true }` — this exercise is load-bearing, so the form also
+    // renders a "Load basis" select; its own wrapping <label> (Load
+    // basis<select>…options…</select>) computes an accessible name whose
+    // aggregated text is broad enough to satisfy a bare substring match
+    // against "Strength estimate" too, once that select gained its own
+    // `aria-label` (Athletic Measurement Profiles Release 2 regression fix,
+    // ExerciseForm.tsx). Exact matching pins this to the one control that is
+    // actually named "Strength estimate".
+    await page.getByLabel("Strength estimate", { exact: true }).selectOption("off");
     await page.getByRole("button", { name: "Save changes" }).click();
     await page.waitForURL(/\/exercises$/);
 

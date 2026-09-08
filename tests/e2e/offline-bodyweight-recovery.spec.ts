@@ -4,6 +4,7 @@ import {
   ensureNoActiveSession,
   waitForOutboxDrained,
   waitForServiceWorkerReady,
+  waitForServiceWorkerControl,
   deleteAllRecoveryEntries,
 } from "./helpers";
 
@@ -506,4 +507,123 @@ test.describe("legacy pre-remediation Today bundle — B-3 upgrade path regressi
   // legacy/invalid" (mocking `fetch` directly, the same boundary this code
   // actually reads through) is the faithful regression coverage for this
   // exact requirement.
+});
+
+// Athletic Measurement Profiles Release 2 (architecture-evaluation.md A-24,
+// I-9) — "a legacy cached bundle (fixture without `measurement`) starts and
+// logs a `load_reps` session identically". This binding spec names THIS file
+// as the pattern to extend, but its own `seedLegacyBundleCache` above is
+// shaped for the OTHER legacy-tolerance case it was built for (a `no_schedule`
+// bundle with no `exercises` array at all, missing the whole-bundle
+// `timezone` field). There is nothing to strip a per-exercise `measurement`
+// key FROM in that shape. Judgment call: reused the technique
+// tests/e2e/warmupWorkout.spec.ts's own legacy-bundle test already
+// established for the identical structural situation — a real, current
+// SCHEDULED bundle populated from a genuine session, then both cache layers
+// (the SW's own `today-bundle` runtime cache and the IndexedDB `bundleCache`)
+// rewritten to delete the field under test from every exercise entry, then a
+// real offline reload — rather than hand-building a synthetic scheduled
+// bundle (prescription snapshot, scheme, etc.) from scratch here.
+test.describe("legacy cached bundle without a measurement field (A-24)", () => {
+  test("a pre-Release-2 cached bundle with `measurement` stripped from every exercise entry still starts and logs a load_reps session identically", async ({
+    page,
+    context,
+  }) => {
+    await login(page);
+    await waitForServiceWorkerControl(page);
+    await ensureNoActiveSession(page);
+
+    // Populate both cache layers from a real, current bundle first.
+    await page.goto("/today");
+    await expect(page.getByRole("button", { name: "Start workout" })).toBeVisible();
+
+    // Rewrite the SW-cached copy as a PRE-RELEASE-2 one: delete `measurement`
+    // from every exercise entry — exactly how a bundle cached before this
+    // feature shipped deserializes (I-9: "client bundle and aggregate reads
+    // treat an absent `measurement` as load_reps/unspecified").
+    const swStripped = await page.evaluate(async () => {
+      const names = (await caches.keys()).filter((name) => name.includes("today-bundle"));
+      let rewritten = 0;
+      for (const name of names) {
+        const cache = await caches.open(name);
+        for (const request of await cache.keys()) {
+          const response = await cache.match(request);
+          if (!response) continue;
+          const bundle = (await response.json()) as {
+            today?: { exercises?: Record<string, unknown>[] };
+          };
+          for (const entry of bundle.today?.exercises ?? []) delete entry.measurement;
+          await cache.put(
+            request,
+            new Response(JSON.stringify(bundle), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+          rewritten += 1;
+        }
+      }
+      return { buckets: names.length, rewritten };
+    });
+    expect(swStripped.buckets, "expected the SW today-bundle cache to exist").toBeGreaterThan(0);
+    expect(swStripped.rewritten).toBeGreaterThan(0);
+
+    // ...and the IndexedDB copy too, the same fallback bundleCache.ts reads
+    // when the SW can't answer.
+    const stripped = await page.evaluate(async () => {
+      const req = indexedDB.open("gym-app");
+      const db: IDBDatabase = await new Promise((resolve, reject) => {
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error as unknown as Error);
+      });
+      try {
+        const readTx = db.transaction("bundleCache", "readonly");
+        const record: { bundle: { today: { exercises?: Record<string, unknown>[] } } } | undefined =
+          await new Promise((resolve, reject) => {
+            const r = readTx.objectStore("bundleCache").get("current");
+            r.onsuccess = () => resolve(r.result);
+            r.onerror = () => reject(r.error as unknown as Error);
+          });
+        if (!record) return "NO_CACHE";
+        for (const entry of record.bundle.today.exercises ?? []) delete entry.measurement;
+        const writeTx = db.transaction("bundleCache", "readwrite");
+        await new Promise((resolve, reject) => {
+          const r = writeTx.objectStore("bundleCache").put(record, "current");
+          r.onsuccess = () => resolve(null);
+          r.onerror = () => reject(r.error as unknown as Error);
+        });
+        return "OK";
+      } finally {
+        db.close();
+      }
+    });
+    expect(stripped).toBe("OK");
+
+    // Offline, so Today is answered from one of the doctored caches.
+    await context.setOffline(true);
+    await page.goto("/today");
+    await expect(page.getByRole("button", { name: "Start workout" })).toBeVisible();
+    await page.getByRole("button", { name: "Start workout" }).click();
+    await page.waitForURL(/\/today\/workout$/);
+
+    // Identical to today: `normalizeActiveSessionExercise`'s default (I-9)
+    // treats the absent `measurement` as load_reps/unspecified, so the card
+    // renders the unchanged three-input row (kg, reps, RIR) and logs exactly
+    // as it always has.
+    await expect(page.getByLabel("Weight in kilograms")).toBeVisible();
+    await expect(page.getByLabel("Repetitions")).toBeVisible();
+    await expect(page.getByLabel("Reps in reserve")).toBeVisible();
+    await page.getByLabel("Weight in kilograms").fill("100");
+    await page.getByLabel("Repetitions").fill("5");
+    await page.getByRole("button", { name: "Log" }).click();
+    await expect(page.getByText("100 kg × 5", { exact: true })).toBeVisible();
+
+    await context.setOffline(false);
+    await waitForOutboxDrained(page);
+
+    page.once("dialog", (d) => void d.accept());
+    await page.getByRole("button", { name: "Discard workout" }).click();
+    await page.waitForURL(/\/today$/);
+    await waitForOutboxDrained(page);
+  });
 });

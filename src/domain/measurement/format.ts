@@ -40,16 +40,27 @@ function formatLoad(weightKg: number, loadBasis: LoadBasis | null): string {
   }
 }
 
-// O-8, accepted: seconds are always shown; at or above 60 s an `m:ss` form
-// is additionally shown beside it. The `m:ss` half floors to whole seconds —
+// O-8, accepted: at or above 60 s an `m:ss` form is additionally shown
+// beside the plain seconds figure. The `m:ss` half floors to whole seconds —
 // `numeric(7,2)` durations carry hundredths that a clock face can't render.
-function formatDurationS(durationS: number): string {
-  const secondsLabel = `${durationS} s`;
-  if (durationS < 60) return secondsLabel;
+// Exported (not just used by `formatDurationS` below) so §15.3's workout-card
+// input/edit context can show the same secondary rendering beside a
+// logged-or-prefilled duration input without re-deriving this arithmetic —
+// "check format.ts for a reusable helper before writing a new one for the
+// input/edit context" (§15.3). Returns `null` under 60 s, matching the
+// "additionally shown" wording: there is nothing extra to render there.
+export function minutesSecondsLabel(durationS: number): string | null {
+  if (durationS < 60) return null;
   const wholeSeconds = Math.floor(durationS);
   const minutes = Math.floor(wholeSeconds / 60);
   const seconds = wholeSeconds % 60;
-  return `${secondsLabel} · ${minutes}:${String(seconds).padStart(2, "0")}`;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatDurationS(durationS: number): string {
+  const secondsLabel = `${durationS} s`;
+  const mmss = minutesSecondsLabel(durationS);
+  return mmss === null ? secondsLabel : `${secondsLabel} · ${mmss}`;
 }
 
 // §6.2 guarantees these are non-null on the profiles that reach each branch

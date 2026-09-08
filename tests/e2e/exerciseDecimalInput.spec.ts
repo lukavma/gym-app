@@ -80,8 +80,8 @@ test.describe("decimal input on a phone-sized viewport (Phase 5.5 Light)", () =>
     // The field may arrive pre-filled from a pending recommendation's
     // target (carry-forward prefill) — fill() replaces the whole value
     // rather than appending, unlike pressSequentially().
-    await page.getByLabel("kg").fill("82,5");
-    await page.getByLabel("reps").fill("5");
+    await page.getByLabel("Weight in kilograms").fill("82,5");
+    await page.getByLabel("Repetitions").fill("5");
     await page.getByRole("button", { name: "Log", exact: true }).click();
     await expect(page.getByText("82.5 kg × 5")).toBeVisible();
 

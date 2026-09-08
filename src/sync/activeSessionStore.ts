@@ -9,6 +9,7 @@ import type {
   ExplicitDecisionInput,
 } from "./activeSession";
 import type { ActiveSessionDto } from "./types";
+import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 
 // Finding C — the outcome of trying to adopt a session the server reported as
 // in progress. `gone` means the server has freshly told us it is no longer
@@ -28,7 +29,17 @@ interface ActiveSessionState {
   hydrate: () => Promise<void>;
   start: (input: StartSessionInput) => Promise<void>;
   adoptRemote: (sessionId: string) => Promise<AdoptRemoteOutcome>;
-  addAdhocExercise: (exerciseId: string, exerciseName: string) => Promise<void>;
+  // H-2 remediation (athletic-measurement-profiles-release-2-review.md) —
+  // `measurement` is optional purely as a defensive fallback (see
+  // src/sync/activeSession.ts's own addAdhocExercise): every real caller
+  // (AddAdhocExercise.tsx) has a full ExerciseDto in hand and always
+  // supplies it, so the sync-layer default is never exercised on the normal
+  // path.
+  addAdhocExercise: (
+    exerciseId: string,
+    exerciseName: string,
+    measurement?: { profile: MeasurementProfile; loadBasis: LoadBasis | null },
+  ) => Promise<void>;
   setExerciseSkipped: (sessionExerciseId: string, skipped: boolean) => Promise<void>;
   setExerciseNotes: (sessionExerciseId: string, notes: string | null) => Promise<void>;
   logSet: (input: LogSetInput) => Promise<void>;
@@ -55,6 +66,19 @@ interface ActiveSessionState {
   // user to discard — discard's local effect (session removed) is the
   // escape hatch even if the discard op itself also dead-letters server-side.
   sessionBlocked: boolean;
+  // O-16 (§13.4/§15.3 of the athletic-measurement-profiles evaluation) —
+  // additive to the workoutSession-only `sessionBlocked` above, not a
+  // replacement: a setLog/sessionExercise dead letter is per-row, not
+  // session-fatal, so completion must stay possible (unlike `sessionBlocked`,
+  // which disables Complete). `refusedSetLogIds` holds the `payload.id` of
+  // every dead-lettered setLog op whose `payload.sessionExerciseId` names a
+  // slot in the active session; `refusedSessionExerciseIds` holds the
+  // `payload.id` of every dead-lettered sessionExercise op whose
+  // `payload.sessionId` is the active session. Both are keyed by the row's
+  // own id, not the op's opId, so the UI can match them directly against
+  // `set.id` / `exercise.id` on the rendered card.
+  refusedSetLogIds: ReadonlySet<string>;
+  refusedSessionExerciseIds: ReadonlySet<string>;
   refreshSessionBlocked: () => Promise<void>;
 }
 
@@ -80,12 +104,26 @@ export const useActiveSessionStore = create<ActiveSessionState>((set, get) => ({
     if (live.status !== "fresh") return "unreachable";
     if (!isAdoptableRemoteSession(live.activeSession, sessionId)) return "gone";
     await activeSession.hydrateFromServer(live.activeSession);
-    set({ session: live.activeSession, hydrated: true });
+    // Athletic Measurement Profiles Release 2 regression fix, updated for
+    // H-1 (athletic-measurement-profiles-release-2-review.md §5.1) — the
+    // server's own ActiveSessionExerciseDto (src/server/today/service.ts)
+    // now always populates `measurement` for a live response, but this
+    // in-memory store state is set from the RAW `live.activeSession`
+    // object, not from what was just written to IndexedDB, and it is what
+    // ExerciseCard/HistoryDetail actually render from. Normalizing here too
+    // keeps this path tolerant of a genuinely old/stale remote value (the
+    // same reason `hydrateFromServer` normalizes before its own write) —
+    // without it, a raw pre-upgrade remote object would still crash with
+    // "Cannot read properties of undefined (reading 'profile')" even though
+    // a live server response no longer needs the default. Reuse the same
+    // `normalizeActiveSession` the IndexedDB write already applies, so the
+    // two never disagree.
+    set({ session: activeSession.normalizeActiveSession(live.activeSession), hydrated: true });
     await get().refreshSessionBlocked();
     return "adopted";
   },
-  addAdhocExercise: async (exerciseId, exerciseName) => {
-    const session = await activeSession.addAdhocExercise(exerciseId, exerciseName);
+  addAdhocExercise: async (exerciseId, exerciseName, measurement) => {
+    const session = await activeSession.addAdhocExercise(exerciseId, exerciseName, measurement);
     set({ session });
   },
   setExerciseSkipped: async (sessionExerciseId, skipped) => {
@@ -130,24 +168,69 @@ export const useActiveSessionStore = create<ActiveSessionState>((set, get) => ({
   },
   complete: async () => {
     await activeSession.completeSession();
-    set({ session: null, sessionBlocked: false });
+    set({
+      session: null,
+      sessionBlocked: false,
+      refusedSetLogIds: new Set(),
+      refusedSessionExerciseIds: new Set(),
+    });
   },
   discard: async (sessionId) => {
     const current = get().session;
     await activeSession.discardSession(sessionId);
-    if (!sessionId || current?.id === sessionId) set({ session: null, sessionBlocked: false });
+    if (!sessionId || current?.id === sessionId) {
+      set({
+        session: null,
+        sessionBlocked: false,
+        refusedSetLogIds: new Set(),
+        refusedSessionExerciseIds: new Set(),
+      });
+    }
   },
   sessionBlocked: false,
+  refusedSetLogIds: new Set(),
+  refusedSessionExerciseIds: new Set(),
   refreshSessionBlocked: async () => {
     const session = get().session;
     if (!session) {
-      set({ sessionBlocked: false });
+      set({
+        sessionBlocked: false,
+        refusedSetLogIds: new Set(),
+        refusedSessionExerciseIds: new Set(),
+      });
       return;
     }
     const deadLetters = await listDeadLetterOps();
     const blocked = deadLetters.some(
       (op) => op.entity === "workoutSession" && op.payload.id === session.id,
     );
-    set({ sessionBlocked: blocked });
+    // O-16 — additive matching, same dead-letter list, two more entities.
+    // `sessionExerciseIds` is the active session's own slot ids, exactly
+    // what a setLog op's `payload.sessionExerciseId` must name for that
+    // dead-lettered set to belong to THIS session (not some other, e.g.
+    // already-completed, session's leftover dead letter).
+    const sessionExerciseIds = new Set(session.exercises.map((exercise) => exercise.id));
+    const refusedSetLogIds = new Set<string>(
+      deadLetters
+        .filter(
+          (op) =>
+            op.entity === "setLog" &&
+            typeof op.payload.sessionExerciseId === "string" &&
+            sessionExerciseIds.has(op.payload.sessionExerciseId) &&
+            typeof op.payload.id === "string",
+        )
+        .map((op) => op.payload.id as string),
+    );
+    const refusedSessionExerciseIds = new Set<string>(
+      deadLetters
+        .filter(
+          (op) =>
+            op.entity === "sessionExercise" &&
+            op.payload.sessionId === session.id &&
+            typeof op.payload.id === "string",
+        )
+        .map((op) => op.payload.id as string),
+    );
+    set({ sessionBlocked: blocked, refusedSetLogIds, refusedSessionExerciseIds });
   },
 }));

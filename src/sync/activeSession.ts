@@ -22,7 +22,18 @@ import {
   evaluateSession,
   type SessionExerciseEvaluationInput,
 } from "@/domain/progression/evaluateSession";
-import type { PerformedExercise, RecommendationTarget } from "@/domain/progression/engine";
+import type {
+  PerformedExercise,
+  PerformedSet,
+  RecommendationTarget,
+} from "@/domain/progression/engine";
+import {
+  DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE,
+  DEFAULT_MEASUREMENT_PROFILE,
+  measuredFieldsForProfile,
+  type LoadBasis,
+  type MeasurementProfile,
+} from "@/domain/measurement/profile";
 import {
   freezeWarmupState,
   selectWarmupRoutine as selectWarmupRoutineState,
@@ -71,10 +82,51 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
+// Release 2 (athletic-measurement-profiles-architecture-evaluation.md
+// §21.2) — "sanitise on read", the same precedent bundleCache.ts's
+// withoutActiveSession already established for its own store: a
+// pre-upgrade ActiveSessionExerciseDto has no `measurement` key at all, and
+// a pre-upgrade ActiveSessionSetDto has no `distanceM`/`durationS` keys.
+// Both default to exactly what every pre-Release-2 row already meant
+// (`load_reps` / `unspecified` / no distance / no duration) — never
+// touching the existing weightKg/reps/rir/etc values — so a device that
+// straddles the deploy with an in-progress session keeps working with no
+// IndexedDB migration and no DB_VERSION bump (object stores are
+// schemaless). Applied on every read (getLocalActiveSession) AND before
+// every write that did not just come from a read (hydrateFromServer),
+// mirroring withoutActiveSession's "read as well as write" note.
+function normalizeActiveSessionSet(set: ActiveSessionSetDto): ActiveSessionSetDto {
+  return {
+    ...set,
+    distanceM: set.distanceM ?? null,
+    durationS: set.durationS ?? null,
+  };
+}
+
+function normalizeActiveSessionExercise(
+  exercise: ActiveSessionExerciseDto,
+): ActiveSessionExerciseDto {
+  return {
+    ...exercise,
+    measurement: exercise.measurement ?? {
+      profile: DEFAULT_MEASUREMENT_PROFILE,
+      loadBasis: DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE,
+    },
+    sets: exercise.sets.map(normalizeActiveSessionSet),
+  };
+}
+
+export function normalizeActiveSession(session: ActiveSessionDto): ActiveSessionDto {
+  return {
+    ...session,
+    exercises: session.exercises.map(normalizeActiveSessionExercise),
+  };
+}
+
 export async function getLocalActiveSession(): Promise<ActiveSessionDto | null> {
   const db = await getIdb();
   const session = await db.get("activeSession", ACTIVE_SESSION_KEY);
-  return session ?? null;
+  return session ? normalizeActiveSession(session) : null;
 }
 
 export async function clearLocalSession(): Promise<void> {
@@ -98,7 +150,13 @@ export function hydrateFromServer(remote: ActiveSessionDto): Promise<void> {
       throw new Error(`Refusing to hydrate a session with status "${remote.status}"`);
     }
     const db = await getIdb();
-    await db.put("activeSession", remote, ACTIVE_SESSION_KEY);
+    // Normalized before the write, not only relied on at the next read.
+    // H-1 remediation — the server's own ActiveSessionExerciseDto
+    // (src/server/today/service.ts) now always populates `measurement` for
+    // a live response, so this normalization is no longer masking a live
+    // server gap; it remains solely so a genuinely old, pre-upgrade
+    // `remote` value (or a stale cached copy) still adopts without error.
+    await db.put("activeSession", normalizeActiveSession(remote), ACTIVE_SESSION_KEY);
   });
 }
 
@@ -172,6 +230,12 @@ function workoutSessionFullRowOp(
   };
 }
 
+// W-1 subsumption (§12.3) — `measurementProfile`/`loadBasis` are a FIXED
+// key set, always both emitted, regardless of the slot's profile. This is
+// the one full-row builder O-13's "profile-scoped" rule does NOT apply to:
+// varying this key set is exactly the hazard H-7/MEDIUM-1 already closed for
+// this builder, so it must stay fixed even though the payload's `loadBasis`
+// carries no authority server-side (§10.1, I-14).
 function sessionExerciseFullRowOp(sessionId: string, exercise: ActiveSessionExerciseDto) {
   return {
     opId: newId(),
@@ -184,6 +248,8 @@ function sessionExerciseFullRowOp(sessionId: string, exercise: ActiveSessionExer
       position: exercise.position,
       source: exercise.source,
       prescription: exercise.prescription,
+      measurementProfile: exercise.measurement.profile,
+      loadBasis: exercise.measurement.loadBasis,
       skipped: exercise.skipped,
       notes: exercise.notes,
     }),
@@ -212,7 +278,20 @@ function recommendationDecisionOp(recommendationId: string, decision: DecisionFi
   };
 }
 
-function setLogFullRowOp(sessionExerciseId: string, set: ActiveSessionSetDto) {
+// O-13 (§12.3) — profile-scoped full row: the profile-independent keys
+// (id, sessionExerciseId, setNumber, isWarmup, loggedAt, notes) plus every
+// key the frozen `profile` permits (required and optional, `null` for an
+// absent optional), forbidden keys omitted entirely. `measuredFieldsForProfile`
+// is the single source of the permitted set (`dimensionsOf`, shared with the
+// renumber upserts in `@/domain/sync/setDeletionOps`, so the two full-row
+// setLog emitters can never disagree). For `load_reps` this reduces to
+// exactly today's nine keys, byte for byte (NC-1). Exported for direct unit
+// testing — see tests/unit/sync/setLogEmission.test.ts.
+export function setLogFullRowOp(
+  sessionExerciseId: string,
+  set: ActiveSessionSetDto,
+  profile: MeasurementProfile,
+) {
   return {
     opId: newId(),
     entity: "setLog" as const,
@@ -222,11 +301,9 @@ function setLogFullRowOp(sessionExerciseId: string, set: ActiveSessionSetDto) {
       sessionExerciseId,
       setNumber: set.setNumber,
       isWarmup: set.isWarmup,
-      weightKg: set.weightKg,
-      reps: set.reps,
-      rir: set.rir,
       loggedAt: set.loggedAt,
       notes: set.notes,
+      ...measuredFieldsForProfile(profile, set),
     }),
   };
 }
@@ -274,6 +351,16 @@ export function startSession(input: StartSessionInput): Promise<ActiveSessionDto
       // recommendationForDeload is the defensive backstop that keeps a deload
       // session decision-free regardless of what the bundle entry claims.
       recommendation: recommendationForDeload(input.isDeload, entry.pendingRecommendation),
+      // Frozen exactly once, here — never re-derived live from the current
+      // exercise row afterward (ADR-007's snapshot-on-use discipline,
+      // applied to this field the same way as `prescription`). `entry`'s
+      // own `measurement` is optional (a pre-upgrade cached bundle has no
+      // such key, R-1-style tolerance — see TodayBundleExerciseEntryDto);
+      // the default matches what every pre-Release-2 exercise already was.
+      measurement: entry.measurement ?? {
+        profile: DEFAULT_MEASUREMENT_PROFILE,
+        loadBasis: DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE,
+      },
       sets: [],
     }));
 
@@ -363,6 +450,16 @@ export function setWarmupDismissed(dismissed: boolean): Promise<ActiveSessionDto
 export function addAdhocExercise(
   exerciseId: string,
   exerciseName: string,
+  // H-2 remediation (athletic-measurement-profiles-release-2-review.md) —
+  // the caller (activeSessionStore.ts, in turn AddAdhocExercise.tsx) now has
+  // the exercise's real measurement profile/load basis in hand (it just
+  // searched a full ExerciseDto) and threads it through here. The
+  // load_reps/unspecified default below is a defensive fallback for a
+  // caller that genuinely has nothing — never the normal path — not the
+  // unconditional freeze this used to be, which made ad-hoc-adding any of
+  // the five non-load_reps profiles unusable (the server rejected the
+  // mismatched slot as measurement_profile_mismatch).
+  measurement?: { profile: MeasurementProfile; loadBasis: LoadBasis | null },
 ): Promise<ActiveSessionDto> {
   return serialize(async () => {
     const session = await requireLocalSession();
@@ -379,6 +476,10 @@ export function addAdhocExercise(
       notes: null,
       loadStepKg: null,
       recommendation: null,
+      measurement: measurement ?? {
+        profile: DEFAULT_MEASUREMENT_PROFILE,
+        loadBasis: DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE,
+      },
       sets: [],
     };
     session.exercises.push(exercise);
@@ -428,11 +529,22 @@ export function setExerciseNotes(
   });
 }
 
+// athletic-measurement-profiles-architecture-evaluation.md §15.3 — widened
+// from the pre-Release-2 shape (`weightKg`/`reps` required non-null) to
+// `number | null` so a non-`load_reps` card (ExerciseCard.tsx) can log a set
+// missing the dimensions its profile forbids; `distanceM`/`durationS` are
+// new, optional (default null, matching every pre-Release-2 caller that
+// predates them). Every existing call site that supplies only
+// weightKg/reps/rir keeps compiling and keeps producing the identical
+// `load_reps` set it always did (NC-1/NC-13's byte-identical requirement) —
+// this is a pure widening, not a behaviour change for `load_reps`.
 export interface LogSetInput {
   sessionExerciseId: string;
-  weightKg: number;
-  reps: number;
+  weightKg: number | null;
+  reps: number | null;
   rir: number | null;
+  distanceM?: number | null;
+  durationS?: number | null;
   isWarmup?: boolean;
   notes?: string | null;
 }
@@ -450,12 +562,20 @@ export function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
       weightKg: input.weightKg,
       reps: input.reps,
       rir: input.rir,
+      // §15.3 — whatever the card collected for the frozen profile's
+      // distance/duration dimensions; null (never omitted) when the caller
+      // didn't supply one, matching every field above. `setLogFullRowOp`
+      // below still emits only the frozen profile's permitted keys
+      // (`measuredFieldsForProfile`, O-13) regardless of what this object
+      // carries, so a `load_reps` set's wire shape is unaffected either way.
+      distanceM: input.distanceM ?? null,
+      durationS: input.durationS ?? null,
       loggedAt,
       notes: input.notes ?? null,
     };
     exercise.sets.push(set);
 
-    const ops: OutboxOpInput[] = [setLogFullRowOp(exercise.id, set)];
+    const ops: OutboxOpInput[] = [setLogFullRowOp(exercise.id, set, exercise.measurement.profile)];
 
     // progression-engine.md §7 — the implicit decision: the FIRST work set
     // resolves a still-pending recommendation. Committed in the same IndexedDB
@@ -466,12 +586,19 @@ export function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
     // session can never enqueue an implicit decision, even a resumed session
     // hydrated before this fix that still carries `exercise.recommendation`.
     const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
-    if (!set.isWarmup && rec && rec.decision.status === "pending") {
+    // `input.weightKg !== null` — a type-safety backstop, not a live branch:
+    // `exercise.recommendation` is only ever populated server-side for a
+    // `load_reps` slot (evaluateSession.ts's own profile gate, NC-9), whose
+    // card always supplies a real weight, so this narrows `input.weightKg`
+    // from §15.3's widened `number | null` back to the `number`
+    // `resolveImplicitDecision` (unmodified, load_reps-only) still requires,
+    // without touching that function's own signature.
+    if (!set.isWarmup && input.weightKg !== null && rec && rec.decision.status === "pending") {
       const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
       if (isFirstWorkSet) {
         const implicit = resolveImplicitDecision(
           { action: rec.action, target: rec.target },
-          { weightKg: set.weightKg },
+          { weightKg: input.weightKg },
           // Engine targets are already rounded to loadStepKg; 0 degrades the
           // comparison to exact-value equality, which is then still correct.
           exercise.loadStepKg ?? 0,
@@ -548,8 +675,14 @@ export function decideRecommendation(
   });
 }
 
+// §15.3 — widened to the two new dimensions so a non-`load_reps` card's
+// edit form can patch them too; `Partial` already made every existing key
+// optional, so this is additive for every pre-Release-2 caller.
 export type EditSetPatch = Partial<
-  Pick<ActiveSessionSetDto, "weightKg" | "reps" | "rir" | "isWarmup" | "notes">
+  Pick<
+    ActiveSessionSetDto,
+    "weightKg" | "reps" | "rir" | "distanceM" | "durationS" | "isWarmup" | "notes"
+  >
 >;
 
 // Allowed for both in-progress and already-completed sessions server-side
@@ -572,7 +705,7 @@ export function editSet(
 
     await commitSessionMutation({
       session,
-      ops: [setLogFullRowOp(exercise.id, set)],
+      ops: [setLogFullRowOp(exercise.id, set, exercise.measurement.profile)],
     });
     void flushOutbox();
     return session;
@@ -593,6 +726,7 @@ export function deleteSet(sessionExerciseId: string, setId: string): Promise<Act
       sessionExerciseId: exercise.id,
       setId,
       sets: exercise.sets,
+      profile: exercise.measurement.profile,
     });
     // Already gone — emitting a delete op would be harmless, but a renumbering
     // pass over rows we have no reason to touch would not be.
@@ -630,6 +764,38 @@ export function setSessionNotes(notes: string | null): Promise<ActiveSessionDto>
 // completion op lands; if the onLine heuristic is ever wrong, §5's
 // missing-evaluation fallback (carry-forward prefill, nothing fabricated)
 // covers the next workout.
+// Release 2 (athletic-measurement-profiles-architecture-evaluation.md
+// §21.2, NC-9) — ActiveSessionSetDto/HistorySetSummaryDto now carry a
+// nullable weightKg/reps for the new profiles (§6.2), but the shared,
+// UNMODIFIED domain/progression PerformedSet stays required-non-null
+// (I-13/H-12's "a null is never coerced to 0" rule forbids `?? 0` here).
+// §15.3's card can now create a genuinely null-valued set (any profile but
+// `load_reps` forbids weight and/or reps), so this filter is no longer only
+// a type-safety backstop — it is the real exclusion that keeps a
+// distance/duration set out of the load-only progression engine, mirroring
+// the same profile gate `evaluateSession` already applies server-side
+// (evaluateSession.ts's `profile !== DEFAULT_MEASUREMENT_PROFILE` skip)
+// rather than fabricating a value. `buildClientRecommendationOps` below
+// additionally skips every such exercise before it ever reaches this
+// filter, because a non-`load_reps` prescription's `progression.strategyId`
+// can only be `manual` (§9.2's compatibility gate) — the pre-existing
+// `strategyId === "manual"` skip already excludes it.
+function toPerformedSets(
+  sets: readonly {
+    isWarmup: boolean;
+    weightKg: number | null;
+    reps: number | null;
+    rir: number | null;
+  }[],
+): PerformedSet[] {
+  const result: PerformedSet[] = [];
+  for (const s of sets) {
+    if (s.isWarmup || s.weightKg === null || s.reps === null) continue;
+    result.push({ weightKg: s.weightKg, reps: s.reps, rir: s.rir });
+  }
+  return result;
+}
+
 async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<OutboxOpInput[]> {
   const cached = await getCachedBundle();
   const bundleEntries = new Map<string, TodayBundleExerciseEntryDto>();
@@ -658,9 +824,7 @@ async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<
             ...(h.prescribed.targetRir ? { targetRir: h.prescribed.targetRir } : {}),
           }
         : null,
-      workSets: h.sets
-        .filter((s) => !s.isWarmup)
-        .map((s) => ({ weightKg: s.weightKg, reps: s.reps, rir: s.rir })),
+      workSets: toPerformedSets(h.sets),
     }));
 
     inputs.push({
@@ -671,11 +835,7 @@ async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<
         snapshot,
         exercise.recommendation?.decision ?? null,
       ),
-      workSets: exercise.sets
-        .filter((s) => !s.isWarmup)
-        .slice()
-        .sort((a, b) => a.setNumber - b.setNumber)
-        .map((s) => ({ weightKg: s.weightKg, reps: s.reps, rir: s.rir })),
+      workSets: toPerformedSets(exercise.sets.slice().sort((a, b) => a.setNumber - b.setNumber)),
       history,
       loadStepKg,
     });

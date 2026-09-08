@@ -124,3 +124,44 @@ const LOAD_BASIS_REQUIRED: Record<MeasurementProfile, boolean> = {
 export function loadBasisRequired(profile: MeasurementProfile): boolean {
   return LOAD_BASIS_REQUIRED[profile];
 }
+
+// §12.3 (O-13) — the client emitter's permitted-key set, derived from the
+// same matrix `dimensionsOf` reads: a required or optional field's key is
+// always present in the result (its value, or `null` when the value itself
+// is absent); a forbidden field's key is omitted entirely. Never
+// conditional within a profile — every set of one profile gets exactly the
+// same key set, which is what keeps a `load_reps` row's shape byte-for-byte
+// stable. The sole source both `src/sync/activeSession.ts`'s
+// `setLogFullRowOp` and `src/domain/sync/setDeletionOps.ts`'s renumber
+// upserts read, so the two full-row emitters can never disagree on shape.
+export interface MeasuredSetValues {
+  weightKg: number | null;
+  reps: number | null;
+  rir: number | null;
+  distanceM: number | null;
+  durationS: number | null;
+}
+
+const DIMENSION_TO_FIELD: Record<keyof ProfileDimensions, keyof MeasuredSetValues> = {
+  weight: "weightKg",
+  reps: "reps",
+  rir: "rir",
+  distance: "distanceM",
+  duration: "durationS",
+};
+
+export function measuredFieldsForProfile(
+  profile: MeasurementProfile,
+  values: MeasuredSetValues,
+): Partial<MeasuredSetValues> {
+  const dims = dimensionsOf(profile);
+  const result: Partial<MeasuredSetValues> = {};
+  for (const [dimension, field] of Object.entries(DIMENSION_TO_FIELD) as [
+    keyof ProfileDimensions,
+    keyof MeasuredSetValues,
+  ][]) {
+    if (dims[dimension] === "forbidden") continue;
+    result[field] = values[field] ?? null;
+  }
+  return result;
+}

@@ -47,8 +47,8 @@ test("a create whose response is lost client-side after the server already appli
     await route.abort("failed");
   });
 
-  await page.getByLabel("kg").fill("92.5");
-  await page.getByLabel("reps").fill("6");
+  await page.getByLabel("Weight in kilograms").fill("92.5");
+  await page.getByLabel("Repetitions").fill("6");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("92.5 kg × 6", { exact: true })).toBeVisible();
 
@@ -94,8 +94,8 @@ test("a different id claiming an already-occupied set-number slot still rejects 
   await page.waitForURL(/\/today\/workout$/);
   await waitForOutboxDrained(page);
 
-  await page.getByLabel("kg").fill("100");
-  await page.getByLabel("reps").fill("5");
+  await page.getByLabel("Weight in kilograms").fill("100");
+  await page.getByLabel("Repetitions").fill("5");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("100 kg × 5", { exact: true })).toBeVisible();
   await waitForOutboxDrained(page);

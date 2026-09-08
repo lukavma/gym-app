@@ -58,8 +58,8 @@ test("replaying each /api/sync batch a second time, immediately, never duplicate
   await page.waitForURL(/\/today\/workout$/);
   await waitForOutboxDrained(page);
 
-  await page.getByLabel("kg").fill("90");
-  await page.getByLabel("reps").fill("7");
+  await page.getByLabel("Weight in kilograms").fill("90");
+  await page.getByLabel("Repetitions").fill("7");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("90 kg × 7", { exact: true })).toBeVisible();
   await waitForOutboxDrained(page);

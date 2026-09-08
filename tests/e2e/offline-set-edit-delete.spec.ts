@@ -15,8 +15,8 @@ import {
 // Needs a seeded dev Postgres — see playwright.config.ts's `webServer`.
 
 async function logSet(page: Page, kg: string, reps: string): Promise<void> {
-  await page.getByLabel("kg").fill(kg);
-  await page.getByLabel("reps").fill(reps);
+  await page.getByLabel("Weight in kilograms").fill(kg);
+  await page.getByLabel("Repetitions").fill(reps);
   await page.getByRole("button", { name: "Log" }).click();
 }
 

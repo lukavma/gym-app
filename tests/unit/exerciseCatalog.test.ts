@@ -143,4 +143,46 @@ describe("EXERCISE_CATALOG structure", () => {
       expect(EXERCISE_CATALOG).toHaveLength(93);
     });
   });
+
+  // athletic-measurement-profiles-architecture-evaluation.md §14.4 (A-17) —
+  // the three legacy entries `reconcileMeasurementProfiles` also reconciles
+  // on an existing database carry their Release-2 shape explicitly here too,
+  // so a fresh seed inserts them already-correctly-shaped and the reconcile
+  // is a no-op on a clean database (proven end-to-end by
+  // tests/integration/reconcileMeasurementProfiles.integration.test.ts).
+  describe("Release 2 measurement-profile reconcile — clean-seed shape (§14.3, §14.4, A-17)", () => {
+    it("bodyweight-plank seeds as duration, with no load_basis", () => {
+      const entry = EXERCISE_CATALOG.find((item) => item.slug === "bodyweight-plank");
+      expect(entry?.measurementProfile).toBe("duration");
+      expect(entry?.loadBasis).toBeUndefined();
+      expect(entry?.volumeCounting).toBe("off");
+    });
+
+    it("dumbbell-farmers-carry seeds as load_distance / per_hand, not counted as volume", () => {
+      const entry = EXERCISE_CATALOG.find((item) => item.slug === "dumbbell-farmers-carry");
+      expect(entry?.measurementProfile).toBe("load_distance");
+      expect(entry?.loadBasis).toBe("per_hand");
+      expect(entry?.volumeCounting).toBe("off");
+    });
+
+    it("machine-assisted-pull-up seeds with load_basis assistance, profile unchanged (load_reps)", () => {
+      const entry = EXERCISE_CATALOG.find((item) => item.slug === "machine-assisted-pull-up");
+      expect(entry?.measurementProfile).toBeUndefined(); // stays the load_reps default
+      expect(entry?.loadBasis).toBe("assistance");
+    });
+
+    it("every other catalog entry still omits the three new fields (untouched, §14.4)", () => {
+      const untouchedTargets = new Set([
+        "bodyweight-plank",
+        "dumbbell-farmers-carry",
+        "machine-assisted-pull-up",
+      ]);
+      for (const item of EXERCISE_CATALOG) {
+        if (untouchedTargets.has(item.slug)) continue;
+        expect(item.measurementProfile, item.slug).toBeUndefined();
+        expect(item.loadBasis, item.slug).toBeUndefined();
+        expect(item.volumeCounting, item.slug).toBeUndefined();
+      }
+    });
+  });
 });

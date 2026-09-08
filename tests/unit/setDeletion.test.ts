@@ -26,6 +26,8 @@ function makeSets(count: number): SetLogRowFields[] {
     weightKg: 100 + index * 2.5,
     reps: 8,
     rir: 2,
+    distanceM: null,
+    durationS: null,
     loggedAt: new Date(Date.UTC(2026, 7, 17, 10, index)).toISOString(),
     notes: null,
   }));
@@ -214,6 +216,56 @@ describe("buildSetDeletionOps", () => {
       loggedAt: sets[2]!.loggedAt,
       notes: "last one felt heavy",
     });
+  });
+
+  // O-13 (athletic-measurement-profiles-architecture-evaluation.md §12.3) —
+  // the renumber upserts are profile-scoped, not always the nine `load_reps`
+  // keys: a `load_distance` slot's survivors must carry `weightKg`/
+  // `distanceM` (both required for this profile), carry `durationS` too
+  // (optional for this profile — its key is present, valued `null`, since
+  // this fixture never sets it) and omit `reps`/`rir` entirely (forbidden).
+  it("a renumbered load_distance slot's upserts carry weightKg/distanceM/durationS(null) and omit reps/rir", () => {
+    const sets: SetLogRowFields[] = Array.from({ length: 3 }, (_, index) => ({
+      id: newId(),
+      setNumber: index + 1,
+      isWarmup: false,
+      weightKg: 40 + index,
+      reps: null,
+      rir: null,
+      distanceM: 100 + index * 10,
+      durationS: null,
+      loggedAt: new Date(Date.UTC(2026, 7, 17, 10, index)).toISOString(),
+      notes: null,
+    }));
+    const { ops } = buildSetDeletionOps({
+      sessionExerciseId,
+      setId: sets[0]!.id,
+      sets,
+      profile: "load_distance",
+    });
+
+    const renumbered = ops.slice(1);
+    expect(renumbered).toHaveLength(2);
+    // Ascending order of the NEW set number — unchanged by profile-scoping.
+    expect(renumbered.map((op) => op.payload.setNumber)).toEqual([1, 2]);
+    for (const op of renumbered) {
+      expect(Object.keys(op.payload).sort()).toEqual(
+        [
+          "id",
+          "sessionExerciseId",
+          "setNumber",
+          "isWarmup",
+          "weightKg",
+          "distanceM",
+          "durationS",
+          "loggedAt",
+          "notes",
+        ].sort(),
+      );
+      expect(op.payload.durationS).toBeNull();
+      expect(setLogUpsertPayloadSchema.safeParse(op.payload).success).toBe(true);
+    }
+    expect(renumbered.map((op) => op.payload.distanceM)).toEqual([110, 120]);
   });
 
   it("generates strictly ascending opIds with the real uuidv7 factory", () => {

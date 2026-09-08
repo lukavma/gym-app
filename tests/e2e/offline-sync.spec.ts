@@ -2,11 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chromium, test, expect, type Page } from "@playwright/test";
+import { formatSetLine } from "@/domain/measurement/format";
 import {
   login,
   ensureNoActiveSession,
   waitForOutboxDrained,
   waitForServiceWorkerReady,
+  createMeasurementExercise,
+  createTemplateWithScheme,
+  getActiveProgramInfo,
+  applyScheduleOverride,
+  restoreSchedule,
 } from "./helpers";
 
 // Phase 3 e2e — airplane-mode workout logging, survives a genuine
@@ -188,7 +194,119 @@ test("logging sets fully offline survives a same-process reload and syncs exactl
 });
 
 async function logSet(page: Page, kg: string, reps: string): Promise<void> {
-  await page.getByLabel("kg").fill(kg);
-  await page.getByLabel("reps").fill(reps);
+  await page.getByLabel("Weight in kilograms").fill(kg);
+  await page.getByLabel("Repetitions").fill(reps);
   await page.getByRole("button", { name: "Log" }).click();
 }
+
+// Athletic Measurement Profiles Release 2 (architecture-evaluation.md A-23) —
+// a profile-scoped variant of the same-process-reload case just above,
+// proving the offline convergence mechanism generalizes to a non-`load_reps`
+// slot: `setLogFullRowOp`'s profile-scoped key set (O-13) still round-trips
+// through IndexedDB, a reload, and the outbox exactly once, for a
+// `load_distance` round. ADR-004 (single active program/block) means this
+// temporarily repoints the shared seed block's schedule the same way
+// active-schedule-edit.spec.ts / measurementProfiles.spec.ts do, restored in
+// `finally`.
+test("a load_distance round logged fully offline survives a same-process reload and syncs exactly once on reconnect (A-23, profile-scoped)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await waitForServiceWorkerReady(page);
+  await ensureNoActiveSession(page);
+
+  const unique = `E2E MP Offline Sled ${Date.now()}`;
+  const programInfo = await getActiveProgramInfo(page);
+  const exercise = await createMeasurementExercise(page, {
+    name: unique,
+    equipment: "other",
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+  });
+  const templateId = await createTemplateWithScheme(
+    page,
+    programInfo.programId,
+    exercise.id,
+    unique,
+    {
+      v: 1,
+      scheme: { type: "distanceRounds", sets: 4, distanceM: 20 },
+    },
+  );
+
+  try {
+    await applyScheduleOverride(page, programInfo.blockId, templateId);
+    await page.goto("/today");
+    await ensureNoActiveSession(page);
+
+    await page.getByRole("button", { name: "Start workout" }).click();
+    await page.waitForURL(/\/today\/workout$/);
+    await waitForOutboxDrained(page);
+
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Log" })).toBeVisible();
+
+    await context.setOffline(true);
+
+    const line1 = formatSetLine("load_distance", "total", {
+      weightKg: 60,
+      reps: null,
+      rir: null,
+      distanceM: 20,
+      durationS: 12.4,
+    });
+    await page.getByLabel("Weight in kilograms").fill("60");
+    await page.getByLabel("Distance in metres").fill("20");
+    await page.getByLabel("Time in seconds").fill("12.4");
+    await page.getByRole("button", { name: "Log" }).click();
+    await expect(page.getByText(line1, { exact: true })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByText(line1, { exact: true })).toBeVisible();
+
+    const line2 = formatSetLine("load_distance", "total", {
+      weightKg: 62.5,
+      reps: null,
+      rir: null,
+      distanceM: 20,
+      durationS: 13.1,
+    });
+    await page.getByLabel("Weight in kilograms").fill("62.5");
+    await page.getByLabel("Distance in metres").fill("20");
+    await page.getByLabel("Time in seconds").fill("13.1");
+    await page.getByRole("button", { name: "Log" }).click();
+    await expect(page.getByText(line2, { exact: true })).toBeVisible();
+
+    await context.setOffline(false);
+    await waitForOutboxDrained(page);
+
+    page.once("dialog", (d) => void d.accept());
+    await page.getByRole("button", { name: "Complete workout" }).click();
+    await page.waitForURL(/\/today$/);
+    await waitForOutboxDrained(page);
+
+    const historyList = (await (await page.request.get("/api/history?limit=1")).json()) as {
+      sessions: { id: string }[];
+    };
+    await page.goto(`/history/${historyList.sessions[0]!.id}`);
+
+    // Exactly once: both rounds present, each exactly once — not lost, not
+    // duplicated by the offline replay, and zero dead letters
+    // (waitForOutboxDrained above already requires dead:0).
+    await expect(page.getByText(line1, { exact: true })).toHaveCount(1);
+    await expect(page.getByText(line2, { exact: true })).toHaveCount(1);
+  } finally {
+    await page.goto("/today/workout").catch(() => undefined);
+    const discardButton = page.getByRole("button", { name: "Discard workout" });
+    if (await discardButton.isVisible().catch(() => false)) {
+      page.once("dialog", (d) => void d.accept());
+      await discardButton.click();
+      await page.waitForURL(/\/today$/).catch(() => undefined);
+    }
+    await restoreSchedule(page, programInfo.blockId, programInfo.originalSchedulePayload);
+    await page.request
+      .post(`/api/templates/${templateId}/archive`, { data: { action: "archive" } })
+      .catch(() => undefined);
+  }
+});

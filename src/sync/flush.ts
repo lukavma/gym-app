@@ -6,6 +6,7 @@ import {
   nextBackoffDelayMs,
 } from "./outbox";
 import { useSyncStatusStore } from "./syncStatusStore";
+import { useActiveSessionStore } from "./activeSessionStore";
 import type { SyncOpEnvelope } from "@/domain/sync/schema";
 
 const BATCH_SIZE = 50;
@@ -110,7 +111,17 @@ export async function flushOutbox(): Promise<FlushResult> {
     const result = (await response.json()) as SyncApiResponse;
     await removeApplied(result.applied);
     await Promise.all(result.rejected.map((r) => markDeadLetter(r.opId, r.reason)));
-    if (result.rejected.length > 0) void useSyncStatusStore.getState().refreshDeadLetters();
+    if (result.rejected.length > 0) {
+      void useSyncStatusStore.getState().refreshDeadLetters();
+      // M-2 (athletic-measurement-profiles-release-2-review.md) — a rejected
+      // setLog/sessionExercise op is what the active-session card's own
+      // refused-set marker and Complete's drop-confirmation key off (O-16),
+      // both read from useActiveSessionStore, not this dead-letter list.
+      // Without this, they only catch up on SyncStatusBanner's next 5s poll
+      // (refreshSessionBlocked) — refresh it here too so both update the
+      // moment the rejection is actually recorded, not up to 5s later.
+      void useActiveSessionStore.getState().refreshSessionBlocked();
+    }
 
     const handledIds = new Set([...result.applied, ...result.rejected.map((r) => r.opId)]);
     const untouched = pending.filter((op) => !handledIds.has(op.opId));

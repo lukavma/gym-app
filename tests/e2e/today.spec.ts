@@ -21,8 +21,8 @@ test.describe("today: resume and takeover", () => {
     await page.getByRole("button", { name: "Start workout" }).click();
     await page.waitForURL(/\/today\/workout$/);
 
-    await page.getByLabel("kg").fill("100");
-    await page.getByLabel("reps").fill("8");
+    await page.getByLabel("Weight in kilograms").fill("100");
+    await page.getByLabel("Repetitions").fill("8");
     await page.getByRole("button", { name: "Log" }).click();
     await expect(page.getByText("100 kg × 8")).toBeVisible();
 
@@ -51,8 +51,8 @@ test.describe("today: resume and takeover", () => {
       await ensureNoActiveSession(pageA);
       await pageA.getByRole("button", { name: "Start workout" }).click();
       await pageA.waitForURL(/\/today\/workout$/);
-      await pageA.getByLabel("kg").fill("60");
-      await pageA.getByLabel("reps").fill("12");
+      await pageA.getByLabel("Weight in kilograms").fill("60");
+      await pageA.getByLabel("Repetitions").fill("12");
       await pageA.getByRole("button", { name: "Log" }).click();
       await expect(pageA.getByText("60 kg × 12")).toBeVisible();
       // Wait for device A's own writes to reach the server before device B

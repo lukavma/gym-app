@@ -66,13 +66,13 @@ test("a lost reply to a full reconnect batch (create, skip toggle, notes, set cr
   await page.getByRole("button", { name: "Unskip" }).click();
   await expect(page.getByRole("button", { name: "Skip" })).toBeVisible();
 
-  await page.getByLabel("kg").fill("100");
-  await page.getByLabel("reps").fill("5");
+  await page.getByLabel("Weight in kilograms").fill("100");
+  await page.getByLabel("Repetitions").fill("5");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("100 kg × 5", { exact: true })).toBeVisible();
 
-  await page.getByLabel("kg").fill("102.5");
-  await page.getByLabel("reps").fill("5");
+  await page.getByLabel("Weight in kilograms").fill("102.5");
+  await page.getByLabel("Repetitions").fill("5");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("102.5 kg × 5", { exact: true })).toBeVisible();
 
@@ -178,18 +178,18 @@ test("a lost reply to a reconnect batch that deletes one of its own sets converg
   await page.getByRole("button", { name: "Start workout" }).click();
   await page.waitForURL(/\/today\/workout$/);
 
-  await page.getByLabel("kg").fill("70");
-  await page.getByLabel("reps").fill("5");
+  await page.getByLabel("Weight in kilograms").fill("70");
+  await page.getByLabel("Repetitions").fill("5");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("70 kg × 5", { exact: true })).toBeVisible();
 
-  await page.getByLabel("kg").fill("72.5");
-  await page.getByLabel("reps").fill("5");
+  await page.getByLabel("Weight in kilograms").fill("72.5");
+  await page.getByLabel("Repetitions").fill("5");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("72.5 kg × 5", { exact: true })).toBeVisible();
 
-  await page.getByLabel("kg").fill("75");
-  await page.getByLabel("reps").fill("5");
+  await page.getByLabel("Weight in kilograms").fill("75");
+  await page.getByLabel("Repetitions").fill("5");
   await page.getByRole("button", { name: "Log" }).click();
   await expect(page.getByText("75 kg × 5", { exact: true })).toBeVisible();
 
