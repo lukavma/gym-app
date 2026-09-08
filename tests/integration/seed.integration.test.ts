@@ -16,7 +16,32 @@ import {
   seededExerciseId,
 } from "@/db/seed";
 import { MUSCLE_GROUP_SLUGS } from "@/domain/exercises/muscleGroups";
+import { DEFAULT_CONTRIBUTION_WEIGHT } from "@/domain/exercises/schema";
 import { createExercise } from "@/server/exercises/service";
+
+// Exact stored shape per O-10(i), authoring §4.11 / §5 — the ten Release 3
+// athletic entries' measurement_profile and load_basis as they must land in
+// the database (not just in the catalog literal, M-1's silent-failure risk).
+const RELEASE_3_STORED_SHAPE: ReadonlyArray<{
+  slug: string;
+  measurementProfile: string;
+  loadBasis: string | null;
+}> = [
+  { slug: "other-sled-push", measurementProfile: "load_distance", loadBasis: "total" },
+  { slug: "other-sled-drag", measurementProfile: "load_distance", loadBasis: "total" },
+  { slug: "other-farmers-carry", measurementProfile: "load_distance", loadBasis: "per_hand" },
+  {
+    slug: "dumbbell-suitcase-carry",
+    measurementProfile: "load_distance",
+    loadBasis: "per_hand",
+  },
+  { slug: "bodyweight-sprint", measurementProfile: "distance_time", loadBasis: null },
+  { slug: "bodyweight-shuttle-run", measurementProfile: "distance_time", loadBasis: null },
+  { slug: "other-med-ball-slam", measurementProfile: "load_reps", loadBasis: "total" },
+  { slug: "bodyweight-broad-jump", measurementProfile: "reps", loadBasis: null },
+  { slug: "bodyweight-box-jump", measurementProfile: "reps", loadBasis: null },
+  { slug: "bodyweight-side-plank", measurementProfile: "duration", loadBasis: null },
+];
 
 async function insertTestUser(db: Awaited<ReturnType<typeof createTestDb>>) {
   const [user] = await db
@@ -140,6 +165,40 @@ describe("seed (PGlite integration)", () => {
     }
   });
 
+  it("seeds all ten Release 3 athletic entries with their exact stored metadata, contributions and default weights", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    for (const expected of RELEASE_3_STORED_SHAPE) {
+      const id = seededExerciseId(user.id, expected.slug);
+      const [row] = await db.select().from(exercises).where(eq(exercises.id, id));
+      expect(row, expected.slug).toBeTruthy();
+      expect(row?.measurementProfile, expected.slug).toBe(expected.measurementProfile);
+      expect(row?.loadBasis, expected.slug).toBe(expected.loadBasis);
+      expect(row?.volumeCounting, expected.slug).toBe("off");
+
+      const catalogItem = EXERCISE_CATALOG.find((item) => item.slug === expected.slug);
+      if (!catalogItem) throw new Error(`catalog missing ${expected.slug}`);
+      const contributions = await db
+        .select()
+        .from(exerciseMuscleContributions)
+        .where(eq(exerciseMuscleContributions.exerciseId, id));
+      expect(contributions, expected.slug).toHaveLength(catalogItem.contributions.length);
+      for (const expectedContribution of catalogItem.contributions) {
+        const stored = contributions.find(
+          (c) => c.muscleGroupId === expectedContribution.muscleGroupId,
+        );
+        expect(stored, `${expected.slug}/${expectedContribution.muscleGroupId}`).toBeTruthy();
+        expect(stored?.role, expected.slug).toBe(expectedContribution.role);
+        expect(stored?.weight, expected.slug).toBe(
+          DEFAULT_CONTRIBUTION_WEIGHT[expectedContribution.role],
+        );
+      }
+    }
+  });
+
   it("reseeding the exercise catalog is idempotent (no duplicate rows)", async () => {
     const db = await createTestDb();
     await seedMuscleGroups(db);
@@ -254,6 +313,49 @@ describe("seed (PGlite integration)", () => {
 
     const remaining = await db.select().from(exercises).where(eq(exercises.userId, user.id));
     expect(remaining).toHaveLength(EXERCISE_CATALOG.length - 1);
+  });
+
+  // Release 3 preservation witness (authoring §8.7): the ledger skip is
+  // slug-agnostic (exercises.ts:49-93), so the Phase 1 H1 guarantee holds for
+  // the ten athletic entries exactly as for the 93 legacy ones — proven here
+  // with bodyweight-box-jump, already the A-14/A-17 witness for its seeded
+  // `volume_counting = 'off'` shape, rather than repeated for all ten.
+  it("reseeding does not resurrect a hard-deleted seeded athletic exercise (Release 3 preservation witness, bodyweight-box-jump)", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const boxJumpId = seededExerciseId(user.id, "bodyweight-box-jump");
+    await db.delete(exercises).where(eq(exercises.id, boxJumpId));
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const [row] = await db.select().from(exercises).where(eq(exercises.id, boxJumpId));
+    expect(row).toBeUndefined();
+
+    const remaining = await db.select().from(exercises).where(eq(exercises.userId, user.id));
+    expect(remaining).toHaveLength(EXERCISE_CATALOG.length - 1);
+  });
+
+  // §8.3 — deterministic ids come from the unchanged slugToUuid derivation;
+  // reseeding must produce the same id for the same user on an athletic slug
+  // exactly as it does for a legacy one.
+  it("pins bodyweight-box-jump's deterministic id across two seed runs", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    const id = seededExerciseId(user.id, "bodyweight-box-jump");
+
+    await seedExerciseCatalogForUser(db, user.id);
+    const [firstRun] = await db.select().from(exercises).where(eq(exercises.id, id));
+    expect(firstRun?.id).toBe(id);
+
+    await seedExerciseCatalogForUser(db, user.id);
+    const [secondRun] = await db.select().from(exercises).where(eq(exercises.id, id));
+    expect(secondRun?.id).toBe(id);
+
+    const rows = await db.select().from(exercises).where(eq(exercises.userId, user.id));
+    expect(rows).toHaveLength(EXERCISE_CATALOG.length); // no duplicate inserted on the second run
   });
 
   it("lets a custom exercise reuse a hard-deleted seeded name without breaking reseeding (Phase 1 review H1)", async () => {

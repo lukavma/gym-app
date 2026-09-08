@@ -1030,4 +1030,193 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
       { muscleGroupId: "triceps", role: "secondary" },
     ],
   },
+
+  // Athletic (Release 3) — athletic-measurement-profiles-architecture-evaluation.md
+  // §16, O-10(i) (slugs and shapes) and O-10(ii) (contributions, approved at
+  // the Release-3 authored-list gate:
+  // docs/reviews/athletic-measurement-profiles-release-3-catalog-authoring.md,
+  // independently reviewed and, after revision, verified — see
+  // docs/reviews/athletic-measurement-profiles-release-3-catalog-review.md and
+  // docs/reviews/athletic-measurement-profiles-release-3-catalog-revision-verification.md).
+  //
+  // Authoring rule for every entry in this block: explicit `measurementProfile`,
+  // explicit `loadBasis` iff the profile has a load field, and explicit
+  // `volumeCounting`. `strengthEstimate` is deliberately omitted — the
+  // structural gate in `src/domain/strength/eligibility.ts` refuses all ten on
+  // profile, basis or equipment, so the switch has nothing to add.
+  //
+  // Placement is a constraint, not a preference: this block must stay
+  // appended after the entire catalog above. Filing these ten under their
+  // equipment groupings would shift `EXERCISE_CATALOG.slice(0, 40)` in
+  // tests/integration/reconcileContributions.integration.test.ts and break
+  // its pre-v2 scenario assertions for reasons unrelated to this change.
+  {
+    slug: "other-sled-push",
+    name: "Sled Push",
+    equipment: "other",
+    mechanics: "compound",
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    // Bounded to the BACKWARD drag (facing the sled, walking backwards, arms
+    // straight, no hand-over-hand) — the definition these contributions are
+    // authored against, accepted by the owner as D-R3-1 (a). A forward
+    // harness drag is a different exercise and assigns differently; see the
+    // authoring document §4.2 and §7.
+    slug: "other-sled-drag",
+    name: "Backward Sled Drag",
+    equipment: "other",
+    mechanics: "compound",
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+      { muscleGroupId: "forearms", role: "secondary" },
+    ],
+  },
+  {
+    // Deliberately distinct from `dumbbell-farmers-carry` (implement, load
+    // scale and history series), with deliberately IDENTICAL contributions:
+    // same movement, one convention.
+    slug: "other-farmers-carry",
+    name: "Farmer's Carry",
+    equipment: "other",
+    mechanics: "compound",
+    measurementProfile: "load_distance",
+    loadBasis: "per_hand",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "forearms", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    // O-12 / §7.2: one row per set records ONE side, both sides performed.
+    slug: "dumbbell-suitcase-carry",
+    name: "Dumbbell Suitcase Carry",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    laterality: "unilateral",
+    measurementProfile: "load_distance",
+    loadBasis: "per_hand",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "forearms", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "lower_back", role: "secondary" },
+    ],
+  },
+  {
+    // `distance_time` has no load field, so `loadBasis` is omitted and
+    // resolves to null — the `bodyweight-plank` precedent.
+    slug: "bodyweight-sprint",
+    name: "Sprint",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    measurementProfile: "distance_time",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "quads", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    // Distance logged is the TOTAL covered, not the shuttle length.
+    slug: "bodyweight-shuttle-run",
+    name: "Shuttle Run",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    measurementProfile: "distance_time",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "adductors", role: "secondary" },
+    ],
+  },
+  {
+    // The PI-005 example for O-4(i): a rep-like `load_reps` set that must not
+    // count as hypertrophy volume. `volumeCounting: "off"` is load-bearing
+    // here, unlike on the entries whose profile excludes them anyway.
+    slug: "other-med-ball-slam",
+    name: "Medicine Ball Slam",
+    equipment: "other",
+    mechanics: "compound",
+    measurementProfile: "load_reps",
+    loadBasis: "total",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
+      { muscleGroupId: "front_delts", role: "secondary" },
+      { muscleGroupId: "triceps", role: "secondary" },
+    ],
+  },
+  {
+    // `reps` records ATTEMPTS; jump distance is not a stored field in v1.
+    slug: "bodyweight-broad-jump",
+    name: "Broad Jump",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    measurementProfile: "reps",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+    ],
+  },
+  {
+    // A-14 / A-17 (R3) name this slug as the witness that a seeded `reps`
+    // athletic entry carries `volume_counting = 'off'`.
+    slug: "bodyweight-box-jump",
+    name: "Box Jump",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    measurementProfile: "reps",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "calves", role: "secondary" },
+    ],
+  },
+  {
+    // Mirrors the seeded `Plank` convention (abs primary, lower_back
+    // secondary) and adds glutes for the lateral hold. O-12: one row per set
+    // records one side, both sides performed.
+    slug: "bodyweight-side-plank",
+    name: "Side Plank",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    laterality: "unilateral",
+    measurementProfile: "duration",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "lower_back", role: "secondary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+    ],
+  },
 ];

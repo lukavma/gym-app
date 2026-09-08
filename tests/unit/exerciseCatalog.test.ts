@@ -3,6 +3,178 @@ import { EXERCISE_CATALOG, RECONCILED_BACK_SLUGS } from "@/db/seed";
 import { EQUIPMENT_TYPES, LATERALITY_TYPES, MECHANICS_TYPES } from "@/domain/exercises/schema";
 import { LEAF_MUSCLE_GROUP_SLUGS, MUSCLE_GROUP_SLUGS } from "@/domain/exercises/muscleGroups";
 
+// The ten Release 3 athletic entries (O-10(i)/(ii)), in their approved
+// authoring order — docs/reviews/athletic-measurement-profiles-release-3-
+// catalog-authoring.md §4.11 / §5. Declared once so every assertion below
+// that singles them out, or excludes them, shares one list.
+const RELEASE_3_ATHLETIC_SLUGS = [
+  "other-sled-push",
+  "other-sled-drag",
+  "other-farmers-carry",
+  "dumbbell-suitcase-carry",
+  "bodyweight-sprint",
+  "bodyweight-shuttle-run",
+  "other-med-ball-slam",
+  "bodyweight-broad-jump",
+  "bodyweight-box-jump",
+  "bodyweight-side-plank",
+] as const;
+
+// Exact approved metadata and contributions, authoring §4.11 verbatim.
+const RELEASE_3_ENTRIES = [
+  {
+    slug: "other-sled-push",
+    name: "Sled Push",
+    equipment: "other",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    slug: "other-sled-drag",
+    name: "Backward Sled Drag",
+    equipment: "other",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+      { muscleGroupId: "forearms", role: "secondary" },
+    ],
+  },
+  {
+    slug: "other-farmers-carry",
+    name: "Farmer's Carry",
+    equipment: "other",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "load_distance",
+    loadBasis: "per_hand",
+    contributions: [
+      { muscleGroupId: "forearms", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    slug: "dumbbell-suitcase-carry",
+    name: "Dumbbell Suitcase Carry",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    laterality: "unilateral",
+    measurementProfile: "load_distance",
+    loadBasis: "per_hand",
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "forearms", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "lower_back", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-sprint",
+    name: "Sprint",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "distance_time",
+    loadBasis: undefined,
+    contributions: [
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "quads", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-shuttle-run",
+    name: "Shuttle Run",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "distance_time",
+    loadBasis: undefined,
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "adductors", role: "secondary" },
+    ],
+  },
+  {
+    slug: "other-med-ball-slam",
+    name: "Medicine Ball Slam",
+    equipment: "other",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "load_reps",
+    loadBasis: "total",
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
+      { muscleGroupId: "front_delts", role: "secondary" },
+      { muscleGroupId: "triceps", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-broad-jump",
+    name: "Broad Jump",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "reps",
+    loadBasis: undefined,
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-box-jump",
+    name: "Box Jump",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    laterality: undefined,
+    measurementProfile: "reps",
+    loadBasis: undefined,
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "calves", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-side-plank",
+    name: "Side Plank",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    laterality: "unilateral",
+    measurementProfile: "duration",
+    loadBasis: undefined,
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "lower_back", role: "secondary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+    ],
+  },
+] as const;
+
 // Structural validation of the seed data itself (not the seeding mechanism,
 // covered separately by tests/integration/seed.integration.test.ts). A
 // generic assertion here catches a malformed future addition before it ever
@@ -128,19 +300,21 @@ describe("EXERCISE_CATALOG structure", () => {
       }
     });
 
-    it("adds machine-hip-adduction with adductors primary, and no other entry uses adductors", () => {
+    it("adds machine-hip-adduction with adductors primary, and adductors is used only by it and the shuttle run", () => {
       const entry = EXERCISE_CATALOG.find((item) => item.slug === "machine-hip-adduction");
       expect(entry?.name).toBe("Hip Adduction Machine");
       expect(entry?.contributions).toEqual([{ muscleGroupId: "adductors", role: "primary" }]);
 
+      // bodyweight-shuttle-run (Release 3) is the leaf's second catalog home
+      // — a Release-2 artefact, not an invariant (M-2, catalog-order review).
       const adductorSlugs = EXERCISE_CATALOG.filter((item) =>
         item.contributions.some((c) => c.muscleGroupId === "adductors"),
       ).map((item) => item.slug);
-      expect(adductorSlugs).toEqual(["machine-hip-adduction"]);
+      expect(adductorSlugs).toEqual(["machine-hip-adduction", "bodyweight-shuttle-run"]);
     });
 
-    it("is exactly 93 entries — the 92-entry Release 1 catalog plus machine-hip-adduction", () => {
-      expect(EXERCISE_CATALOG).toHaveLength(93);
+    it("is exactly 103 entries — the 93-entry Release 2 catalog (92-entry Release 1 catalog plus machine-hip-adduction) plus the ten Release 3 athletic entries", () => {
+      expect(EXERCISE_CATALOG).toHaveLength(103);
     });
   });
 
@@ -177,12 +351,104 @@ describe("EXERCISE_CATALOG structure", () => {
         "dumbbell-farmers-carry",
         "machine-assisted-pull-up",
       ]);
+      // The ten Release 3 athletic entries also carry explicit values now
+      // (authoring rule, §16) — exempted here and asserted in full below, so
+      // this test still proves the remaining ~90 load_reps entries untouched.
+      const athleticTargets = new Set<string>(RELEASE_3_ATHLETIC_SLUGS);
       for (const item of EXERCISE_CATALOG) {
-        if (untouchedTargets.has(item.slug)) continue;
+        if (untouchedTargets.has(item.slug) || athleticTargets.has(item.slug)) continue;
         expect(item.measurementProfile, item.slug).toBeUndefined();
         expect(item.loadBasis, item.slug).toBeUndefined();
         expect(item.volumeCounting, item.slug).toBeUndefined();
       }
+    });
+  });
+
+  // athletic-measurement-profiles-release-3-catalog-authoring.md (O-10(ii),
+  // approved after independent review and revision verification) — the ten
+  // adopted slugs' exact metadata and leaf-only contributions, seeded
+  // explicitly per the §16 authoring rule.
+  describe("Release 3 athletic catalog (O-10(i)/(ii))", () => {
+    it("is exactly the last ten catalog entries, in approved order, with every prior entry untouched", () => {
+      expect(EXERCISE_CATALOG.length).toBeGreaterThanOrEqual(RELEASE_3_ENTRIES.length);
+      const lastTen = EXERCISE_CATALOG.slice(-RELEASE_3_ENTRIES.length).map((item) => item.slug);
+      expect(lastTen).toEqual(RELEASE_3_ENTRIES.map((entry) => entry.slug));
+    });
+
+    it.each(RELEASE_3_ENTRIES)(
+      "seeds $slug with its exact approved metadata and contributions",
+      (expected) => {
+        const entry = EXERCISE_CATALOG.find((item) => item.slug === expected.slug);
+        expect(entry, expected.slug).toBeTruthy();
+        expect(entry?.name).toBe(expected.name);
+        expect(entry?.equipment).toBe(expected.equipment);
+        expect(entry?.mechanics).toBe(expected.mechanics);
+        expect(entry?.laterality).toBe(expected.laterality);
+        expect(entry?.measurementProfile).toBe(expected.measurementProfile);
+        expect(entry?.loadBasis).toBe(expected.loadBasis);
+        expect(entry?.volumeCounting).toBe("off");
+        expect(entry?.strengthEstimate).toBeUndefined();
+        expect(entry?.contributions).toEqual(expected.contributions);
+      },
+    );
+
+    it("states loadBasis explicitly on exactly the five entries whose profile has a load field (R-6)", () => {
+      const withLoadBasis = RELEASE_3_ENTRIES.filter((entry) => entry.loadBasis !== undefined).map(
+        (entry) => entry.slug,
+      );
+      expect(withLoadBasis).toEqual([
+        "other-sled-push",
+        "other-sled-drag",
+        "other-farmers-carry",
+        "dumbbell-suitcase-carry",
+        "other-med-ball-slam",
+      ]);
+      const withoutLoadBasis = RELEASE_3_ENTRIES.filter(
+        (entry) => entry.loadBasis === undefined,
+      ).map((entry) => entry.slug);
+      expect(withoutLoadBasis).toEqual([
+        "bodyweight-sprint",
+        "bodyweight-shuttle-run",
+        "bodyweight-broad-jump",
+        "bodyweight-box-jump",
+        "bodyweight-side-plank",
+      ]);
+    });
+
+    it("marks laterality unilateral on exactly dumbbell-suitcase-carry and bodyweight-side-plank", () => {
+      const unilateral = EXERCISE_CATALOG.filter(
+        (item) =>
+          (RELEASE_3_ATHLETIC_SLUGS as readonly string[]).includes(item.slug) &&
+          item.laterality === "unilateral",
+      ).map((item) => item.slug);
+      expect(unilateral).toEqual(["dumbbell-suitcase-carry", "bodyweight-side-plank"]);
+    });
+
+    it("marks mechanics isolation on exactly bodyweight-side-plank", () => {
+      const isolation = EXERCISE_CATALOG.filter(
+        (item) =>
+          (RELEASE_3_ATHLETIC_SLUGS as readonly string[]).includes(item.slug) &&
+          item.mechanics === "isolation",
+      ).map((item) => item.slug);
+      expect(isolation).toEqual(["bodyweight-side-plank"]);
+    });
+
+    it("states volumeCounting off explicitly on all ten athletic entries (R-5)", () => {
+      for (const slug of RELEASE_3_ATHLETIC_SLUGS) {
+        const entry = EXERCISE_CATALOG.find((item) => item.slug === slug);
+        expect(entry?.volumeCounting, slug).toBe("off");
+      }
+    });
+
+    it("omits strengthEstimate on all ten athletic entries (R-7) — loadStepKg has no catalog field to set (R-8)", () => {
+      for (const slug of RELEASE_3_ATHLETIC_SLUGS) {
+        const entry = EXERCISE_CATALOG.find((item) => item.slug === slug);
+        expect(entry?.strengthEstimate, slug).toBeUndefined();
+      }
+      // SeedCatalogExercise has no `loadStepKg` member at all (exerciseCatalog.ts),
+      // so R-8 is a structural guarantee, not something a value-level assertion
+      // can add to — DEFAULT_LOAD_STEP_KG_BY_EQUIPMENT[item.equipment] applies
+      // to every catalog entry uniformly, athletic or not.
     });
   });
 });

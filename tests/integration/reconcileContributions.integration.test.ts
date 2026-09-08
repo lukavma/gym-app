@@ -29,6 +29,27 @@ const ORIGINAL_40_SLUGS = EXERCISE_CATALOG.slice(0, 40).map((item) => item.slug)
 const MAPPED_IN_ORIGINAL_40 = MAPPED_SLUGS.filter((slug) => ORIGINAL_40_SLUGS.includes(slug));
 const MAPPED_IN_PHASE_5_5 = MAPPED_SLUGS.filter((slug) => !ORIGINAL_40_SLUGS.includes(slug));
 
+// The ten Release 3 athletic entries never existed pre-v2 (same reason
+// machine-hip-adduction is excluded below): a "full catalog minus
+// machine-hip-adduction" pre-v2 fixture would otherwise silently include a
+// user who already owned a Backward Sled Drag before muscle taxonomy v2 —
+// a state that never existed (L-2, catalog-review). Excluded at both sites
+// that build a "full-92" pre-v2 slug set from one shared list here so a
+// Release 4 addition cannot reintroduce the same drift.
+const RELEASE_3_ATHLETIC_SLUGS = [
+  "other-sled-push",
+  "other-sled-drag",
+  "other-farmers-carry",
+  "dumbbell-suitcase-carry",
+  "bodyweight-sprint",
+  "bodyweight-shuttle-run",
+  "other-med-ball-slam",
+  "bodyweight-broad-jump",
+  "bodyweight-box-jump",
+  "bodyweight-side-plank",
+];
+const NOT_PRE_V2_SLUGS = new Set<string>(["machine-hip-adduction", ...RELEASE_3_ATHLETIC_SLUGS]);
+
 async function insertUser(db: TestDb, email: string) {
   const [user] = await db
     .insert(users)
@@ -158,9 +179,9 @@ describe("reconcileContributions (PGlite integration)", () => {
 
     it("reconciles a full-92 pre-v2 user: all 14 mapped rows move, machine-hip-adduction seeds fresh", async () => {
       const user = await insertUser(db, "full92@example.com");
-      const preV2Slugs = EXERCISE_CATALOG.filter(
-        (item) => item.slug !== "machine-hip-adduction",
-      ).map((item) => item.slug);
+      const preV2Slugs = EXERCISE_CATALOG.filter((item) => !NOT_PRE_V2_SLUGS.has(item.slug)).map(
+        (item) => item.slug,
+      );
       await seedPreV2User(db, user.id, preV2Slugs);
 
       const summary = await reconcileContributions(db);
@@ -493,9 +514,9 @@ describe("reconcileContributions (PGlite integration)", () => {
   describe("second-run idempotency", () => {
     it("reports updated=0 on the second run of a full-92 user, with the DB unchanged between runs", async () => {
       const user = await insertUser(db, "tworuns@example.com");
-      const preV2Slugs = EXERCISE_CATALOG.filter(
-        (item) => item.slug !== "machine-hip-adduction",
-      ).map((item) => item.slug);
+      const preV2Slugs = EXERCISE_CATALOG.filter((item) => !NOT_PRE_V2_SLUGS.has(item.slug)).map(
+        (item) => item.slug,
+      );
       await seedPreV2User(db, user.id, preV2Slugs);
 
       const first = await reconcileContributions(db);
@@ -550,9 +571,9 @@ describe("reconcileContributions (PGlite integration)", () => {
       const userB = await insertUser(db, "combined-b@example.com");
 
       // userA: full-92 pre-v2, clean — all 14 should update.
-      const preV2Slugs = EXERCISE_CATALOG.filter(
-        (item) => item.slug !== "machine-hip-adduction",
-      ).map((item) => item.slug);
+      const preV2Slugs = EXERCISE_CATALOG.filter((item) => !NOT_PRE_V2_SLUGS.has(item.slug)).map(
+        (item) => item.slug,
+      );
       await seedPreV2User(db, userA.id, preV2Slugs);
 
       // userB: original-40 only, plus a conflict on one mapped slug and an
