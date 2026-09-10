@@ -31,7 +31,14 @@ const EXPECTED_RP_TABLE: Record<
   traps: { mv: 0, mev: 0, mavMin: 12, mavMax: 20, mrvMin: 26 },
 };
 
-const NO_RP_ROW_LEAVES = ["lats", "upper_back", "adductors", "forearms", "lower_back"] as const;
+const NO_RP_ROW_LEAVES = [
+  "lats",
+  "upper_back",
+  "adductors",
+  "forearms",
+  "lower_back",
+  "tibialis",
+] as const;
 
 describe("RP General preset id", () => {
   it("is a stable, deterministic UUID (not random-per-run)", () => {

@@ -5,11 +5,13 @@ import { z } from "zod";
 // additive, but the slug set itself is centralized here so no other layer
 // (seed script, UI, API validation) maintains its own copy.
 //
-// 17 leaves + 1 rollup (`back`, membership [lats, upper_back] via
+// 18 leaves + 1 rollup (`back`, membership [lats, upper_back] via
 // ROLLUP_MEMBERS below — a domain constant, deliberately not a DB table or
 // `parent_id`). New contribution rows may only target leaves; `back` is
 // carried through from legacy data, never newly created (see
-// src/server/exercises/service.ts).
+// src/server/exercises/service.ts). `tibialis` was added by ADR-010
+// Amendment 1 (2026-09-09, Catalog Expansion 1, O-5) — see the amendment at
+// the end of docs/architecture/adr/ADR-010-muscle-taxonomy-v2.md.
 export const LEAF_MUSCLE_GROUP_SLUGS = [
   "chest",
   "lats",
@@ -28,6 +30,7 @@ export const LEAF_MUSCLE_GROUP_SLUGS = [
   "adductors",
   "calves",
   "lower_back",
+  "tibialis",
 ] as const;
 
 export const ROLLUP_MUSCLE_GROUP_SLUGS = ["back"] as const;
@@ -74,6 +77,9 @@ export const MUSCLE_GROUP_DISPLAY_NAMES: Record<MuscleGroupSlug, string> = {
   // Slug retained from v1; erector-specific display added for clarity
   // alongside the new lats/upper_back split (ADR-010).
   lower_back: "Lower Back (Erectors)",
+  // ADR-010 Amendment 1 (O-5) — the anterior-shin leaf; `calves` is this
+  // movement's antagonist and cannot be credited instead.
+  tibialis: "Tibialis (Shin)",
   back: "Back",
 };
 

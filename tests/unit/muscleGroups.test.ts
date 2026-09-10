@@ -12,7 +12,8 @@ import {
   isRollupMuscleGroupSlug,
 } from "@/domain/exercises/muscleGroups";
 
-// ADR-010 — vocabulary v2: 17 leaves + 1 rollup (`back`).
+// ADR-010 — vocabulary v2: 18 leaves + 1 rollup (`back`), including
+// Amendment 1's `tibialis` (2026-09-09, Catalog Expansion 1, O-5).
 const EXPECTED_LEAVES = [
   "chest",
   "lats",
@@ -31,13 +32,14 @@ const EXPECTED_LEAVES = [
   "adductors",
   "calves",
   "lower_back",
+  "tibialis",
 ];
 
 describe("muscle group vocabulary v2 (ADR-010)", () => {
-  it("has exactly 17 leaves and exactly 1 rollup, totaling 18 slugs", () => {
-    expect(LEAF_MUSCLE_GROUP_SLUGS).toHaveLength(17);
+  it("has exactly 18 leaves and exactly 1 rollup, totaling 19 slugs", () => {
+    expect(LEAF_MUSCLE_GROUP_SLUGS).toHaveLength(18);
     expect(ROLLUP_MUSCLE_GROUP_SLUGS).toHaveLength(1);
-    expect(MUSCLE_GROUP_SLUGS).toHaveLength(18);
+    expect(MUSCLE_GROUP_SLUGS).toHaveLength(19);
   });
 
   it("has the exact leaf set from ADR-010", () => {
@@ -66,10 +68,11 @@ describe("muscle group vocabulary v2 (ADR-010)", () => {
     expect(MUSCLE_GROUP_DISPLAY_NAMES.calves).toBe("Calves");
   });
 
-  it("has display names for the 3 new leaves and the back rollup", () => {
+  it("has display names for the 3 new leaves, the tibialis amendment leaf, and the back rollup", () => {
     expect(MUSCLE_GROUP_DISPLAY_NAMES.lats).toBe("Lats");
     expect(MUSCLE_GROUP_DISPLAY_NAMES.upper_back).toBe("Upper Back");
     expect(MUSCLE_GROUP_DISPLAY_NAMES.adductors).toBe("Adductors");
+    expect(MUSCLE_GROUP_DISPLAY_NAMES.tibialis).toBe("Tibialis (Shin)");
     expect(MUSCLE_GROUP_DISPLAY_NAMES.back).toBe("Back");
   });
 
@@ -77,11 +80,11 @@ describe("muscle group vocabulary v2 (ADR-010)", () => {
     const rollups = MUSCLE_GROUPS.filter((g) => g.kind === "rollup");
     expect(rollups).toHaveLength(1);
     expect(rollups[0]?.slug).toBe("back");
-    expect(MUSCLE_GROUPS.filter((g) => g.kind === "muscle")).toHaveLength(17);
+    expect(MUSCLE_GROUPS.filter((g) => g.kind === "muscle")).toHaveLength(18);
   });
 
   it("LEAF_MUSCLE_GROUPS is exactly the kind==='muscle' subset, never including back", () => {
-    expect(LEAF_MUSCLE_GROUPS).toHaveLength(17);
+    expect(LEAF_MUSCLE_GROUPS).toHaveLength(18);
     expect(LEAF_MUSCLE_GROUPS.some((g) => g.slug === "back")).toBe(false);
     expect(LEAF_MUSCLE_GROUPS.map((g) => g.slug)).toEqual(EXPECTED_LEAVES);
   });

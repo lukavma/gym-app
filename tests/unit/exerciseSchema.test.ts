@@ -124,6 +124,24 @@ describe("createExerciseSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  // NC-F (catalog-expansion-1 §12.8, D-CE1-1(iii)) — the unknown-slug UI
+  // fallback is display-and-preservation only; it does not broaden what
+  // either schema accepts. "obliques" stands in for a slug this bundle's
+  // vocabulary doesn't recognise yet (§14's own example of a deferred leaf).
+  it("rejects an unrecognised muscle group slug on create (NC-F)", () => {
+    const result = createExerciseSchema.safeParse(
+      baseInput({ contributions: [{ muscleGroupId: "obliques", role: "primary" }] }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts the new tibialis leaf (ADR-010 Amendment 1)", () => {
+    const result = createExerciseSchema.safeParse(
+      baseInput({ contributions: [{ muscleGroupId: "tibialis", role: "primary" }] }),
+    );
+    expect(result.success).toBe(true);
+  });
+
   // ADR-010 Release 1 — "create rejects rollup slugs" is enforced entirely
   // here (leafMuscleGroupSlugSchema), with no service-layer check needed.
   it("rejects the back rollup slug", () => {
@@ -227,6 +245,18 @@ describe("updateExerciseSchema", () => {
   // src/server/exercises/service.ts's transactional carry-through check is
   // what actually rejects the "introduced where none existed" case — see
   // tests/integration/exercises.integration.test.ts.
+  // NC-F (catalog-expansion-1 §12.8, D-CE1-1(iii)) — introducing an
+  // unrecognised slug on update is still a 400, exactly as it was before the
+  // unknown-slug UI fallback; only a known rollup is permitted through, and
+  // only as carry-through (proven end-to-end at
+  // tests/integration/exercises.integration.test.ts).
+  it("rejects an unrecognised muscle group slug on update (NC-F)", () => {
+    const result = updateExerciseSchema.safeParse({
+      contributions: [{ muscleGroupId: "obliques", role: "primary" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts the back rollup slug at the schema level (carry-through is a service-layer concern)", () => {
     const result = updateExerciseSchema.safeParse({
       contributions: [{ muscleGroupId: "back", role: "primary" }],

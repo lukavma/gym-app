@@ -44,7 +44,7 @@ Login rate limiting (fixed-window, restart-safe because state is in the DB, not 
 | locked_until | timestamptz | null |
 
 ### 2.3 `muscle_groups`
-Seeded reference data — vocabulary v2 (ADR-010): 18 rows = 17 leaves + the `back` rollup. Upserted from the domain constant on every deploy (`display_name`, `position`, `kind` synced); rows are never deleted.
+Seeded reference data — vocabulary v2 (ADR-010; Amendment 1, 2026-09-09): 19 rows = 18 leaves + the `back` rollup. Upserted from the domain constant on every deploy (`display_name`, `position`, `kind` synced); rows are never deleted.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -309,7 +309,7 @@ Decision columns are embedded (not a separate table): strictly 0..1 decision per
 
 `uq_landmark` — unique `(preset_id, muscle_group_id, key)`. ck: at least one of value_min/value_max not null.
 
-A landmark may reference a rollup row: the RP "Back" row attaches to `back` (`kind = 'rollup'`). Seeding never writes landmarks for a rollup's member leaves (`lats`, `upper_back`) — that would double-count the Back band — nor for `forearms`, `lower_back`, `adductors`, for which RP has no row (volume-model §4). A seed rule and UI rule, not a constraint: users may add their own landmark rows to any group.
+A landmark may reference a rollup row: the RP "Back" row attaches to `back` (`kind = 'rollup'`). Seeding never writes landmarks for a rollup's member leaves (`lats`, `upper_back`) — that would double-count the Back band — nor for `forearms`, `lower_back`, `adductors`, or `tibialis` (ADR-010 Amendment 1), for which RP has no row (volume-model §4). A seed rule and UI rule, not a constraint: users may add their own landmark rows to any group.
 
 ### 2.18 `bodyweight_entries`
 

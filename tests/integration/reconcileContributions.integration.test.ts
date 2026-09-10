@@ -48,7 +48,42 @@ const RELEASE_3_ATHLETIC_SLUGS = [
   "bodyweight-box-jump",
   "bodyweight-side-plank",
 ];
-const NOT_PRE_V2_SLUGS = new Set<string>(["machine-hip-adduction", ...RELEASE_3_ATHLETIC_SLUGS]);
+// The 24 Catalog Expansion 1 entries (docs/reviews/exercise-catalog-expansion-
+// evaluation.md §6) never existed pre-v2 either, for the same reason as the
+// Release 3 ten — declared once per test file, per that document's L-2/§11.6
+// fixture-honesty instruction, so a further addition cannot reintroduce the
+// same drift.
+const CATALOG_EXPANSION_1_SLUGS = [
+  "barbell-rack-pull",
+  "barbell-power-clean",
+  "barbell-hang-clean",
+  "dumbbell-lateral-lunge",
+  "dumbbell-reverse-lunge",
+  "dumbbell-single-leg-romanian-deadlift",
+  "dumbbell-chest-supported-row",
+  "dumbbell-pullover",
+  "dumbbell-thruster",
+  "dumbbell-farmers-hold",
+  "cable-pallof-press",
+  "machine-hip-abduction",
+  "machine-assisted-dip",
+  "bodyweight-dead-hang",
+  "bodyweight-ab-wheel-rollout",
+  "bodyweight-wall-sit",
+  "bodyweight-nordic-curl",
+  "bodyweight-lateral-bound",
+  "bodyweight-copenhagen-adduction-plank",
+  "bodyweight-tibialis-raise",
+  "other-kettlebell-swing",
+  "other-forward-sled-drag",
+  "other-sled-pull",
+  "other-med-ball-rotational-scoop-throw",
+];
+const NOT_PRE_V2_SLUGS = new Set<string>([
+  "machine-hip-adduction",
+  ...RELEASE_3_ATHLETIC_SLUGS,
+  ...CATALOG_EXPANSION_1_SLUGS,
+]);
 
 async function insertUser(db: TestDb, email: string) {
   const [user] = await db

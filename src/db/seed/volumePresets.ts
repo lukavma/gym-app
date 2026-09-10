@@ -28,7 +28,7 @@ export const RP_GENERAL_DESCRIPTION =
   "Side Delts here, which is a seeding approximation, not two independent landmarks. RP's 'Back' " +
   "row attaches to the Back rollup only (Lats + Upper Back + Unclassified Back) and is never split " +
   "or duplicated onto its member leaves. RP has no row for Lats, Upper Back, Adductors, Forearms, " +
-  "or Lower Back (Erectors) — those groups show volume with no reference band.";
+  "Lower Back (Erectors), or Tibialis (Shin) — those groups show volume with no reference band.";
 
 const REAR_SIDE_DELT_NOTE =
   "RP lists Rear Delts and Side Delts as one combined row; this value is duplicated onto both, not independently established.";

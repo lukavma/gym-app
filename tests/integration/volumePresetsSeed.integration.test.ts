@@ -16,7 +16,14 @@ async function insertTestUser(db: AppDb, email = "lifter@example.com") {
   return user;
 }
 
-const NO_RP_ROW_LEAVES = ["lats", "upper_back", "adductors", "forearms", "lower_back"] as const;
+const NO_RP_ROW_LEAVES = [
+  "lats",
+  "upper_back",
+  "adductors",
+  "forearms",
+  "lower_back",
+  "tibialis",
+] as const;
 
 describe("seedVolumePresets (PGlite integration)", () => {
   let db: AppDb;
@@ -198,6 +205,6 @@ describe("no persisted volume aggregate (schema-level check)", () => {
   });
 
   it("every leaf slug is at least representable in the vocabulary used to seed landmarks (sanity)", () => {
-    expect(LEAF_MUSCLE_GROUP_SLUGS.length).toBe(17);
+    expect(LEAF_MUSCLE_GROUP_SLUGS.length).toBe(18);
   });
 });

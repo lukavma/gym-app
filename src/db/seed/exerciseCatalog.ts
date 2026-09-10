@@ -1219,4 +1219,375 @@ export const EXERCISE_CATALOG: SeedCatalogExercise[] = [
       { muscleGroupId: "glutes", role: "secondary" },
     ],
   },
+
+  // Catalog Expansion 1 — docs/reviews/exercise-catalog-expansion-evaluation.md
+  // (owner-selected 2026-09-09; owner decisions O-1…O-5 accepted the same day;
+  // contributions approved at that document's independent review). NOT the
+  // athletic "Release 4" of
+  // athletic-measurement-profiles-architecture-evaluation.md §21.4, which is a
+  // different, still-unstarted body of work.
+  //
+  // Authoring rule for this block: the three measurement fields are stated
+  // explicitly ONLY where the entry needs a non-default value, or where §16's
+  // athletic authoring rule requires it (other-med-ball-rotational-scoop-throw,
+  // bodyweight-lateral-bound). Ordinary load_reps entries omit all three and
+  // keep the ~90-entry default precedent. `strengthEstimate` is omitted
+  // throughout — the structural gate in src/domain/strength/eligibility.ts
+  // decides, and no entry here has an inverted or fabricated load that the
+  // switch would need to carry.
+  //
+  // bodyweight-tibialis-raise depends on the `tibialis` leaf added by this
+  // release's ADR-010 amendment (O-5). `runSeed` seeds muscle groups before
+  // the exercise catalog, so the FK target always exists first.
+
+  // Barbell
+  {
+    slug: "barbell-rack-pull",
+    name: "Barbell Rack Pull",
+    equipment: "barbell",
+    mechanics: "compound",
+    // Generic by decision (O-3): pin height is not modelled, and the entry
+    // assumes a CONSTANT height — without that, neither the load series nor
+    // its e1RM estimate means anything. A second height is a future slug.
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "lower_back", role: "primary" },
+      { muscleGroupId: "upper_back", role: "secondary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "forearms", role: "secondary" },
+    ],
+  },
+  {
+    slug: "barbell-power-clean",
+    name: "Barbell Power Clean",
+    equipment: "barbell",
+    mechanics: "compound",
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "quads", role: "secondary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "upper_back", role: "secondary" },
+    ],
+  },
+  {
+    // From a hang at or above the knee — no full first pull, which is why
+    // `quads` is absent here and present on the power clean.
+    slug: "barbell-hang-clean",
+    name: "Barbell Hang Clean",
+    equipment: "barbell",
+    mechanics: "compound",
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "upper_back", role: "secondary" },
+    ],
+  },
+
+  // Dumbbell
+  {
+    // The catalog's only frontal-plane lower-body movement, and the
+    // adductors leaf's second primary. O-12: one row per set records ONE
+    // side, both sides performed.
+    slug: "dumbbell-lateral-lunge",
+    name: "Dumbbell Lateral Lunge",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    laterality: "unilateral",
+    contributions: [
+      { muscleGroupId: "adductors", role: "primary" },
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+    ],
+  },
+  {
+    slug: "dumbbell-reverse-lunge",
+    name: "Dumbbell Reverse Lunge",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    laterality: "unilateral",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+    ],
+  },
+  {
+    // The catalog's only unilateral hinge; contributions deliberately
+    // identical to dumbbell-romanian-deadlift (one movement, one convention).
+    slug: "dumbbell-single-leg-romanian-deadlift",
+    name: "Dumbbell Single-Leg Romanian Deadlift",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    laterality: "unilateral",
+    contributions: [
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "lower_back", role: "secondary" },
+    ],
+  },
+  {
+    // Bilateral by design — that is the whole distinction from the
+    // unilateral dumbbell-row, whose contributions this mirrors exactly.
+    slug: "dumbbell-chest-supported-row",
+    name: "Dumbbell Chest-Supported Row",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    contributions: [
+      { muscleGroupId: "upper_back", role: "primary" },
+      { muscleGroupId: "biceps", role: "secondary" },
+      { muscleGroupId: "rear_delts", role: "secondary" },
+    ],
+  },
+  {
+    slug: "dumbbell-pullover",
+    name: "Dumbbell Pullover",
+    equipment: "dumbbell",
+    mechanics: "isolation",
+    contributions: [
+      { muscleGroupId: "lats", role: "primary" },
+      { muscleGroupId: "chest", role: "secondary" },
+      { muscleGroupId: "triceps", role: "secondary" },
+    ],
+  },
+  {
+    slug: "dumbbell-thruster",
+    name: "Dumbbell Thruster",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "front_delts", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+      { muscleGroupId: "triceps", role: "secondary" },
+    ],
+  },
+  {
+    // The catalog's FIRST `load_duration` entry: a static hold, so load and
+    // time, no distance and no reps. `loadBasis` is required by the profile
+    // and is per hand, matching dumbbell-farmers-carry.
+    slug: "dumbbell-farmers-hold",
+    name: "Dumbbell Farmer's Hold",
+    equipment: "dumbbell",
+    mechanics: "compound",
+    measurementProfile: "load_duration",
+    loadBasis: "per_hand",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "forearms", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+
+  // Cable
+  {
+    // Anti-rotation, the one trunk demand with no entry. `load_reps` by
+    // decision (O-2). O-12: the stack is on one side per set row, both sides
+    // performed — unlike the pre-O-12 cable-woodchopper, which is seeded
+    // bilateral and is deliberately not changed here.
+    slug: "cable-pallof-press",
+    name: "Cable Pallof Press",
+    equipment: "cable",
+    mechanics: "isolation",
+    laterality: "unilateral",
+    contributions: [{ muscleGroupId: "abs", role: "primary" }],
+  },
+
+  // Machine
+  {
+    // The mirror of machine-hip-adduction. The vocabulary has no abductor
+    // leaf and this release does not add one (O-5 is bounded to `tibialis`),
+    // so `glutes` is the target.
+    slug: "machine-hip-abduction",
+    name: "Hip Abduction Machine",
+    equipment: "machine",
+    mechanics: "isolation",
+    contributions: [{ muscleGroupId: "glutes", role: "primary" }],
+  },
+  {
+    // The logged load is the ASSISTANCE — inverted, so the e1RM gate refuses
+    // it on basis. `strengthEstimate` is deliberately NOT set: unlike the
+    // legacy machine-assisted-pull-up, which carries a now-redundant 'off'
+    // predating the basis column, the structural refusal is sufficient (R-7).
+    slug: "machine-assisted-dip",
+    name: "Assisted Dip",
+    equipment: "machine",
+    mechanics: "compound",
+    loadBasis: "assistance",
+    contributions: [
+      { muscleGroupId: "triceps", role: "primary" },
+      { muscleGroupId: "chest", role: "primary" },
+      { muscleGroupId: "front_delts", role: "secondary" },
+    ],
+  },
+
+  // Bodyweight
+  {
+    // `duration` has no load field, so `loadBasis` is omitted and resolves to
+    // null — the bodyweight-plank precedent.
+    slug: "bodyweight-dead-hang",
+    name: "Dead Hang",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    measurementProfile: "duration",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "forearms", role: "primary" },
+      { muscleGroupId: "traps", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-ab-wheel-rollout",
+    name: "Ab Wheel Rollout",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    contributions: [{ muscleGroupId: "abs", role: "primary" }],
+  },
+  {
+    slug: "bodyweight-wall-sit",
+    name: "Wall Sit",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    measurementProfile: "duration",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+    ],
+  },
+  {
+    slug: "bodyweight-nordic-curl",
+    name: "Nordic Hamstring Curl",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    contributions: [
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+    ],
+  },
+  {
+    // Jumps record ATTEMPTS, not distance (N-12). The count is total ground
+    // contacts across both sides: a bound alternates sides within the set, so
+    // it has no left round and no right round and stays bilateral (R-10a).
+    // `volumeCounting: "off"` is load-bearing — `reps` is volume-capable.
+    slug: "bodyweight-lateral-bound",
+    name: "Lateral Bound",
+    equipment: "bodyweight",
+    mechanics: "compound",
+    measurementProfile: "reps",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "quads", role: "primary" },
+      { muscleGroupId: "adductors", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+    ],
+  },
+  {
+    // O-12 / §7.2, the bodyweight-side-plank convention: one row per set
+    // records ONE side's hold, both sides performed. Short- and long-lever
+    // versions are not distinguished.
+    slug: "bodyweight-copenhagen-adduction-plank",
+    name: "Copenhagen Adduction Plank",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    laterality: "unilateral",
+    measurementProfile: "duration",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "adductors", role: "primary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    // Requires the `tibialis` leaf added by this release's ADR-010 amendment
+    // (O-5). `calves` is deliberately absent in EITHER role: the triceps
+    // surae is this movement's ANTAGONIST, and crediting it would both
+    // mislabel the exercise and add spurious calf sets to weekly volume.
+    // Added load (a plate, a tib bar) goes in weight_kg on the same
+    // load_reps profile, so no explicit measurement field is needed.
+    slug: "bodyweight-tibialis-raise",
+    name: "Tibialis Raise",
+    equipment: "bodyweight",
+    mechanics: "isolation",
+    contributions: [{ muscleGroupId: "tibialis", role: "primary" }],
+  },
+
+  // Other
+  {
+    // Two-hand swing. Equipment `other` and volumeCounting left to the
+    // `auto` default, both by decision (O-1): EQUIPMENT_TYPES has no
+    // kettlebell value, and the swing's facts are ordinary load-and-reps.
+    // Consequences: e1RM refuses on equipment, and loadStepKg seeds at the
+    // `other` default of 2.5 kg.
+    slug: "other-kettlebell-swing",
+    name: "Kettlebell Swing",
+    equipment: "other",
+    mechanics: "compound",
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "hamstrings", role: "primary" },
+      { muscleGroupId: "lower_back", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    // D-R3-1's declined reading (b), added as its own slug exactly as that
+    // decision anticipated. `other-sled-drag` (Backward Sled Drag) is
+    // untouched; this is the harness drag, hip-extension led — the inverse
+    // emphasis of the backward drag.
+    slug: "other-forward-sled-drag",
+    name: "Forward Sled Drag",
+    equipment: "other",
+    mechanics: "compound",
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "glutes", role: "primary" },
+      { muscleGroupId: "quads", role: "secondary" },
+      { muscleGroupId: "hamstrings", role: "secondary" },
+      { muscleGroupId: "calves", role: "secondary" },
+      { muscleGroupId: "abs", role: "secondary" },
+    ],
+  },
+  {
+    // D-R3-1's declined reading (c): an upper-body haul that shares no
+    // muscle row with either sled entry.
+    slug: "other-sled-pull",
+    name: "Hand-Over-Hand Sled Pull",
+    equipment: "other",
+    mechanics: "compound",
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "upper_back", role: "primary" },
+      { muscleGroupId: "lats", role: "primary" },
+      { muscleGroupId: "biceps", role: "secondary" },
+      { muscleGroupId: "forearms", role: "secondary" },
+    ],
+  },
+  {
+    // Low-to-high transverse throw against a wall — NOT the seeded
+    // other-med-ball-slam, which is the overhead-to-floor sagittal slam.
+    // O-12: one row per set records ONE side's throws, both sides performed.
+    // `loadBasis: "total"` MUST be explicit: omitting it silently seeds
+    // 'unspecified' (M-1). `volumeCounting: "off"` is load-bearing.
+    slug: "other-med-ball-rotational-scoop-throw",
+    name: "Medicine Ball Rotational Scoop Throw",
+    equipment: "other",
+    mechanics: "compound",
+    laterality: "unilateral",
+    measurementProfile: "load_reps",
+    loadBasis: "total",
+    volumeCounting: "off",
+    contributions: [
+      { muscleGroupId: "abs", role: "primary" },
+      { muscleGroupId: "glutes", role: "secondary" },
+      { muscleGroupId: "front_delts", role: "secondary" },
+    ],
+  },
 ];

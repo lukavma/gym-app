@@ -43,6 +43,34 @@ const RELEASE_3_STORED_SHAPE: ReadonlyArray<{
   { slug: "bodyweight-side-plank", measurementProfile: "duration", loadBasis: null },
 ];
 
+// Exact stored shape for the nine Catalog Expansion 1 entries that state one
+// or more of the three measurement fields (catalog-expansion-1 §7, §16.4) —
+// the database's own record, not just the catalog literal (M-1's silent
+// 'unspecified' risk on a dropped loadBasis).
+const CATALOG_EXPANSION_1_STORED_SHAPE: ReadonlyArray<{
+  slug: string;
+  measurementProfile: string;
+  loadBasis: string | null;
+}> = [
+  { slug: "dumbbell-farmers-hold", measurementProfile: "load_duration", loadBasis: "per_hand" },
+  { slug: "machine-assisted-dip", measurementProfile: "load_reps", loadBasis: "assistance" },
+  { slug: "bodyweight-dead-hang", measurementProfile: "duration", loadBasis: null },
+  { slug: "bodyweight-wall-sit", measurementProfile: "duration", loadBasis: null },
+  { slug: "bodyweight-lateral-bound", measurementProfile: "reps", loadBasis: null },
+  {
+    slug: "bodyweight-copenhagen-adduction-plank",
+    measurementProfile: "duration",
+    loadBasis: null,
+  },
+  { slug: "other-forward-sled-drag", measurementProfile: "load_distance", loadBasis: "total" },
+  { slug: "other-sled-pull", measurementProfile: "load_distance", loadBasis: "total" },
+  {
+    slug: "other-med-ball-rotational-scoop-throw",
+    measurementProfile: "load_reps",
+    loadBasis: "total",
+  },
+];
+
 async function insertTestUser(db: Awaited<ReturnType<typeof createTestDb>>) {
   const [user] = await db
     .insert(users)
@@ -84,8 +112,9 @@ async function ledgerSlugs(db: TestDb, userId: string) {
 }
 
 describe("seed (PGlite integration)", () => {
-  // ADR-010 vocabulary v2 — 17 leaves + 1 rollup (`back`).
-  it("seeds all 18 canonical muscle groups, with exactly one kind='rollup' row", async () => {
+  // ADR-010 vocabulary v2 — 18 leaves + 1 rollup (`back`), including
+  // Amendment 1's `tibialis` (2026-09-09, Catalog Expansion 1, O-5).
+  it("seeds all 19 canonical muscle groups, with exactly one kind='rollup' row", async () => {
     const db = await createTestDb();
     await seedMuscleGroups(db);
 
@@ -96,7 +125,12 @@ describe("seed (PGlite integration)", () => {
     const rollups = rows.filter((r) => r.kind === "rollup");
     expect(rollups).toHaveLength(1);
     expect(rollups[0]?.id).toBe("back");
-    expect(rows.filter((r) => r.kind === "muscle")).toHaveLength(17);
+    expect(rollups[0]?.position).toBe(19);
+    expect(rows.filter((r) => r.kind === "muscle")).toHaveLength(18);
+
+    const tibialis = rows.find((r) => r.id === "tibialis");
+    expect(tibialis?.displayName).toBe("Tibialis (Shin)");
+    expect(tibialis?.position).toBe(18);
   });
 
   it("defaults kind to 'muscle' and enforces the kind CHECK constraint", async () => {
@@ -197,6 +231,131 @@ describe("seed (PGlite integration)", () => {
         );
       }
     }
+  });
+
+  it("seeds the nine Catalog Expansion 1 entries with explicit fields with their exact stored metadata, contributions and default weights", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    for (const expected of CATALOG_EXPANSION_1_STORED_SHAPE) {
+      const id = seededExerciseId(user.id, expected.slug);
+      const [row] = await db.select().from(exercises).where(eq(exercises.id, id));
+      expect(row, expected.slug).toBeTruthy();
+      expect(row?.measurementProfile, expected.slug).toBe(expected.measurementProfile);
+      expect(row?.loadBasis, expected.slug).toBe(expected.loadBasis);
+
+      const catalogItem = EXERCISE_CATALOG.find((item) => item.slug === expected.slug);
+      if (!catalogItem) throw new Error(`catalog missing ${expected.slug}`);
+      const contributions = await db
+        .select()
+        .from(exerciseMuscleContributions)
+        .where(eq(exerciseMuscleContributions.exerciseId, id));
+      expect(contributions, expected.slug).toHaveLength(catalogItem.contributions.length);
+      for (const expectedContribution of catalogItem.contributions) {
+        const stored = contributions.find(
+          (c) => c.muscleGroupId === expectedContribution.muscleGroupId,
+        );
+        expect(stored, `${expected.slug}/${expectedContribution.muscleGroupId}`).toBeTruthy();
+        expect(stored?.role, expected.slug).toBe(expectedContribution.role);
+        expect(stored?.weight, expected.slug).toBe(
+          DEFAULT_CONTRIBUTION_WEIGHT[expectedContribution.role],
+        );
+      }
+    }
+  });
+
+  // K-5 / M-1 — an ordinary load_reps entry that omits loadBasis must store
+  // 'unspecified', not null, on the load-bearing profile. barbell-rack-pull
+  // is the witness (one of the fifteen ordinary Catalog Expansion 1 entries).
+  it("stores loadBasis 'unspecified' for an ordinary load_reps Catalog Expansion 1 entry that omits it", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const id = seededExerciseId(user.id, "barbell-rack-pull");
+    const [row] = await db.select().from(exercises).where(eq(exercises.id, id));
+    expect(row?.measurementProfile).toBe("load_reps");
+    expect(row?.loadBasis).toBe("unspecified");
+  });
+
+  // D-CE1-1(ii) — the exact post-deployment verification shape, proven here
+  // on a fresh database rather than only asserted as a production step.
+  it("bodyweight-tibialis-raise stores exactly one tibialis primary contribution at weight 1.0, and no calves row in either role", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const id = seededExerciseId(user.id, "bodyweight-tibialis-raise");
+    const contributions = await db
+      .select()
+      .from(exerciseMuscleContributions)
+      .where(eq(exerciseMuscleContributions.exerciseId, id));
+    expect(contributions).toHaveLength(1);
+    expect(contributions[0]?.muscleGroupId).toBe("tibialis");
+    expect(contributions[0]?.role).toBe("primary");
+    expect(contributions[0]?.weight).toBe(DEFAULT_CONTRIBUTION_WEIGHT.primary);
+    expect(contributions.some((c) => c.muscleGroupId === "calves")).toBe(false);
+  });
+
+  // Catalog Expansion 1 preservation witnesses (catalog-expansion-1 §16.4),
+  // copying the Release 3 pattern (:323/:343 in this file's history) onto
+  // bodyweight-tibialis-raise — the one entry that depends on the new
+  // `tibialis` leaf, so it is also the entry D-CE1-1 is riskiest for.
+  it("reseeding never overwrites a user's edit to bodyweight-tibialis-raise", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const id = seededExerciseId(user.id, "bodyweight-tibialis-raise");
+    await db
+      .update(exercises)
+      .set({ name: "My Renamed Tibialis Raise" })
+      .where(eq(exercises.id, id));
+
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const [row] = await db.select().from(exercises).where(eq(exercises.id, id));
+    expect(row?.name).toBe("My Renamed Tibialis Raise");
+  });
+
+  it("reseeding does not resurrect a hard-deleted seeded bodyweight-tibialis-raise (Catalog Expansion 1 preservation witness)", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const tibialisId = seededExerciseId(user.id, "bodyweight-tibialis-raise");
+    await db.delete(exercises).where(eq(exercises.id, tibialisId));
+    await seedExerciseCatalogForUser(db, user.id);
+
+    const [row] = await db.select().from(exercises).where(eq(exercises.id, tibialisId));
+    expect(row).toBeUndefined();
+
+    const remaining = await db.select().from(exercises).where(eq(exercises.userId, user.id));
+    expect(remaining).toHaveLength(EXERCISE_CATALOG.length - 1);
+  });
+
+  it("pins bodyweight-tibialis-raise's deterministic id across two seed runs", async () => {
+    const db = await createTestDb();
+    await seedMuscleGroups(db);
+    const user = await insertTestUser(db);
+    const id = seededExerciseId(user.id, "bodyweight-tibialis-raise");
+
+    await seedExerciseCatalogForUser(db, user.id);
+    const [firstRun] = await db.select().from(exercises).where(eq(exercises.id, id));
+    expect(firstRun?.id).toBe(id);
+
+    await seedExerciseCatalogForUser(db, user.id);
+    const [secondRun] = await db.select().from(exercises).where(eq(exercises.id, id));
+    expect(secondRun?.id).toBe(id);
+
+    const rows = await db.select().from(exercises).where(eq(exercises.userId, user.id));
+    expect(rows).toHaveLength(EXERCISE_CATALOG.length); // no duplicate inserted on the second run
   });
 
   it("reseeding the exercise catalog is idempotent (no duplicate rows)", async () => {

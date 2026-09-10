@@ -141,3 +141,34 @@ Deployment scenarios (Release 2 seed):
 - The seed pipeline prints a reconciliation summary on every deploy; `conflicts=0` and `customDirectBack` are the owner's reclassification backlog.
 - domain-model §2, data-model §2.3/§2.5/§2.17/§4/§5, volume-model §1–6, implementation-plan (§1.4, Pre-Phase 6, Phase 6, §3), evidence-to-design #19 were amended in the same pass; mvp-scope and open-decisions needed no change.
 - Any further taxonomy change — a second rollup, another split, sub-heads — re-opens this ADR rather than a seed file.
+
+## Amendment 1 (2026-09-09) — add-only leaf: `tibialis`
+
+**Status:** Accepted. Owner decision O-5 of `docs/reviews/exercise-catalog-expansion-evaluation.md`, taken with that document's Catalog Expansion 1 selection. Exercised under this ADR's own "Mutation rules: add-only" clause, which requires an amendment for any further group.
+
+**Context.** Catalog Expansion 1 adds a Tibialis Raise. The v2 vocabulary has no leaf for the anterior shin: `calves` is the triceps-surae bucket and is this movement's *antagonist*, so crediting it would misreport the exercise in the library and add spurious calf sets to the weekly volume screen. The domain requires at least one primary leaf per exercise, and the constraint binds the athlete's own create flow identically — the exercise form offers only the leaf vocabulary. The gap is therefore in the vocabulary, not in the catalog.
+
+**Decision.** Add one leaf, `tibialis`, display name "Tibialis (Shin)", `kind = 'muscle'`, position 18 (appended last in the leaf list, moving the `back` rollup from position 18 to 19). It joins no rollup: `ROLLUP_MEMBERS.back` remains `["lats", "upper_back"]`. The vocabulary becomes **18 leaves + 1 rollup**.
+
+**What this supersedes, exactly.** Three statements of the original decision, and no others:
+
+1. The Vocabulary section's "**17 leaves + exactly one rollup**" → 18 leaves + exactly one rollup, with `tibialis` added to the leaf list.
+2. The Consequences section's "The volume screen shows 17 leaf rows plus the Back reconciliation line" → 18 leaf rows.
+3. The same sentence's "**five leaves display without reference bands** (two already did)" → **six** — `lats`, `upper_back`, `adductors`, `forearms`, `lower_back` and now `tibialis`.
+
+The Rejected-alternatives entry "**Single deploy** — disproved against the live build's editor paths; replaced by two ordinary releases rather than pipeline changes or flags" is **not** superseded and remains correct for the case it decided: the v2 pass reconciled 14 pre-existing exercises whose editor could write `back` rows back over reconciled data, and rejecting a single deploy for that was right. This amendment ships a single deploy over the same editor path in a materially different case — one brand-new row, nothing reconciled, no existing contribution changed, and no write-back surface — and that difference was put to the owner and decided explicitly as **D-CE1-1**, option (a), rather than inherited from the earlier rejection. Every other sentence of this ADR stands as written.
+
+**No landmark.** RP's table has no shin row, so `tibialis` receives none and renders without a reference band — the treatment `lats`, `upper_back`, `adductors`, `forearms` and `lower_back` already have. `RP_GENERAL_DESCRIPTION`'s list of landmark-less groups is updated with it. No range is invented.
+
+**No migration.** `muscle_groups` is seeded reference data with a bare `text` primary key; its only CHECK constrains `kind`, and both referencing foreign keys enumerate no values. The row is created by `seedMuscleGroups`'s existing upsert on the next `db:seed`. This is the property the original Context section relied on — "seeded reference data (not a hard-coded DB enum) so future groups are additive" — now exercised for the first time.
+
+**No reconciliation, and no reinterpretation of history.** Nothing is remapped. No existing contribution row changes, so the sum-preservation reasoning of the original decision does not engage: every muscle's series before and after this amendment is identical, and the new leaf's series begins empty and is populated only by contributions created after it exists.
+
+**Rollout.** One release, on the unchanged pipeline, **per owner decision D-CE1-1 option (a)** — recorded in §13 of the expansion specification, not asserted here. No server module reads `muscle_groups` at runtime, so the new row is invisible to the pre-deploy server. Two exposures follow, analysed in that specification's §12.6 and **not** claimed to be self-correcting:
+
+- an **old-server** window, bounded by the App Service deployment step of a single workflow job, in which a save of the new exercise is rejected;
+- a **stale-client** window that is **unbounded by design** — `skipWaiting: false` makes activation a deliberate tap — in which the new exercise's muscle picker appears unset and a save can persist a wrong muscle that the post-deploy server accepts.
+
+D-CE1-1's three controls answer these: a mandatory client-update-and-confirm step on every client used with the account, a post-deployment read-only verification of the entry's contributions, and forward hardening of the contribution editor so the next amendment does not reproduce the picker failure. The comparison with this ADR's own two-stage rollout is one of magnitude and is argued in the supersession note above; it is not a claim that the exposure is nil.
+
+**Scope of this amendment.** Exactly one leaf. It is not a precedent for a second rollup, a hierarchy, a `kind` change, or bulk vocabulary growth; an abductor or oblique leaf would need its own amendment on its own evidence.

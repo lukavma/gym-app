@@ -57,15 +57,26 @@ export function ContributionEditor({ rows, onChange }: ContributionEditorProps) 
     <div className="flex flex-col gap-3">
       <span className="text-sm text-slate-300">Muscles worked</span>
       {rows.map((row, index) => {
-        // Every row offers the 17 leaves; a row already holding a legacy
-        // rollup value (e.g. `back`) additionally sees that one value as a
-        // self-only option, so it stays visible/editable without ever being
-        // offered to a different (new or leaf) row.
-        const currentRollup = isRollupMuscleGroupSlug(row.muscleGroupId)
-          ? MUSCLE_GROUPS.find((group) => group.slug === row.muscleGroupId)
-          : undefined;
-        const options: readonly MuscleGroupDefinition[] = currentRollup
-          ? [currentRollup, ...LEAF_MUSCLE_GROUPS]
+        // Every row offers the leaves; a row already holding a value the
+        // option list cannot show — a legacy rollup (e.g. `back`) or,
+        // D-CE1-1(iii), any slug this bundle's vocabulary doesn't recognise
+        // yet — additionally sees that one value as a self-only option, so
+        // it stays visible/editable without ever being offered to a
+        // different (new or leaf) row. A known rollup keeps its existing
+        // MuscleGroupDefinition; an unrecognised slug falls back to a
+        // display-only definition built from the slug itself.
+        const isKnownRollup = isRollupMuscleGroupSlug(row.muscleGroupId);
+        const currentSelfOnly: MuscleGroupDefinition | undefined =
+          row.muscleGroupId !== "" && !isLeafMuscleGroupSlug(row.muscleGroupId)
+            ? (MUSCLE_GROUPS.find((group) => group.slug === row.muscleGroupId) ?? {
+                slug: row.muscleGroupId,
+                displayName: row.muscleGroupId,
+                position: -1,
+                kind: "muscle",
+              })
+            : undefined;
+        const options: readonly MuscleGroupDefinition[] = currentSelfOnly
+          ? [currentSelfOnly, ...LEAF_MUSCLE_GROUPS]
           : LEAF_MUSCLE_GROUPS;
 
         return (
@@ -102,7 +113,7 @@ export function ContributionEditor({ rows, onChange }: ContributionEditorProps) 
                 ✕
               </button>
             </div>
-            {currentRollup && (
+            {isKnownRollup && (
               <p className="text-xs text-amber-400">
                 Unclassified Back — pick Lats or Upper Back, or leave as-is.
               </p>

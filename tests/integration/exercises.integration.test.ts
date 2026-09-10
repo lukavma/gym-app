@@ -589,6 +589,33 @@ describe("exercises service — muscle taxonomy v2 Release 1 (PGlite integration
     expect(fetched?.contributions[0]?.muscleGroupId).toBe("adductors");
   });
 
+  // ADR-010 Amendment 1 (O-5, catalog-expansion-1) — the same create/update
+  // round trip proven above for the Release 1 leaves, exercised end-to-end
+  // for the new `tibialis` leaf.
+  it("creates and updates exercises with the new tibialis leaf (ADR-010 Amendment 1)", async () => {
+    const created = await createExercise(db, userId, {
+      name: "Standing Tibialis Raise",
+      equipment: "bodyweight",
+      mechanics: "isolation",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "tibialis", role: "primary", weight: 1 }],
+    });
+    expect(created.contributions).toEqual([
+      { muscleGroupId: "tibialis", role: "primary", weight: 1 },
+    ]);
+
+    const updated = await updateExercise(db, userId, created.id, {
+      contributions: [{ muscleGroupId: "tibialis", role: "primary", weight: 1 }],
+    });
+    expect(updated.contributions).toEqual([
+      { muscleGroupId: "tibialis", role: "primary", weight: 1 },
+    ]);
+
+    const fetched = await getExercise(db, userId, created.id);
+    expect(fetched?.contributions.some((c) => c.muscleGroupId === "calves")).toBe(false);
+  });
+
   it("carries forward an existing back contribution on update", async () => {
     const exerciseId = await insertLegacyBackFixture("Legacy Barbell Row");
     const updated = await updateExercise(db, userId, exerciseId, {
