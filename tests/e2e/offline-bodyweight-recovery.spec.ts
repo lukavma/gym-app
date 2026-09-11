@@ -208,7 +208,6 @@ test.describe("offline recovery check-in — true unknown-offline state", () => 
 
     await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
 
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
     await page.getByLabel("Sleep hours", { exact: true }).fill("7.25");
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
@@ -257,7 +256,6 @@ test.describe("offline recovery check-in — true unknown-offline state", () => 
 
     await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
 
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
     await page.getByLabel("Sleep hours", { exact: true }).fill("7.25");
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
@@ -298,8 +296,12 @@ test.describe("offline recovery check-in — true unknown-offline state", () => 
     await page.reload();
     await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
 
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
-    await page.getByRole("button", { name: "Clear Sleep hours" }).click();
+    // PI-007 device remediation — no separate Set/Clear affordance;
+    // touching then emptying the same input is the touched-then-cleared
+    // gesture.
+    const sleepHoursInput = page.getByLabel("Sleep hours", { exact: true });
+    await sleepHoursInput.fill("7");
+    await sleepHoursInput.fill("");
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
 
@@ -338,7 +340,7 @@ test.describe("offline recovery check-in — true unknown-offline state", () => 
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
 
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
+    await page.getByLabel("Sleep hours", { exact: true }).fill("7");
     await expect(page.getByText(/Saved — will finish syncing/)).toHaveCount(0);
 
     await context.setOffline(false);

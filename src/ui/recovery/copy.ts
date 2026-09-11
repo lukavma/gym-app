@@ -7,7 +7,7 @@
 export const RECOVERY_COPY = {
   sleepHoursLabel: "Sleep hours",
   sleepHoursEditLabel: "Edit sleep hours",
-  sleepHoursRangeError: "Enter sleep hours between 0 and 24, to at most 2 decimals.",
+  sleepHoursRangeError: "Enter sleep hours as a number between 0 and 24, to at most 2 decimals.",
   sorenessLabel: "Muscle soreness",
   sorenessAnchors: ["None", "Moderate", "Very high"] as [string, string, string],
   atLeastOneMetricRequired:

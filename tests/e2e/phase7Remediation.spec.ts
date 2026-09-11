@@ -205,11 +205,10 @@ test.describe("MEDIUM-2 remediation: the recovery history editor never fabricate
 
     // Clear the one metric this entry has, with nothing else set — the
     // client must block the save with an explicit error, never silently
-    // fabricate a replacement value. Scoped to the history row (defensive:
-    // "Clear Sleep hours" is unambiguous today only because Today's
-    // new-entry field starts unset and renders "Set Sleep hours" instead —
-    // a future seed change shouldn't be able to silently break this).
-    await ownRow.getByRole("button", { name: "Clear Sleep hours" }).click();
+    // fabricate a replacement value. PI-007 device remediation — Sleep
+    // hours is now a directly editable, always-mounted input (no separate
+    // Clear affordance); emptying it is the clear gesture.
+    await page.getByLabel("Edit sleep hours").fill("");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(
       page.getByText(
@@ -348,9 +347,7 @@ test.describe("MEDIUM-2 recurrence remediation: Today's edit path honors metrics
 test.describe("sleep-hours textbox remediation: emptying the field clears the value, not just the display", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("clearing the sleep-hours textbox (not the Clear button) saves null, not the previous number", async ({
-    page,
-  }) => {
+  test("clearing the sleep-hours textbox saves null, not the previous number", async ({ page }) => {
     await login(page);
     await deleteAllRecoveryEntries(page);
 
@@ -374,15 +371,12 @@ test.describe("sleep-hours textbox remediation: emptying the field clears the va
     await expect(sleepHoursInput).toHaveValue("8");
     await sleepHoursInput.fill("");
     // Emptying the field clears the underlying value immediately (not just
-    // the display) — the component reflects that consistently by switching
-    // to the same "not set" representation a "Clear" tap produces, rather
-    // than leaving a blank text box that still holds 8 internally. Scoped
-    // to the history row: on /recovery, today's un-logged check-in card
-    // also renders "Sleep hours: not set" for its own (unrelated) field,
-    // so an unscoped page-level locator would match both (PI-007 §6
-    // container-scoping rule).
-    await expect(row.getByText("Sleep hours: not set")).toBeVisible();
-    await expect(sleepHoursInput).not.toBeVisible();
+    // the display). PI-007 device remediation — the input stays mounted,
+    // visible and focused throughout (that's the fix for the iOS
+    // keyboard-closing defect this remediation addresses); it no longer
+    // swaps to a separate "not set" element the way it used to.
+    await expect(sleepHoursInput).toHaveValue("");
+    await expect(sleepHoursInput).toBeVisible();
 
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
@@ -396,6 +390,69 @@ test.describe("sleep-hours textbox remediation: emptying the field clears the va
 
     // Clean up.
     await savedRow.getByRole("button", { name: "Delete" }).click();
+    await expect(page.getByText("No entries yet.")).toBeVisible();
+  });
+
+  // PI-007 device-remediation reverification B-1 (BLOCKER, closed) — a
+  // non-empty draft that never became a number (",", ".", "1.2.3") used to
+  // be silently sent as an explicit `sleepHours: null`, destroying a stored
+  // value with no error: SleepHoursField already resolves it to a legal
+  // `null` before EditRow ever builds the PATCH body, so the server never
+  // sees anything to reject. Only the client can catch this. Range/
+  // precision stay server-validated for History — see E-4 in
+  // recoveryCheckIn.spec.ts and the "25" case skipped here on purpose.
+  test("an unparseable non-empty draft blocks the save and preserves the stored value; correcting it saves, and deliberately emptying still clears", async ({
+    page,
+  }) => {
+    await login(page);
+    await deleteAllRecoveryEntries(page);
+    await page.request.post("/api/recovery", {
+      data: { date: "2026-01-08", sleepHours: 8, soreness: 2 },
+    });
+
+    await page.goto("/recovery");
+    const row = page.locator("ul").locator("li").first();
+    await expect(row.getByText("Sleep 8h")).toBeVisible();
+    await row.getByRole("button", { name: "Edit", exact: true }).click();
+
+    const sleepHoursInput = page.getByLabel("Edit sleep hours");
+    await expect(sleepHoursInput).toHaveValue("8");
+
+    for (const draft of [",", ".", "1.2.3"]) {
+      await sleepHoursInput.fill(draft);
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(
+        page.getByText("Enter sleep hours as a number between 0 and 24, to at most 2 decimals."),
+      ).toBeVisible();
+      // Still in edit mode — no PATCH was sent — and the draft is preserved
+      // exactly as typed, not blanked.
+      await expect(sleepHoursInput).toHaveValue(draft);
+      await expect(sleepHoursInput).toBeVisible();
+    }
+
+    const midRes = await page.request.get("/api/recovery");
+    const { entries: midEntries } = (await midRes.json()) as {
+      entries: { date: string; sleepHours: number | null }[];
+    };
+    expect(midEntries.find((e) => e.date === "2026-01-08")?.sleepHours).toBe(8);
+
+    // Correcting the draft to a valid value saves successfully.
+    await sleepHoursInput.fill("6.5");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    const savedRow6_5 = page.locator("ul").locator("li").filter({ hasText: "Sleep 6.5h" });
+    await expect(savedRow6_5).toBeVisible();
+
+    // Deliberately emptying still clears — unchanged behaviour.
+    await savedRow6_5.getByRole("button", { name: "Edit", exact: true }).click();
+    const editedInput = page.getByLabel("Edit sleep hours");
+    await editedInput.fill("");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    const clearedRow = page.locator("ul").locator("li").filter({ hasText: "Muscle soreness 2/5" });
+    await expect(clearedRow).toBeVisible();
+    await expect(clearedRow.getByText(/Sleep \d+(\.\d+)?h/)).toHaveCount(0);
+
+    // Clean up.
+    await clearedRow.getByRole("button", { name: "Delete" }).click();
     await expect(page.getByText("No entries yet.")).toBeVisible();
   });
 });

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { NullableSliderField } from "./NullableSliderField";
 import { RECOVERY_COPY } from "./copy";
-import { SleepHoursField } from "./SleepHoursField";
+import { isUnparseableSleepHoursDraft, SleepHoursField } from "./SleepHoursField";
 import type { RecoveryEntryDto } from "./types";
 
 type Status = "loading" | "ready" | "error";
@@ -105,6 +105,9 @@ function EditRow({
   onCancel: () => void;
 }) {
   const [sleepHours, setSleepHours] = useState<number | null>(entry.sleepHours);
+  const [sleepHoursDraft, setSleepHoursDraft] = useState(
+    entry.sleepHours !== null ? String(entry.sleepHours) : "",
+  );
   const [sleepQuality, setSleepQuality] = useState<number | null>(entry.sleepQuality);
   const [readiness, setReadiness] = useState<number | null>(entry.readiness);
   const [soreness, setSoreness] = useState<number | null>(entry.soreness);
@@ -114,6 +117,18 @@ function EditRow({
 
   async function save() {
     setError(null);
+
+    // A non-empty draft that never became a number (e.g. ",", ".",
+    // "1.2.3") must not be silently sent as an explicit `null` clear — see
+    // SleepHoursField.tsx's isUnparseableSleepHoursDraft doc comment. This
+    // is deliberately narrower than sleepHoursError: it does not enforce
+    // range/precision, which stays server-validated for History (an
+    // out-of-range number still reaches the PATCH and gets the existing
+    // generic "Save failed." from the server's 400).
+    if (isUnparseableSleepHoursDraft(sleepHours, sleepHoursDraft)) {
+      setError(RECOVERY_COPY.sleepHoursRangeError);
+      return;
+    }
 
     if (sleepHours === null && sleepQuality === null && readiness === null && soreness === null) {
       setError(RECOVERY_COPY.atLeastOneMetricRequired);
@@ -155,7 +170,10 @@ function EditRow({
       <SleepHoursField
         value={sleepHours}
         ariaLabel={RECOVERY_COPY.sleepHoursEditLabel}
-        onChange={(value) => setSleepHours(value)}
+        onChange={(value, draft) => {
+          setSleepHours(value);
+          setSleepHoursDraft(draft);
+        }}
       />
 
       <NullableSliderField label="Sleep quality" value={sleepQuality} onChange={setSleepQuality} />

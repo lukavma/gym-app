@@ -17,11 +17,20 @@ import {
 // syncDailyLogs.integration.test.ts. Local-only (needs a real Postgres via
 // docker-compose), never run in CI, same convention as every other Phase 3+
 // spec.
+//
+// PI-007 device remediation — Sleep hours has no Set/Clear affordance
+// anymore: it's a directly tappable, always-mounted input (the
+// BodyweightQuickLog interaction model), empty when unset, prefilled when
+// not. Every "Set Sleep hours" / "Clear Sleep hours" button interaction in
+// this file was replaced with typing into or emptying that same input —
+// see the A/B-group tests below for the new-behavior assertions this
+// superseded (the visible "Sleep hours: not set" state and the
+// input-unmount-on-clear it implied no longer exist).
 
 test.describe("A — new entry and the stale-read race", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("A-1: no entry today shows three sliders at 3 and Sleep hours: not set; saving untouched stores sleep_hours null", async ({
+  test("A-1: no entry today shows three sliders at 3 and an empty sleep-hours input; saving untouched stores sleep_hours null", async ({
     page,
   }) => {
     await login(page);
@@ -30,7 +39,9 @@ test.describe("A — new entry and the stale-read race", () => {
     await page.reload();
 
     await expect(page.getByText("How are you feeling today?")).toBeVisible();
-    await expect(page.getByText("Sleep hours: not set")).toBeVisible();
+    // PI-007 device remediation — no fabricated default and no Set step:
+    // the input is present immediately and empty, never a "not set" text.
+    await expect(page.getByLabel("Sleep hours", { exact: true })).toHaveValue("");
     await expect(page.getByLabel("Sleep quality", { exact: true })).toHaveValue("3");
     await expect(page.getByLabel("Readiness", { exact: true })).toHaveValue("3");
     await expect(page.getByLabel("Muscle soreness", { exact: true })).toHaveValue("3");
@@ -62,15 +73,20 @@ test.describe("A — new entry and the stale-read race", () => {
     await deleteAllRecoveryEntries(page);
   });
 
-  test("A-2: Set Sleep hours, enter 7.5, save -> stored and summarized", async ({ page }) => {
+  // PI-007 device remediation regression: "an initially unset field accepts
+  // input with one tap" — click once, type, no prior activation step.
+  test("A-2: an initially unset field accepts input with one tap, enter 7.5, save -> stored and summarized", async ({
+    page,
+  }) => {
     await login(page);
     await ensureNoActiveSession(page);
     await deleteAllRecoveryEntries(page);
     await page.reload();
 
     await expect(page.getByText("How are you feeling today?")).toBeVisible();
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
-    await page.getByLabel("Sleep hours", { exact: true }).fill("7.5");
+    const input = page.getByLabel("Sleep hours", { exact: true });
+    await input.click();
+    await input.pressSequentially("7.5");
     await page.getByRole("button", { name: "Save check-in" }).click();
 
     await expect(page.getByText(/Logged today: Sleep 7\.5h/)).toBeVisible();
@@ -78,6 +94,38 @@ test.describe("A — new entry and the stale-read race", () => {
     const res = await page.request.get("/api/recovery/today");
     const { entry } = (await res.json()) as { entry: { sleepHours: number | null } | null };
     expect(entry?.sleepHours).toBe(7.5);
+
+    await deleteAllRecoveryEntries(page);
+  });
+
+  // PI-007 device remediation regression: intermediate typing states (a
+  // lone separator that doesn't parse yet) must be preserved verbatim, not
+  // force-reset to "" — that reset is exactly what used to unmount the
+  // input mid-edit. Recovering from it (backspacing the stray character)
+  // and completing a valid entry must work with no extra activation step.
+  test("A-3b: an unparseable intermediate draft is preserved, not force-reset, and recovers to a valid entry", async ({
+    page,
+  }) => {
+    await login(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.reload();
+
+    await expect(page.getByText("How are you feeling today?")).toBeVisible();
+    const input = page.getByLabel("Sleep hours", { exact: true });
+    await input.click();
+    await input.pressSequentially(",");
+    // A lone "," doesn't parse to a number, but it is not empty — the
+    // draft must still show exactly what was typed, not "".
+    await expect(input).toHaveValue(",");
+
+    await input.press("Backspace");
+    await expect(input).toHaveValue("");
+    await input.pressSequentially("7.5");
+    await expect(input).toHaveValue("7.5");
+
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(page.getByText(/Logged today: Sleep 7\.5h/)).toBeVisible();
 
     await deleteAllRecoveryEntries(page);
   });
@@ -128,6 +176,68 @@ test.describe("A — new entry and the stale-read race", () => {
 
     await deleteAllRecoveryEntries(page);
   });
+
+  // PI-007 device-remediation reverification L-2 — focusing the input
+  // without typing must not mark it touched, or state A's omission rule
+  // (A-4 above) would silently break the moment a future refactor fires
+  // onChange on focus, with every existing test still green. A stale-read
+  // race identical to A-4, except the field is tapped and left, never
+  // typed into.
+  test("A-4b [NC]: focusing the sleep-hours input without typing does not mark it touched", async ({
+    page,
+  }) => {
+    await login(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.reload();
+
+    await expect(page.getByText("How are you feeling today?")).toBeVisible();
+    await page.request.post("/api/recovery", { data: { sleepHours: 6 } });
+
+    const input = page.getByLabel("Sleep hours", { exact: true });
+    await input.click();
+    await input.press("Tab");
+
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(
+      page.getByText("Logged today: Sleep quality 3/5 · Readiness 3/5 · Muscle soreness 3/5", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await waitForOutboxDrained(page);
+
+    const res = await page.request.get("/api/recovery/today");
+    const { entry } = (await res.json()) as { entry: { sleepHours: number | null } | null };
+    expect(entry?.sleepHours).toBe(6);
+
+    await deleteAllRecoveryEntries(page);
+  });
+
+  // PI-007 device-remediation reverification L-2 — zero is a valid value
+  // end to end through the real UI, not just at the sleepHoursError level
+  // (already pinned in tests/unit/sleepHoursField.test.ts).
+  test("A-2b: entering 0 is a valid value, never truthiness-collapsed to unset", async ({
+    page,
+  }) => {
+    await login(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.reload();
+
+    await expect(page.getByText("How are you feeling today?")).toBeVisible();
+    const input = page.getByLabel("Sleep hours", { exact: true });
+    await input.click();
+    await input.pressSequentially("0");
+    await page.getByRole("button", { name: "Save check-in" }).click();
+
+    await expect(page.getByText(/Logged today: Sleep 0h/)).toBeVisible();
+    await waitForOutboxDrained(page);
+    const res = await page.request.get("/api/recovery/today");
+    const { entry } = (await res.json()) as { entry: { sleepHours: number | null } | null };
+    expect(entry?.sleepHours).toBe(0);
+
+    await deleteAllRecoveryEntries(page);
+  });
 });
 
 test.describe("B — existing-entry edit and clear", () => {
@@ -168,8 +278,9 @@ test.describe("B — existing-entry edit and clear", () => {
 
   test("B-3: clearing sleep hours saves null while soreness survives", async ({ page }) => {
     await seedEntryAndOpenEdit(page);
-    await page.getByRole("button", { name: "Clear Sleep hours" }).click();
-    await expect(page.getByText("Sleep hours: not set")).toBeVisible();
+    const sleepHoursInput = page.getByLabel("Sleep hours", { exact: true });
+    await sleepHoursInput.fill("");
+    await expect(sleepHoursInput).toHaveValue("");
 
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
@@ -187,12 +298,26 @@ test.describe("B — existing-entry edit and clear", () => {
     await deleteAllRecoveryEntries(page);
   });
 
-  test("B-4: emptying the sleep-hours textbox behaves identically to Clear", async ({ page }) => {
+  // B-4 [device remediation] — the owner's exact reproduction: tap the
+  // input, select the existing value and delete it. Before this
+  // remediation, SleepHoursField rendered UnsetField whenever its value
+  // resolved to null, so the "Select all -> Backspace" gesture replaced
+  // the focused input with a different element and closed the iOS
+  // keyboard mid-edit. The same input must now stay mounted, visible and
+  // focused, ready for immediate replacement with no further activation.
+  test("B-4: selecting and deleting the existing value keeps the input mounted, empty and focused, ready for immediate replacement", async ({
+    page,
+  }) => {
     await seedEntryAndOpenEdit(page);
     const sleepHoursInput = page.getByLabel("Sleep hours", { exact: true });
-    await sleepHoursInput.fill("");
-    await expect(page.getByText("Sleep hours: not set")).toBeVisible();
-    await expect(sleepHoursInput).not.toBeVisible();
+    await expect(sleepHoursInput).toHaveValue("8");
+
+    await sleepHoursInput.click();
+    await sleepHoursInput.press("ControlOrMeta+a");
+    await sleepHoursInput.press("Backspace");
+    await expect(sleepHoursInput).toBeVisible();
+    await expect(sleepHoursInput).toHaveValue("");
+    await expect(sleepHoursInput).toBeFocused();
     // Scoped to <main> — Next.js's App Router mounts its own always-present,
     // visually-hidden role="alert" route announcer (app-router-announcer.js)
     // outside <main> for screen-reader navigation announcements, unrelated
@@ -200,9 +325,14 @@ test.describe("B — existing-entry edit and clear", () => {
     // find that one regardless of this feature.
     await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
 
+    // Typing a replacement succeeds immediately — no re-tap, no
+    // reactivation step.
+    await sleepHoursInput.pressSequentially("7.5");
+    await expect(sleepHoursInput).toHaveValue("7.5");
+
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
-      page.getByText("Logged today: Muscle soreness 2/5", { exact: true }),
+      page.getByText("Logged today: Sleep 7.5h · Muscle soreness 2/5", { exact: true }),
     ).toBeVisible();
 
     await deleteAllRecoveryEntries(page);
@@ -226,7 +356,7 @@ test.describe("B — existing-entry edit and clear", () => {
     await expect(page.getByText("Readiness: not set")).toBeVisible();
     await expect(page.getByText("Muscle soreness: not set")).toBeVisible();
 
-    await page.getByRole("button", { name: "Clear Sleep hours" }).click();
+    await page.getByLabel("Sleep hours", { exact: true }).fill("");
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
       page.getByText(
@@ -391,9 +521,16 @@ test.describe("E — validation and regression", () => {
     await page.reload();
 
     await expect(page.getByText("How are you feeling today?")).toBeVisible();
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
     const input = page.getByLabel("Sleep hours", { exact: true });
     await expect(input).toHaveAttribute("inputmode", "decimal");
+    // PI-007 device remediation — iOS Safari auto-zooms on focus for any
+    // input with a computed font-size under 16px; this is the actual fix
+    // for the reported zoom defect (not a viewport/meta change, which
+    // stays untouched).
+    const fontSizePx = await input.evaluate((el) =>
+      Number.parseFloat(getComputedStyle(el).fontSize),
+    );
+    expect(fontSizePx).toBeGreaterThanOrEqual(16);
     await input.fill("7,5");
     await page.getByRole("button", { name: "Save check-in" }).click();
 
@@ -401,7 +538,7 @@ test.describe("E — validation and regression", () => {
     await deleteAllRecoveryEntries(page);
   });
 
-  test("E-3 [NC]: both reachable guard cases show the range error and enqueue nothing, keeping the input rendered", async ({
+  test("E-3 [NC]: all three reachable guard cases show the range/invalid error and enqueue nothing, keeping the input rendered", async ({
     page,
   }) => {
     await login(page);
@@ -410,22 +547,32 @@ test.describe("E — validation and regression", () => {
     await page.reload();
 
     await expect(page.getByText("How are you feeling today?")).toBeVisible();
-    await page.getByRole("button", { name: "Set Sleep hours" }).click();
     const input = page.getByLabel("Sleep hours", { exact: true });
 
     await input.fill("25");
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
-      page.getByText("Enter sleep hours between 0 and 24, to at most 2 decimals."),
+      page.getByText("Enter sleep hours as a number between 0 and 24, to at most 2 decimals."),
     ).toBeVisible();
     await expect(input).toBeVisible();
 
     await input.fill("7.333");
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
-      page.getByText("Enter sleep hours between 0 and 24, to at most 2 decimals."),
+      page.getByText("Enter sleep hours as a number between 0 and 24, to at most 2 decimals."),
     ).toBeVisible();
     await expect(input).toBeVisible();
+
+    // PI-007 device remediation — a non-empty draft that still doesn't
+    // parse (e.g. a lone ".") must not be silently treated as "unset" on
+    // save; it now surfaces the same explicit error, and the draft is
+    // preserved (not blanked) so the athlete can fix it in place.
+    await input.fill(".");
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(
+      page.getByText("Enter sleep hours as a number between 0 and 24, to at most 2 decimals."),
+    ).toBeVisible();
+    await expect(input).toHaveValue(".");
 
     const res = await page.request.get("/api/recovery/today");
     const { entry } = (await res.json()) as { entry: unknown };
@@ -452,7 +599,7 @@ test.describe("E — validation and regression", () => {
 
     await expect(row.getByText("Save failed.")).toBeVisible();
     await expect(
-      row.getByText("Enter sleep hours between 0 and 24, to at most 2 decimals."),
+      row.getByText("Enter sleep hours as a number between 0 and 24, to at most 2 decimals."),
     ).toHaveCount(0);
 
     await deleteAllRecoveryEntries(page);

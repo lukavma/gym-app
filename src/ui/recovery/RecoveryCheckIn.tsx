@@ -212,7 +212,7 @@ function RecoveryCheckInForm({
   const [readiness, setReadiness] = useState<number | null>(isNew ? NEUTRAL : entry.readiness);
   const [soreness, setSoreness] = useState<number | null>(isNew ? NEUTRAL : entry.soreness);
   // PI-007 — unlike the three sliders above, sleep hours has no fabricated
-  // default even on a brand-new entry: it starts "not set" for isNew too
+  // default even on a brand-new entry: it starts empty (null) for isNew too
   // (§5 state A), and is read exactly as stored when editing (§5 state B).
   const [sleepHours, setSleepHours] = useState<number | null>(isNew ? null : entry.sleepHours);
   const [sleepHoursDraft, setSleepHoursDraft] = useState(

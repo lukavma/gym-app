@@ -2,22 +2,46 @@
 
 import { useState } from "react";
 import { decimalPlaceCount, parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
-import { ClearButton, UnsetField } from "./NullableSliderField";
 import { RECOVERY_COPY } from "./copy";
 
-// PI-007 §4.1 — exact reuse of the delivered RecoveryHistoryList.EditRow
-// sleep-hours control, extracted so Today's three forms and History cannot
-// drift on labels, draft handling or the Set/Clear affordances. An emptied
-// or unparseable draft resolves to `null` = "not set" — a clear, not an
-// error — so the draft always resets to "" whenever the value resolves to
-// null, and retained text can never desync from the rendered state.
+// PI-007 device remediation (iPhone acceptance) — a directly tappable,
+// persistent input, the same interaction model BodyweightQuickLog.tsx uses:
+// no Set-gated activation, no fabricated default, and the same DOM `<input>`
+// stays mounted and focused through every edit, including emptying it
+// completely. The prior Set/UnsetField design fabricated no default either,
+// but swapped the rendered element out from under the keyboard the instant
+// the value resolved to `null` (e.g. select-all + delete) — that unmount is
+// what closed the iOS keyboard mid-edit, and this component never does it.
 //
-// Validation is deliberately NOT part of this shared surface (§4.1
-// "ownership"): `sleepHoursError` below is exported for Today's three
-// `save()` handlers to call themselves. History does not call it — its
-// PATCH already gets a synchronous 400 from the server (§1 boundary), so
-// this extraction changes nothing about History's validation behaviour.
+// `draft` is the single source of truth for what's rendered: it holds
+// exactly what `sanitizeDecimalDraft` lets through and is never force-reset
+// to `""` just because it doesn't currently parse. A lone "," or "." is a
+// mid-typing state, not an error — see `sleepHoursError` below for where
+// "non-empty but unparseable" actually becomes a save-time error, instead
+// of the silent clear the field used to resolve it to.
+//
+// Validation stays out of this shared surface (§4.1 "ownership", unchanged
+// by this remediation): `sleepHoursError` is exported for Today's `save()`
+// handlers to call themselves, enforcing range/precision as well. History
+// does not call it for that part — its PATCH still gets a synchronous 400
+// from the server for an out-of-range number. But a non-empty draft that
+// never became a number at all (e.g. ",", ".", "1.2.3") never reaches the
+// server as anything invalid — SleepHoursField already resolved it to a
+// legal `null`, which the server correctly accepts as a deliberate clear.
+// Only the client can tell "the athlete emptied this" apart from "the
+// athlete typed something that isn't a number yet", so both Today and
+// History must catch this one case themselves — see
+// RecoveryHistoryList.tsx's own `isUnparseableSleepHoursDraft` check in
+// `EditRow.save()`, which deliberately does NOT also enforce range/
+// precision, keeping that part server-owned for History.
+export function isUnparseableSleepHoursDraft(value: number | null, draft: string): boolean {
+  return draft !== "" && value === null;
+}
+
 export function sleepHoursError(value: number | null, draft: string): string | null {
+  if (isUnparseableSleepHoursDraft(value, draft)) {
+    return RECOVERY_COPY.sleepHoursRangeError;
+  }
   if (value !== null && (value > 24 || decimalPlaceCount(draft) > 2)) {
     return RECOVERY_COPY.sleepHoursRangeError;
   }
@@ -35,30 +59,9 @@ export function SleepHoursField({
 }) {
   const [draft, setDraft] = useState(value !== null ? String(value) : "");
 
-  if (value === null) {
-    return (
-      <UnsetField
-        label={RECOVERY_COPY.sleepHoursLabel}
-        onSet={() => {
-          setDraft("7");
-          onChange(7, "7");
-        }}
-      />
-    );
-  }
-
   return (
     <div className="flex flex-col gap-1 text-xs text-slate-400">
-      <span className="flex items-center justify-between">
-        <span>{RECOVERY_COPY.sleepHoursLabel}</span>
-        <ClearButton
-          label={RECOVERY_COPY.sleepHoursLabel}
-          onClear={() => {
-            setDraft("");
-            onChange(null, "");
-          }}
-        />
-      </span>
+      <span>{RECOVERY_COPY.sleepHoursLabel}</span>
       <input
         type="text"
         inputMode="decimal"
@@ -67,12 +70,10 @@ export function SleepHoursField({
         value={draft}
         onChange={(e) => {
           const sanitized = sanitizeDecimalDraft(e.target.value);
-          const parsed = parseDecimalInput(sanitized);
-          const nextDraft = parsed === null ? "" : sanitized;
-          setDraft(nextDraft);
-          onChange(parsed, nextDraft);
+          setDraft(sanitized);
+          onChange(parseDecimalInput(sanitized), sanitized);
         }}
-        className="w-20 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-50 outline-none focus:border-slate-400"
+        className="w-24 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base text-slate-50 outline-none focus:border-slate-400"
       />
       <span className="text-[11px] text-slate-500">e.g. 7.5</span>
     </div>
