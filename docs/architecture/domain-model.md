@@ -252,7 +252,7 @@ Persisted output of one progression-engine evaluation, plus what the user did wi
 Simple daily journal facts, one per calendar date:
 
 - `BodyweightEntry { date, weightKg }`
-- `RecoveryEntry { date, sleepHours?, sleepQuality? 1–5, readiness? 1–5, soreness? 1–5, note? }` — all fields optional; MVP treats these as tracking/correlation context **only**, never as programming inputs (EVIDENCE-027). The progression engine's context type reserves an optional `recovery` slot so future strategies *could* consume it — unused in MVP.
+- `RecoveryEntry { date, sleepHours?, sleepQuality? 1–5, readiness? 1–5, soreness? 1–5, note? }` — all fields optional; MVP treats these as tracking/correlation context **only**, never as programming inputs (EVIDENCE-027). The progression engine's context type reserves an optional `recovery` slot so future strategies *could* consume it — unused in MVP. (`soreness` is displayed to the athlete as "Muscle soreness", `1 = none … 5 = very high` — labels only, the stored 1–5 values are unchanged; PI-007.)
 
 Derived, never persisted: 7-day rolling average, 30-day trend.
 

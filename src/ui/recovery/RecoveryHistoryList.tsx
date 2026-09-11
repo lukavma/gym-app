@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { parseDecimalInput, sanitizeDecimalDraft } from "@/ui/decimalInput";
-import { ClearButton, NullableSliderField, UnsetField } from "./NullableSliderField";
+import { NullableSliderField } from "./NullableSliderField";
+import { RECOVERY_COPY } from "./copy";
+import { SleepHoursField } from "./SleepHoursField";
 import type { RecoveryEntryDto } from "./types";
 
 type Status = "loading" | "ready" | "error";
@@ -58,7 +59,7 @@ export function RecoveryHistoryList() {
                 {entry.sleepHours !== null && `Sleep ${entry.sleepHours}h`}
                 {entry.sleepQuality !== null && ` · Sleep quality ${entry.sleepQuality}/5`}
                 {entry.readiness !== null && ` · Readiness ${entry.readiness}/5`}
-                {entry.soreness !== null && ` · Soreness ${entry.soreness}/5`}
+                {entry.soreness !== null && ` · ${RECOVERY_COPY.sorenessLabel} ${entry.soreness}/5`}
               </span>
               {entry.note && <span className="text-xs text-slate-400">{entry.note}</span>}
             </div>
@@ -104,9 +105,6 @@ function EditRow({
   onCancel: () => void;
 }) {
   const [sleepHours, setSleepHours] = useState<number | null>(entry.sleepHours);
-  const [sleepHoursDraft, setSleepHoursDraft] = useState(
-    entry.sleepHours !== null ? String(entry.sleepHours) : "",
-  );
   const [sleepQuality, setSleepQuality] = useState<number | null>(entry.sleepQuality);
   const [readiness, setReadiness] = useState<number | null>(entry.readiness);
   const [soreness, setSoreness] = useState<number | null>(entry.soreness);
@@ -118,7 +116,7 @@ function EditRow({
     setError(null);
 
     if (sleepHours === null && sleepQuality === null && readiness === null && soreness === null) {
-      setError("At least one of sleep hours, sleep quality, readiness, or soreness is required.");
+      setError(RECOVERY_COPY.atLeastOneMetricRequired);
       return;
     }
 
@@ -138,9 +136,7 @@ function EditRow({
       if (!res.ok) {
         const data: { error?: string } = await res.json().catch(() => ({}));
         setError(
-          data.error === "no_metric"
-            ? "At least one of sleep hours, sleep quality, readiness, or soreness is required."
-            : "Save failed.",
+          data.error === "no_metric" ? RECOVERY_COPY.atLeastOneMetricRequired : "Save failed.",
         );
         return;
       }
@@ -156,52 +152,20 @@ function EditRow({
     <li className="flex flex-col gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-3">
       <span className="text-xs text-slate-400">{entry.date}</span>
 
-      {sleepHours === null ? (
-        <UnsetField
-          label="Sleep hours"
-          onSet={() => {
-            setSleepHours(7);
-            setSleepHoursDraft("7");
-          }}
-        />
-      ) : (
-        <div className="flex flex-col gap-1 text-xs text-slate-400">
-          <span className="flex items-center justify-between">
-            <span>Sleep hours</span>
-            <ClearButton
-              label="Sleep hours"
-              onClear={() => {
-                setSleepHours(null);
-                setSleepHoursDraft("");
-              }}
-            />
-          </span>
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Edit sleep hours"
-            value={sleepHoursDraft}
-            onChange={(e) => {
-              const draft = sanitizeDecimalDraft(e.target.value);
-              setSleepHoursDraft(draft);
-              // phase-7-remediation-verification.md — clearing the field
-              // must clear the value too. The old `if (parsed !== null)`
-              // guard left the previous number in state while the input
-              // displayed blank, so an unchanged Save silently kept the
-              // old value the user believed they'd removed. An empty (or
-              // otherwise unparseable) draft is treated the same as an
-              // explicit "Clear" tap, subject to the same at-least-one-
-              // metric rule enforced below.
-              setSleepHours(parseDecimalInput(draft));
-            }}
-            className="w-20 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-50 outline-none focus:border-slate-400"
-          />
-        </div>
-      )}
+      <SleepHoursField
+        value={sleepHours}
+        ariaLabel={RECOVERY_COPY.sleepHoursEditLabel}
+        onChange={(value) => setSleepHours(value)}
+      />
 
       <NullableSliderField label="Sleep quality" value={sleepQuality} onChange={setSleepQuality} />
       <NullableSliderField label="Readiness" value={readiness} onChange={setReadiness} />
-      <NullableSliderField label="Soreness" value={soreness} onChange={setSoreness} />
+      <NullableSliderField
+        label={RECOVERY_COPY.sorenessLabel}
+        value={soreness}
+        onChange={setSoreness}
+        anchors={RECOVERY_COPY.sorenessAnchors}
+      />
 
       <input
         type="text"

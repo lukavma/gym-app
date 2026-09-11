@@ -146,7 +146,7 @@ describe("copy rules (§15, A-20)", () => {
     expect(METRICS_PAGE_COPY.volumeCaptionContribution).toBe("Under current contribution weights.");
     expect(METRICS_PAGE_COPY.volumeCaptionInProgress).toBe("Includes the workout in progress.");
     expect(METRICS_PAGE_COPY.recoveryCaption).toBe(
-      "Your own check-ins, as entered. Not used by the progression engine or any suggestion, and not compared with training here.",
+      "Your own check-ins, as entered. Not used by the progression engine or any suggestion, and not compared with training here. The Soreness column is muscle soreness: 1 = none, 3 = moderate, 5 = very high.",
     );
   });
 

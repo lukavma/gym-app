@@ -134,7 +134,7 @@ test.describe("HIGH-1 remediation: an already-logged recovery day never re-promp
     // Reload — the old bug re-prompted with a blank 3/3/3 form here.
     await page.reload();
     await expect(
-      page.getByText(/Logged today:.*Sleep quality 5\/5.*Readiness 2\/5.*Soreness 3\/5/),
+      page.getByText(/Logged today:.*Sleep quality 5\/5.*Readiness 2\/5.*Muscle soreness 3\/5/),
     ).toBeVisible();
     await expect(page.getByText("deliberate entry")).toBeVisible();
     // The blank check-in form must NOT be showing at all.
@@ -145,7 +145,7 @@ test.describe("HIGH-1 remediation: an already-logged recovery day never re-promp
     await page.getByRole("button", { name: "Edit today's check-in" }).click();
     await expect(page.getByLabel("Sleep quality", { exact: true })).toHaveValue("5");
     await expect(page.getByLabel("Readiness", { exact: true })).toHaveValue("2");
-    await expect(page.getByLabel("Soreness", { exact: true })).toHaveValue("3");
+    await expect(page.getByLabel("Muscle soreness", { exact: true })).toHaveValue("3");
     await expect(page.locator('input[placeholder="Note (optional)"]')).toHaveValue(
       "deliberate entry",
     );
@@ -153,7 +153,7 @@ test.describe("HIGH-1 remediation: an already-logged recovery day never re-promp
     // Saving without touching anything must not destroy the observation.
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
-      page.getByText(/Logged today:.*Sleep quality 5\/5.*Readiness 2\/5.*Soreness 3\/5/),
+      page.getByText(/Logged today:.*Sleep quality 5\/5.*Readiness 2\/5.*Muscle soreness 3\/5/),
     ).toBeVisible();
     await expect(page.getByText("deliberate entry")).toBeVisible();
 
@@ -187,28 +187,33 @@ test.describe("MEDIUM-2 remediation: the recovery history editor never fabricate
     });
 
     await page.goto("/recovery");
-    // Scoped to this test's own row by its distinctive value — both to
-    // disambiguate from RecoveryCheckIn's own "Edit today's check-in"
-    // button and from any unrelated pre-existing history row.
-    const ownRow = page.locator("li").filter({ hasText: "Sleep 8h" });
-    await expect(ownRow).toBeVisible();
+    // Scoped structurally (the first/only history row), not by text content
+    // — `deleteAllRecoveryEntries` above guarantees exactly one row, and a
+    // text-content filter (e.g. "Sleep 8h") would stop matching the instant
+    // Edit is clicked, since the edit row renders the label and value as
+    // separate elements rather than that concatenated string.
+    const ownRow = page.locator("ul").locator("li").first();
+    await expect(ownRow.getByText("Sleep 8h")).toBeVisible();
 
     await ownRow.getByRole("button", { name: "Edit", exact: true }).click();
     // The old bug seeded every slider with `?? 3`; it must now show
     // "Not set" for every metric this entry never had.
     await expect(page.getByText("Sleep quality: not set")).toBeVisible();
     await expect(page.getByText("Readiness: not set")).toBeVisible();
-    await expect(page.getByText("Soreness: not set")).toBeVisible();
+    await expect(page.getByText("Muscle soreness: not set")).toBeVisible();
     await expect(page.getByLabel("Edit sleep hours")).toHaveValue("8");
 
     // Clear the one metric this entry has, with nothing else set — the
     // client must block the save with an explicit error, never silently
-    // fabricate a replacement value.
-    await page.getByRole("button", { name: "Clear Sleep hours" }).click();
+    // fabricate a replacement value. Scoped to the history row (defensive:
+    // "Clear Sleep hours" is unambiguous today only because Today's
+    // new-entry field starts unset and renders "Set Sleep hours" instead —
+    // a future seed change shouldn't be able to silently break this).
+    await ownRow.getByRole("button", { name: "Clear Sleep hours" }).click();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(
       page.getByText(
-        /At least one of sleep hours, sleep quality, readiness, or soreness is required/,
+        /At least one of sleep hours, sleep quality, readiness, or muscle soreness is required/,
       ),
     ).toBeVisible();
 
@@ -222,7 +227,7 @@ test.describe("MEDIUM-2 remediation: the recovery history editor never fabricate
     const editedRow = page.locator("li").filter({ hasText: "Sleep quality 3/5" });
     await expect(editedRow).toBeVisible();
     await expect(editedRow.getByText(/Readiness \d\/5/)).toHaveCount(0);
-    await expect(editedRow.getByText(/Soreness \d\/5/)).toHaveCount(0);
+    await expect(editedRow.getByText(/Muscle soreness \d\/5/)).toHaveCount(0);
     await expect(editedRow.getByText(/Sleep \d+h/)).toHaveCount(0);
 
     // Clean up.
@@ -255,13 +260,13 @@ test.describe("MEDIUM-2 recurrence remediation: Today's edit path honors metrics
     await expect(page.getByText("How are you feeling today?")).toBeVisible();
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(
-      page.getByText("Logged today: Sleep quality 3/5 · Readiness 3/5 · Soreness 3/5", {
+      page.getByText("Logged today: Sleep quality 3/5 · Readiness 3/5 · Muscle soreness 3/5", {
         exact: true,
       }),
     ).toBeVisible();
 
     // Step 2 (verifier): on /recovery, use the history editor's own "Clear"
-    // affordance to clear Sleep quality and Soreness -> {sq: null, rd: 3,
+    // affordance to clear Sleep quality and Muscle soreness -> {sq: null, rd: 3,
     // so: null}. The Today summary must correctly omit them immediately.
     // `deleteAllRecoveryEntries` + this test's own single Save above
     // guarantee exactly one row, so `.first()` (not a text filter) is used
@@ -274,7 +279,7 @@ test.describe("MEDIUM-2 recurrence remediation: Today's edit path honors metrics
     const historyRow = page.locator("ul").locator("li").first();
     await historyRow.getByRole("button", { name: "Edit", exact: true }).click();
     await historyRow.getByRole("button", { name: "Clear Sleep quality" }).click();
-    await historyRow.getByRole("button", { name: "Clear Soreness" }).click();
+    await historyRow.getByRole("button", { name: "Clear Muscle soreness" }).click();
     await historyRow.getByRole("button", { name: "Save", exact: true }).click();
     // The history row itself (not the RecoveryCheckIn summary above it,
     // which only fetches once on mount and isn't expected to live-refresh
@@ -282,14 +287,14 @@ test.describe("MEDIUM-2 recurrence remediation: Today's edit path honors metrics
     // immediately: only Readiness remains.
     await expect(historyRow.getByText("· Readiness 3/5", { exact: true })).toBeVisible();
     await expect(historyRow.getByText(/Sleep quality \d\/5/)).toHaveCount(0);
-    await expect(historyRow.getByText(/Soreness \d\/5/)).toHaveCount(0);
+    await expect(historyRow.getByText(/Muscle soreness \d\/5/)).toHaveCount(0);
 
     // Step 3 (verifier): back on Today, tap "Edit today's check-in" — the
     // two cleared metrics must render "not set", never a fabricated 3.
     await page.goto("/today");
     await page.getByRole("button", { name: "Edit today's check-in" }).click();
     await expect(page.getByText("Sleep quality: not set")).toBeVisible();
-    await expect(page.getByText("Soreness: not set")).toBeVisible();
+    await expect(page.getByText("Muscle soreness: not set")).toBeVisible();
     await expect(page.getByLabel("Readiness", { exact: true })).toHaveValue("3");
 
     // Step 4 (verifier): tap Save without changing anything — the cleared
@@ -304,7 +309,7 @@ test.describe("MEDIUM-2 recurrence remediation: Today's edit path honors metrics
     await expect(page.getByText("No entries yet.")).toBeVisible();
   });
 
-  test("a sleepHours-only entry: Today's edit path shows every 1-5 metric as not set and preserves sleepHours on an unchanged save", async ({
+  test("a sleepHours-only entry: Today's edit path shows every 1-5 metric as not set, prefills the sleep-hours input, and preserves both on an unchanged save", async ({
     page,
   }) => {
     await login(page);
@@ -319,10 +324,12 @@ test.describe("MEDIUM-2 recurrence remediation: Today's edit path honors metrics
     await page.getByRole("button", { name: "Edit today's check-in" }).click();
     await expect(page.getByText("Sleep quality: not set")).toBeVisible();
     await expect(page.getByText("Readiness: not set")).toBeVisible();
-    await expect(page.getByText("Soreness: not set")).toBeVisible();
+    await expect(page.getByText("Muscle soreness: not set")).toBeVisible();
+    await expect(page.getByLabel("Sleep hours", { exact: true })).toHaveValue("7.5");
 
-    // Unchanged save — sleepHours is never shown or edited by this card, so
-    // it must survive exactly, and no 1-5 metric may be fabricated.
+    // Unchanged save — PI-007 gave this card its own sleep-hours control, so
+    // it now prefills the stored value and sends it back unchanged, rather
+    // than never showing or editing it; no 1-5 metric may be fabricated.
     await page.getByRole("button", { name: "Save check-in" }).click();
     await expect(page.getByText("Logged today: Sleep 7.5h", { exact: true })).toBeVisible();
 
@@ -354,8 +361,13 @@ test.describe("sleep-hours textbox remediation: emptying the field clears the va
     });
 
     await page.goto("/recovery");
-    const row = page.locator("li").filter({ hasText: "Sleep 8h" });
-    await expect(row).toBeVisible();
+    // Scoped structurally (the first/only history row) rather than by text
+    // content — `deleteAllRecoveryEntries` above guarantees exactly one
+    // row, and a text-content filter would stop matching the instant Edit
+    // is clicked (the edit row renders the label and value as separate
+    // elements, not the concatenated "Sleep 8h" string).
+    const row = page.locator("ul").locator("li").first();
+    await expect(row.getByText("Sleep 8h")).toBeVisible();
     await row.getByRole("button", { name: "Edit", exact: true }).click();
 
     const sleepHoursInput = page.getByLabel("Edit sleep hours");
@@ -364,13 +376,21 @@ test.describe("sleep-hours textbox remediation: emptying the field clears the va
     // Emptying the field clears the underlying value immediately (not just
     // the display) — the component reflects that consistently by switching
     // to the same "not set" representation a "Clear" tap produces, rather
-    // than leaving a blank text box that still holds 8 internally.
-    await expect(page.getByText("Sleep hours: not set")).toBeVisible();
+    // than leaving a blank text box that still holds 8 internally. Scoped
+    // to the history row: on /recovery, today's un-logged check-in card
+    // also renders "Sleep hours: not set" for its own (unrelated) field,
+    // so an unscoped page-level locator would match both (PI-007 §6
+    // container-scoping rule).
+    await expect(row.getByText("Sleep hours: not set")).toBeVisible();
     await expect(sleepHoursInput).not.toBeVisible();
 
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
-    const savedRow = page.locator("li").filter({ hasText: "Soreness 2/5" });
+    // "Soreness 2/5" would still substring-match "Muscle soreness 2/5" if
+    // this were case-insensitive, but Playwright's hasText string match is
+    // case-sensitive and the label only capitalizes "Muscle" — filtering on
+    // the renamed label directly.
+    const savedRow = page.locator("li").filter({ hasText: "Muscle soreness 2/5" });
     await expect(savedRow).toBeVisible();
     await expect(savedRow.getByText(/Sleep \d+(\.\d+)?h/)).toHaveCount(0);
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { logRecoveryInputSchema, updateRecoveryInputSchema } from "@/domain/recovery/schema";
+import {
+  logRecoveryInputSchema,
+  sleepHoursSchema,
+  updateRecoveryInputSchema,
+} from "@/domain/recovery/schema";
 
 describe("logRecoveryInputSchema", () => {
   it("accepts all three 1-5 controls plus a note", () => {
@@ -80,6 +84,19 @@ describe("logRecoveryInputSchema", () => {
   it("rejects an input with only an explicit-null metric and a note", () => {
     const result = logRecoveryInputSchema.safeParse({ soreness: null, note: "no real value here" });
     expect(result.success).toBe(false);
+  });
+});
+
+// PI-007 §6 — pins sleepHoursSchema's bounds directly, at the exact values
+// the client-side pre-enqueue guard (SleepHoursField.tsx's sleepHoursError)
+// relies on it agreeing with.
+describe("sleepHoursSchema", () => {
+  it.each([0, 7.5, 7.25, 24])("accepts %s", (value) => {
+    expect(sleepHoursSchema.safeParse(value).success).toBe(true);
+  });
+
+  it.each([-1, 24.5, 7.333])("rejects %s", (value) => {
+    expect(sleepHoursSchema.safeParse(value).success).toBe(false);
   });
 });
 

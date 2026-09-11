@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { userLocalDateString } from "@/domain/time/localDate";
 import { getAccountTimezone } from "@/sync/accountTimezone";
 import {
@@ -11,6 +11,8 @@ import {
 } from "@/sync/dailyLogs";
 import { dismissRecoveryCheckInForever } from "./dismissedPreference";
 import { NullableSliderField } from "./NullableSliderField";
+import { RECOVERY_COPY } from "./copy";
+import { SleepHoursField, sleepHoursError } from "./SleepHoursField";
 import type { RecoveryEntryDto } from "./types";
 
 interface RecoveryCheckInProps {
@@ -153,7 +155,7 @@ export function RecoveryCheckIn({ onDismiss, onLogged }: RecoveryCheckInProps) {
       entry.sleepHours !== null ? `Sleep ${entry.sleepHours}h` : null,
       entry.sleepQuality !== null ? `Sleep quality ${entry.sleepQuality}/5` : null,
       entry.readiness !== null ? `Readiness ${entry.readiness}/5` : null,
-      entry.soreness !== null ? `Soreness ${entry.soreness}/5` : null,
+      entry.soreness !== null ? `${RECOVERY_COPY.sorenessLabel} ${entry.soreness}/5` : null,
     ].filter((part): part is string => part !== null);
 
     return (
@@ -209,6 +211,18 @@ function RecoveryCheckInForm({
   );
   const [readiness, setReadiness] = useState<number | null>(isNew ? NEUTRAL : entry.readiness);
   const [soreness, setSoreness] = useState<number | null>(isNew ? NEUTRAL : entry.soreness);
+  // PI-007 — unlike the three sliders above, sleep hours has no fabricated
+  // default even on a brand-new entry: it starts "not set" for isNew too
+  // (§5 state A), and is read exactly as stored when editing (§5 state B).
+  const [sleepHours, setSleepHours] = useState<number | null>(isNew ? null : entry.sleepHours);
+  const [sleepHoursDraft, setSleepHoursDraft] = useState(
+    !isNew && entry.sleepHours !== null ? String(entry.sleepHours) : "",
+  );
+  // §5 state A / §7 A-4 — only a brand-new entry can omit the key at all
+  // (an untouched field there must never be sent, in case the "no entry
+  // yet" read is stale). State B (editing a confirmed entry) always sends
+  // sleepHours explicitly regardless of this flag — see save() below.
+  const [sleepHoursTouched, setSleepHoursTouched] = useState(false);
   const [note, setNote] = useState(entry?.note ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -216,19 +230,28 @@ function RecoveryCheckInForm({
   async function save() {
     setError(null);
 
-    // Editing an existing entry: `sleepHours` is preserved untouched (this
-    // card has no control for it), so "at least one metric" must account
-    // for it too — a user could clear every slider this card shows and
-    // still leave a perfectly valid row because sleepHours already
-    // satisfies ck_recovery_entries_has_metric.
+    // §4.1 — the range/precision guard lives in each Today save(), not
+    // inside SleepHoursField itself, so History (which has its own
+    // synchronous server-side 400) stays unaffected.
+    const rangeError = sleepHoursError(sleepHours, sleepHoursDraft);
+    if (rangeError) {
+      setError(rangeError);
+      return;
+    }
+
+    // Editing an existing entry: sleep hours is now editable via
+    // SleepHoursField (G-5 — this used to read the immutable `entry
+    // .sleepHours`, which was correct only while this card had no control
+    // for the field), so "at least one metric" must be checked against the
+    // live, editable state.
     if (
       !isNew &&
-      entry.sleepHours === null &&
+      sleepHours === null &&
       sleepQuality === null &&
       readiness === null &&
       soreness === null
     ) {
-      setError("At least one of sleep hours, sleep quality, readiness, or soreness is required.");
+      setError(RECOVERY_COPY.atLeastOneMetricRequired);
       return;
     }
 
@@ -241,8 +264,15 @@ function RecoveryCheckInForm({
       // code path only ever runs from a CONFIRMED known state (a live GET,
       // or a same-day dailyLogCache hit), so there's no hidden-row risk to
       // guard against; that guard lives in the unknown-offline form below.
+      // Sleep hours joins the same always-send rule for an existing entry
+      // (§5 state B), but a brand-new entry (state A) omits the key unless
+      // the athlete actually touched the field — the "no entry yet" read
+      // that got us here can be stale, and omitting (rather than sending
+      // an explicit null) preserves a same-day row created by another
+      // device or an earlier queued op in that case (§5, §7 A-4).
       const noteValue = note.trim() === "" ? null : note.trim();
       const { id: generatedId, date } = await logRecoveryToday({
+        ...(isNew ? (sleepHoursTouched ? { sleepHours } : {}) : { sleepHours }),
         sleepQuality,
         readiness,
         soreness,
@@ -251,7 +281,7 @@ function RecoveryCheckInForm({
       const savedEntry: RecoveryEntryDto = {
         id: isNew ? generatedId : entry.id,
         date: isNew ? date : entry.date,
-        sleepHours: isNew ? null : entry.sleepHours,
+        sleepHours,
         sleepQuality,
         readiness,
         soreness,
@@ -288,23 +318,50 @@ function RecoveryCheckInForm({
 
       {isNew ? (
         <>
+          <SleepHoursField
+            value={sleepHours}
+            ariaLabel={RECOVERY_COPY.sleepHoursLabel}
+            onChange={(value, draft) => {
+              setSleepHours(value);
+              setSleepHoursDraft(draft);
+              setSleepHoursTouched(true);
+            }}
+          />
           <SliderField
             label="Sleep quality"
             value={sleepQuality ?? NEUTRAL}
             onChange={setSleepQuality}
           />
           <SliderField label="Readiness" value={readiness ?? NEUTRAL} onChange={setReadiness} />
-          <SliderField label="Soreness" value={soreness ?? NEUTRAL} onChange={setSoreness} />
+          <SliderField
+            label={RECOVERY_COPY.sorenessLabel}
+            value={soreness ?? NEUTRAL}
+            onChange={setSoreness}
+            anchors={RECOVERY_COPY.sorenessAnchors}
+          />
         </>
       ) : (
         <>
+          <SleepHoursField
+            value={sleepHours}
+            ariaLabel={RECOVERY_COPY.sleepHoursLabel}
+            onChange={(value, draft) => {
+              setSleepHours(value);
+              setSleepHoursDraft(draft);
+            }}
+          />
           <NullableSliderField
             label="Sleep quality"
             value={sleepQuality}
             onChange={setSleepQuality}
           />
           <NullableSliderField label="Readiness" value={readiness} onChange={setReadiness} />
-          <NullableSliderField label="Soreness" value={soreness} onChange={setSoreness} />
+          <NullableSliderField
+            label={RECOVERY_COPY.sorenessLabel}
+            value={soreness}
+            onChange={setSoreness}
+            anchors={RECOVERY_COPY.sorenessAnchors}
+          />
         </>
       )}
 
@@ -366,7 +423,7 @@ function RecoveryCheckInUnknownTimezoneForm({ header }: { header: React.ReactNod
   );
 }
 
-type TouchedMetric = "sleepQuality" | "readiness" | "soreness";
+type TouchedMetric = "sleepHours" | "sleepQuality" | "readiness" | "soreness";
 
 // Phase 8 — the true offline-cold-start case: no live read, no same-day
 // cache. We do not know whether today already has an entry, so we can never
@@ -379,12 +436,16 @@ type TouchedMetric = "sleepQuality" | "readiness" | "soreness";
 // exactly as it already is, whatever that turns out to be. This is why
 // every slider here is the nullable variant seeded at null (not the
 // NEUTRAL=3 default the definitely-new form above uses) — "not set" here
-// means "not sent", not "confirmed absent".
+// means "not sent", not "confirmed absent". Sleep hours joins the same rule
+// (PI-007 §5 state C) with no change in kind.
 function RecoveryCheckInUnknownOfflineForm({ header }: { header: React.ReactNode }) {
+  const [sleepHours, setSleepHours] = useState<number | null>(null);
+  const [sleepHoursDraft, setSleepHoursDraft] = useState("");
   const [sleepQuality, setSleepQuality] = useState<number | null>(null);
   const [readiness, setReadiness] = useState<number | null>(null);
   const [soreness, setSoreness] = useState<number | null>(null);
   const [touched, setTouched] = useState<Record<TouchedMetric, boolean>>({
+    sleepHours: false,
     sleepQuality: false,
     readiness: false,
     soreness: false,
@@ -405,18 +466,36 @@ function RecoveryCheckInUnknownOfflineForm({ header }: { header: React.ReactNode
     };
   }
 
-  const hasTouchedMetric = touched.sleepQuality || touched.readiness || touched.soreness;
+  // PI-007 §5 A-4/C-6 — sleep hours has its own onChange signature (it also
+  // reports the current draft, for the save-time range guard below), so it
+  // can't share the generic `touch` helper above, but must set `saved` to
+  // false identically.
+  function touchSleepHours(value: number | null, draft: string) {
+    setTouched((t) => ({ ...t, sleepHours: true }));
+    setSleepHours(value);
+    setSleepHoursDraft(draft);
+    setSaved(false);
+  }
+
+  const hasTouchedMetric =
+    touched.sleepHours || touched.sleepQuality || touched.readiness || touched.soreness;
 
   async function save() {
     setError(null);
+    const rangeError = sleepHoursError(sleepHours, sleepHoursDraft);
+    if (rangeError) {
+      setError(rangeError);
+      return;
+    }
     if (!hasTouchedMetric) {
-      setError("Set at least one of sleep quality, readiness, or soreness first.");
+      setError(RECOVERY_COPY.setAtLeastOneMetricFirst);
       return;
     }
     setSaving(true);
     try {
       const noteValue = note.trim();
       await logRecoveryToday({
+        ...(touched.sleepHours ? { sleepHours } : {}),
         ...(touched.sleepQuality ? { sleepQuality } : {}),
         ...(touched.readiness ? { readiness } : {}),
         ...(touched.soreness ? { soreness } : {}),
@@ -443,6 +522,11 @@ function RecoveryCheckInUnknownOfflineForm({ header }: { header: React.ReactNode
         saved; it&apos;ll be merged with today&apos;s entry once you&apos;re back online.
       </p>
 
+      <SleepHoursField
+        value={sleepHours}
+        ariaLabel={RECOVERY_COPY.sleepHoursLabel}
+        onChange={touchSleepHours}
+      />
       <NullableSliderField
         label="Sleep quality"
         value={sleepQuality}
@@ -454,9 +538,10 @@ function RecoveryCheckInUnknownOfflineForm({ header }: { header: React.ReactNode
         onChange={touch("readiness", setReadiness)}
       />
       <NullableSliderField
-        label="Soreness"
+        label={RECOVERY_COPY.sorenessLabel}
         value={soreness}
         onChange={touch("soreness", setSoreness)}
+        anchors={RECOVERY_COPY.sorenessAnchors}
       />
 
       <input
@@ -495,11 +580,15 @@ function SliderField({
   label,
   value,
   onChange,
+  anchors,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  anchors?: [string, string, string];
 }) {
+  const legendId = useId();
+
   return (
     <label className="flex flex-col gap-1 text-xs text-slate-400">
       <span className="flex justify-between">
@@ -512,10 +601,18 @@ function SliderField({
         max={5}
         step={1}
         aria-label={label}
+        aria-describedby={anchors ? legendId : undefined}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full accent-slate-100"
       />
+      {anchors && (
+        <span id={legendId} className="flex justify-between text-xs text-slate-500">
+          <span>1 · {anchors[0]}</span>
+          <span>3 · {anchors[1]}</span>
+          <span>5 · {anchors[2]}</span>
+        </span>
+      )}
     </label>
   );
 }

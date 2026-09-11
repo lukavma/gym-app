@@ -267,4 +267,53 @@ describe("logBodyweightToday / logRecoveryToday (src/sync/dailyLogs.ts)", () => 
     // actually reliable here).
     expect((await listPendingOps()).length).toBe(before);
   });
+
+  // PI-007 G-1/A-3 — pins logRecoveryToday's presence-aware payload building
+  // for the new sleepHours key: "passes today unmodified" for the omit
+  // case, and is not itself a control for §5's state-A stale-read rule
+  // (A-4, an E2E criterion, is) — it only proves the transport helper's own
+  // undefined-omits behaviour.
+  // These three share the fake-indexeddb outbox store with every test above
+  // (and each other), and all resolve to the same Ljubljana day — clearing
+  // the store first means `listPendingOps()` can only find each test's own
+  // op, not a same-date leftover from an earlier test in this block.
+  async function clearOutbox(): Promise<void> {
+    const db = await import("@/sync/db");
+    await (await db.getIdb()).clear("outbox");
+  }
+
+  it("omits the sleepHours key entirely when not provided in the input", async () => {
+    await clearOutbox();
+    await setCachedBundle(makeBundle("Europe/Ljubljana"));
+
+    const { date } = await logRecoveryToday({ sleepQuality: 3, readiness: 3, soreness: 3 });
+
+    const pending = await listPendingOps();
+    const op = pending.find((p) => p.entity === "recoveryEntry" && p.payload.date === date);
+    expect(op).toBeTruthy();
+    expect("sleepHours" in op!.payload).toBe(false);
+  });
+
+  it("sends sleepHours as the provided number", async () => {
+    await clearOutbox();
+    await setCachedBundle(makeBundle("Europe/Ljubljana"));
+
+    const { date } = await logRecoveryToday({ sleepHours: 7.5 });
+
+    const pending = await listPendingOps();
+    const op = pending.find((p) => p.entity === "recoveryEntry" && p.payload.date === date);
+    expect(op!.payload.sleepHours).toBe(7.5);
+  });
+
+  it("sends sleepHours as an explicit null without dropping another touched field", async () => {
+    await clearOutbox();
+    await setCachedBundle(makeBundle("Europe/Ljubljana"));
+
+    const { date } = await logRecoveryToday({ sleepHours: null, soreness: 4 });
+
+    const pending = await listPendingOps();
+    const op = pending.find((p) => p.entity === "recoveryEntry" && p.payload.date === date);
+    expect(op!.payload.sleepHours).toBeNull();
+    expect(op!.payload.soreness).toBe(4);
+  });
 });

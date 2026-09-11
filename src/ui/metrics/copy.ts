@@ -79,7 +79,7 @@ export const METRICS_PAGE_COPY = {
   recoveryHeading: "Recovery",
   recoveryLogLink: "Recovery log",
   recoveryCaption:
-    "Your own check-ins, as entered. Not used by the progression engine or any suggestion, and not compared with training here.",
+    "Your own check-ins, as entered. Not used by the progression engine or any suggestion, and not compared with training here. The Soreness column is muscle soreness: 1 = none, 3 = moderate, 5 = very high.",
   recoveryLoggedPrefix: "Logged",
   recoveryOfLastSevenDays: "of the last 7 days",
   recoveryMeanSleepPrefix: "mean sleep",

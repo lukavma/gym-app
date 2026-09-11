@@ -59,6 +59,7 @@ export async function logBodyweightToday(input: { weightKg: number; note?: strin
 }
 
 export interface LogRecoveryTodayInput {
+  sleepHours?: number | null;
   sleepQuality?: number | null;
   readiness?: number | null;
   soreness?: number | null;
@@ -79,6 +80,7 @@ export async function logRecoveryToday(input: LogRecoveryTodayInput): Promise<{
   const date = await resolveTodayDate();
   const id = newId();
   const payload: Record<string, unknown> = { id, date };
+  if (input.sleepHours !== undefined) payload.sleepHours = input.sleepHours;
   if (input.sleepQuality !== undefined) payload.sleepQuality = input.sleepQuality;
   if (input.readiness !== undefined) payload.readiness = input.readiness;
   if (input.soreness !== undefined) payload.soreness = input.soreness;

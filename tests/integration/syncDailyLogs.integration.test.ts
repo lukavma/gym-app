@@ -133,6 +133,57 @@ describe("sync service — bodyweight/recovery entities (PGlite integration)", (
     expect(row?.soreness).toBeNull();
   });
 
+  // PI-007 §5, §6 — the sleepHours instances of the two "only touches
+  // present fields" / "explicit null clears a touched field" invariants
+  // above, already proven generically for the other three metrics.
+  it("recoveryEntry upsert with only sleepHours preserves existing sleepQuality/readiness/soreness", async () => {
+    await applySyncBatch(db, userId, [
+      {
+        opId: newId(),
+        entity: "recoveryEntry",
+        operation: "upsert",
+        payload: { id: newId(), date: "2026-08-20", sleepQuality: 4, readiness: 3, soreness: 2 },
+      },
+    ]);
+    await applySyncBatch(db, userId, [
+      {
+        opId: newId(),
+        entity: "recoveryEntry",
+        operation: "upsert",
+        payload: { id: newId(), date: "2026-08-20", sleepHours: 7.5 },
+      },
+    ]);
+
+    const [row] = await db.select().from(recoveryEntries).where(eq(recoveryEntries.userId, userId));
+    expect(row?.sleepHours).toBe(7.5);
+    expect(row?.sleepQuality).toBe(4);
+    expect(row?.readiness).toBe(3);
+    expect(row?.soreness).toBe(2);
+  });
+
+  it("recoveryEntry upsert with sleepHours: null clears only sleepHours, leaving other fields untouched", async () => {
+    await applySyncBatch(db, userId, [
+      {
+        opId: newId(),
+        entity: "recoveryEntry",
+        operation: "upsert",
+        payload: { id: newId(), date: "2026-08-20", sleepHours: 7.5, sleepQuality: 4 },
+      },
+    ]);
+    await applySyncBatch(db, userId, [
+      {
+        opId: newId(),
+        entity: "recoveryEntry",
+        operation: "upsert",
+        payload: { id: newId(), date: "2026-08-20", sleepHours: null },
+      },
+    ]);
+
+    const [row] = await db.select().from(recoveryEntries).where(eq(recoveryEntries.userId, userId));
+    expect(row?.sleepHours).toBeNull();
+    expect(row?.sleepQuality).toBe(4);
+  });
+
   it("recoveryEntry upsert with an explicit null clears a field the caller actually touched", async () => {
     await applySyncBatch(db, userId, [
       {

@@ -79,7 +79,7 @@ test.describe("bodyweight & recovery (phone-sized viewport)", () => {
 
     await expect(page.getByText("How are you feeling today?")).toBeVisible();
 
-    const soreness = page.getByLabel("Soreness", { exact: true });
+    const soreness = page.getByLabel("Muscle soreness", { exact: true });
     await soreness.focus();
     await soreness.press("ArrowRight");
     await soreness.press("ArrowRight");
@@ -89,7 +89,7 @@ test.describe("bodyweight & recovery (phone-sized viewport)", () => {
     // phase-7-review.md HIGH-1 remediation — the card now shows a summary of
     // the real stored values (with an explicit edit path) instead of a
     // terminal "Thanks" message with no way back in.
-    await expect(page.getByText(/Logged today:.*Soreness 5\/5/)).toBeVisible();
+    await expect(page.getByText(/Logged today:.*Muscle soreness 5\/5/)).toBeVisible();
 
     await page.goto("/recovery");
     await expect(page.getByRole("heading", { name: "Recovery" })).toBeVisible();
@@ -98,7 +98,7 @@ test.describe("bodyweight & recovery (phone-sized viewport)", () => {
     // the same entry, and an unscoped text match would be ambiguous between
     // the two.
     const historyList = page.locator("ul");
-    await expect(historyList.getByText(/Soreness 5\/5/)).toBeVisible();
+    await expect(historyList.getByText(/Muscle soreness 5\/5/)).toBeVisible();
     await expect(historyList.getByText("felt strong")).toBeVisible();
 
     // Clean up the entry so later reruns start clean.

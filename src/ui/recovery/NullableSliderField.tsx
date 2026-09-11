@@ -1,5 +1,7 @@
 "use client";
 
+import { useId } from "react";
+
 // phase-7-review.md MEDIUM-2 / phase-7-remediation-verification.md — shared
 // between RecoveryHistoryList's EditRow and RecoveryCheckInForm (Today's
 // "Edit today's check-in" path) so a metric that is genuinely `null` on the
@@ -41,11 +43,18 @@ export function NullableSliderField({
   label,
   value,
   onChange,
+  anchors,
 }: {
   label: string;
   value: number | null;
   onChange: (value: number | null) => void;
+  anchors?: [string, string, string];
 }) {
+  // PI-007 A-2 — called unconditionally, above the early return below, so
+  // react-hooks/rules-of-hooks doesn't fail: a hook can't be called only on
+  // some renders.
+  const legendId = useId();
+
   if (value === null) {
     return <UnsetField label={label} onSet={() => onChange(3)} />;
   }
@@ -69,10 +78,18 @@ export function NullableSliderField({
         // so a test or assistive technology addressing "Sleep quality"
         // finds the editable slider whether the entry is new or existing.
         aria-label={label}
+        aria-describedby={anchors ? legendId : undefined}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full accent-slate-100"
       />
+      {anchors && (
+        <span id={legendId} className="flex justify-between text-xs text-slate-500">
+          <span>1 · {anchors[0]}</span>
+          <span>3 · {anchors[1]}</span>
+          <span>5 · {anchors[2]}</span>
+        </span>
+      )}
     </label>
   );
 }

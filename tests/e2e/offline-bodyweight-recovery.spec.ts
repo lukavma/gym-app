@@ -187,6 +187,162 @@ test.describe("offline recovery check-in — true unknown-offline state", () => 
 
     await deleteAllRecoveryEntries(page);
   });
+
+  // PI-007 C-1 — the readiness-only test above's exact pattern, for the new
+  // sleep-hours control.
+  test("no live read, no same-day cache: touching only sleep hours saves and converges on reconnect without fabricating the other three metrics", async ({
+    page,
+    context,
+  }) => {
+    await login(page);
+    await waitForServiceWorkerReady(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.reload();
+    await expect(page.getByText("How are you feeling today?")).toBeVisible();
+    await waitForDailyLogCacheEntry(page);
+
+    await clearDailyLogCache(page);
+    await context.setOffline(true);
+    await page.reload();
+
+    await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Set Sleep hours" }).click();
+    await page.getByLabel("Sleep hours", { exact: true }).fill("7.25");
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
+
+    await context.setOffline(false);
+    await waitForOutboxDrained(page);
+
+    const res = await page.request.get("/api/recovery/today");
+    const { entry } = (await res.json()) as {
+      entry: {
+        sleepHours: number | null;
+        readiness: number | null;
+        sleepQuality: number | null;
+        soreness: number | null;
+      } | null;
+    };
+    expect(entry?.sleepHours).toBe(7.25);
+    expect(entry?.readiness).toBeNull();
+    expect(entry?.sleepQuality).toBeNull();
+    expect(entry?.soreness).toBeNull();
+
+    await deleteAllRecoveryEntries(page);
+  });
+
+  // PI-007 C-2 [NC] — the unknown-offline path must never clear a value it
+  // cannot see. Unlike the two tests above (nothing pre-existed), this
+  // seeds a REAL sleepQuality server-side first — a regression that sent an
+  // explicit null for an untouched field instead of omitting it would show
+  // up here as sleepQuality reverting to null. Seeded after
+  // deleteAllRecoveryEntries so the seed itself lands on a clean day.
+  test("no live read, no same-day cache: touching only sleep hours preserves a pre-existing sleepQuality it can't see", async ({
+    page,
+    context,
+  }) => {
+    await login(page);
+    await waitForServiceWorkerReady(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.request.post("/api/recovery", { data: { sleepQuality: 4 } });
+    await page.reload();
+    await waitForDailyLogCacheEntry(page);
+
+    await clearDailyLogCache(page);
+    await context.setOffline(true);
+    await page.reload();
+
+    await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Set Sleep hours" }).click();
+    await page.getByLabel("Sleep hours", { exact: true }).fill("7.25");
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
+
+    await context.setOffline(false);
+    await waitForOutboxDrained(page);
+
+    const res = await page.request.get("/api/recovery/today");
+    const { entry } = (await res.json()) as {
+      entry: { sleepHours: number | null; sleepQuality: number | null } | null;
+    };
+    expect(entry?.sleepHours).toBe(7.25);
+    expect(entry?.sleepQuality).toBe(4);
+
+    await deleteAllRecoveryEntries(page);
+  });
+
+  // PI-007 C-5 — a touched-then-cleared sleep-hours-only op on a day with no
+  // other metric is the accepted rejection path (§5 "Rejection paths"), not
+  // a client-side pre-block: the op enqueues, the server's presence-aware
+  // upsert rejects it as no_metric after the documented
+  // catch-and-retry-as-plain-UPDATE, and SyncStatusBanner must surface it —
+  // proving it is not silent.
+  test("C-5: a touched-then-cleared sleep-hours-only op on a day with no other metric dead-letters as no_metric, visibly", async ({
+    page,
+    context,
+  }) => {
+    await login(page);
+    await waitForServiceWorkerReady(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.reload();
+    await expect(page.getByText("How are you feeling today?")).toBeVisible();
+    await waitForDailyLogCacheEntry(page);
+
+    await clearDailyLogCache(page);
+    await context.setOffline(true);
+    await page.reload();
+    await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Set Sleep hours" }).click();
+    await page.getByRole("button", { name: "Clear Sleep hours" }).click();
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
+
+    await context.setOffline(false);
+    await expect(page.getByText(/couldn't sync \(no_metric\)/)).toBeVisible({ timeout: 15_000 });
+
+    const res = await page.request.get("/api/recovery/today");
+    const { entry } = (await res.json()) as { entry: unknown };
+    expect(entry).toBeNull();
+  });
+
+  // PI-007 C-6/A-4 — the unknown-offline form resets every other field's
+  // "Saved" notice on edit (`touch()`) and the note field; sleep hours must
+  // do the same via its own onChange handler (touchSleepHours).
+  test("C-6: editing sleep hours after a save clears the offline 'Saved' notice", async ({
+    page,
+    context,
+  }) => {
+    await login(page);
+    await waitForServiceWorkerReady(page);
+    await ensureNoActiveSession(page);
+    await deleteAllRecoveryEntries(page);
+    await page.reload();
+    await expect(page.getByText("How are you feeling today?")).toBeVisible();
+    await waitForDailyLogCacheEntry(page);
+
+    await clearDailyLogCache(page);
+    await context.setOffline(true);
+    await page.reload();
+    await expect(page.getByText(/Offline — can.t verify today.s check-in yet/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Set Readiness" }).click();
+    const readiness = page.getByLabel("Readiness", { exact: true });
+    await readiness.focus();
+    await readiness.press("ArrowRight");
+    await page.getByRole("button", { name: "Save check-in" }).click();
+    await expect(page.getByText(/Saved — will finish syncing/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Set Sleep hours" }).click();
+    await expect(page.getByText(/Saved — will finish syncing/)).toHaveCount(0);
+
+    await context.setOffline(false);
+  });
 });
 
 test.describe("account vs device timezone disagreement (phase-8-review.md B-3)", () => {
