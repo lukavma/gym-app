@@ -772,7 +772,146 @@ READY FOR TARGETED PI-018 REMEDIATION VERIFICATION
 
 ## 15. Release closeout 2026-09-12 — commit, push and deployment
 
-Recorded after the targeted verification returned `VERIFIED — READY FOR PI-018 RELEASE CLOSEOUT` and
-the owner authorized commit, push and the normal deployment the push triggers.
+Recorded after the targeted
+[remediation verification](workout-prescription-context-remediation-verification.md) returned
+`VERIFIED — READY FOR PI-018 RELEASE CLOSEOUT` and the owner authorized commit, push and the normal
+deployment the push triggers.
 
-*(Populated below by the closeout run.)*
+### 15.1 Release shape — full feature, not a follow-up
+
+Determined before staging anything, not assumed: at the start of this run `git log` ended at
+**`cb33264`**, `git diff --cached --name-only` was **empty**, and `git rev-list --left-right --count
+origin/main...HEAD` was `0 0`. **The original PI-018 release had never been committed or deployed**,
+so this is the **full feature commit** — the `feat:` message, not the remediation-only `test:`
+alternative. No history was amended or rewritten; nothing was undone.
+
+### 15.2 Reconciliation against the reviewed manifest — no drift
+
+| Check | Result |
+|---|---|
+| SHA-256 of the four source files with hashes recorded in the reviews | **all four match**: `prescriptionSnapshot.ts` `0d0b0908…f099b0d0` (5267 B), `activeSession.ts` `36b99513…e408fd3e` (38222 B), `today/service.ts` `751bdbe5…6893e257` (26660 B), `sync/service.ts` `d289ce05…8639b7ce` (63683 B) |
+| `git diff --stat -- src` | **16 / 24 / 24 / 9 / 14 / 55** — identical to the verified tree |
+| `git diff --cached --check` | **exit 0** — no whitespace or conflict-marker errors |
+
+Application source is byte-identical to the tree the implementation review and the remediation
+verification both gated, so their evidence is **reused rather than re-measured**, per the brief. The
+only post-verification change is documentation: **V-1** (§14.11) and this section.
+
+### 15.3 What was staged, and what was deliberately left out
+
+Staged by explicit path only. **`git add .`, `git add -A` and `git commit -a` were never used.**
+26 paths — the reviewed manifest plus the five PI-018 reports:
+
+| Group | Paths |
+|---|---|
+| Source (6) | `src/domain/measurement/format.ts`, `src/domain/schemas/prescriptionSnapshot.ts`, `src/server/today/service.ts`, `src/sync/activeSession.ts`, `src/sync/types.ts`, `src/ui/workout/ExerciseCard.tsx` |
+| Config (1) | `package.json` |
+| Tests (9) | the six extended + `tests/unit/prescriptionContextActiveSession.test.ts`, `tests/unit/workout/prescriptionContextCard.test.ts`, `tests/e2e/workoutPrescriptionContext.spec.ts` |
+| Architecture docs (3) | `domain-model.md`, `prescription-model.md`, `pwa-offline-strategy.md` |
+| Planning docs (2, **partial** — see below) | `docs/BACKLOG.md`, `docs/ROADMAP.md` |
+| Reports (5) | the architecture evaluation, architecture review, this report, the implementation review, the remediation verification |
+
+**`docs/BACKLOG.md` and `docs/ROADMAP.md` were staged partially, by content, not wholesale.** Both
+carry concurrent PI-012 Set Groups and PI-017 workflow edits interleaved with the PI-018 edits — and
+in BACKLOG the concurrent PI-017 section and the PI-018 section land in the *same* diff hunk, so
+hunk-level selection could not separate them. Instead, a PI-018-only version of each file was built
+from the `cb33264` blob plus only the PI-018 changes, staged, and the full working-tree copy then
+restored. Result, verified: the staged diff contains **no** PI-017 or Set Groups content (the single
+"Set Groups" string in it is inside the PI-018 entry's own sentence disclaiming PI-012 overlap), while
+the working tree still carries **13** concurrent PI-012/PI-017 lines, unstaged and intact for whoever
+owns them. Both files show as `MM` in `git status` after the commit, which is the intended state.
+
+One consequence, stated rather than hidden: the PI-018 entry's "Later allocations: PI-017 … and
+PI-018 …" line was **not** staged, because it names PI-017 and would have dangled. PI-018 is still
+indexed by its table row and its full section; whoever commits PI-017 can commit that line, which
+covers both.
+
+**Deliberately excluded** — every one still present and unmodified in the working tree:
+`CLAUDE.md`, `README.md`, the `HANDOFF.md` deletion, `HANDOFF(depracted).md`, `docs/evidence/*`,
+`docs/research-notes/*`, `playwright.config.ts`, `tests/e2e/seed.ts`, `.claude/skills/`,
+`docs/process/`, `docs/research/The Reactive Training Manual…pdf`, the three `set-groups-*.md`
+reports, the five `repository-agent-workflow-*.md` reports,
+`docs/reviews/exercise-catalog-expansion-closeout.md`,
+`docs/reviews/warmup-routines-evidence-research.md`, `gpt-handoff.md`, `gpt-memory.md`.
+
+**Known cross-reference consequence of that exclusion:** all five staged reports link to
+`../process/agent-workflow.md`, which is untracked concurrent work (PI-017's). Those links resolve on
+disk but **not** in the committed tree until `docs/process/` is committed by its own task. Committing
+it here would have violated the exclusion, so this is recorded rather than worked around.
+
+### 15.4 Commit and push
+
+| Item | Value |
+|---|---|
+| **Commit** | **`7fb7c0b2d1d255f548c4e4be5e916c0859720c45`** (`7fb7c0b`) |
+| **Branch** | `main` |
+| **Parent** | `cb33264` |
+| **Upstream** | `origin/main` (`https://github.com/lukavma/gym-app.git`) — printed before pushing |
+| **Message** | `feat: show prescribed rest and program notes during workouts` |
+| **Diffstat** | 26 files changed, 4147 insertions(+), 18 deletions(-) |
+| **Push** | `git push origin main` → `cb33264..7fb7c0b  main -> main`, **exit 0**, fast-forward |
+| **Force push** | none. `git fetch` beforehand showed `0 1` (behind ahead), so no integration was needed |
+| **Tag** | none created — none was instructed |
+
+### 15.5 CI and deployment for this exact commit
+
+Both workflows triggered on the push and **both succeeded**.
+
+| Workflow | Run | Conclusion |
+|---|---|---|
+| **CI** | [run #40, id 34660496623](https://github.com/lukavma/gym-app/actions/runs/34660496623) | **success** |
+| **Deploy to Azure** | [run #35, id 34660496792](https://github.com/lukavma/gym-app/actions/runs/34660496792) | **success** |
+
+**The deployment was not skipped.** `deploy.yml` carries `paths-ignore: ["docs/**", "**/*.md"]`, which
+skips a run only when *every* changed file matches; this push also changes `src/**`, `tests/**` and
+`package.json`, so the deploy ran normally. Its jobs:
+
+| Job | Conclusion |
+|---|---|
+| `quality / Lint, boundaries, typecheck, tests, build` | **success** |
+| `quality / Deterministic offline/PWA Playwright suite (Phase 8)` | **success** — this is the job that runs `test:e2e:offline`, which now includes `workoutPrescriptionContext.spec.ts` (§2 file 7) |
+| `Build, migrate, deploy` | **success** — every step: standalone build, package, Azure OIDC login, DB firewall open, **migrations**, **seed**, firewall close, **Deploy to Azure App Service** |
+
+The migration step succeeded and was a **no-op for PI-018** by design — this change adds no migration
+(§2). No quality gate was bypassed, skipped or retried; nothing needed diagnosing.
+
+**Not independently probed:** production itself. `AZURE_WEBAPP_NAME` is a repository secret and the
+hostname appears nowhere in the repo, so there is no URL to health-check without guessing. The
+successful `Deploy to Azure App Service` step is the authoritative signal recorded here; first-hand
+confirmation comes with the device acceptance below.
+
+### 15.6 Final finding dispositions
+
+| ID | Disposition | Closed by |
+|---|---|---|
+| **F-1** | **Closed** — duplicated `selected` removed; PI-012/PI-017 text untouched | §14.2, verified §3.1 |
+| **F-2** | **Closed** — post-update read-back added; NC-R2 reproduced independently and fails at the new assertion | §14.3, verified §3.2 |
+| **F-3** | **Closed** — every citation re-derived at its stated revision | §14.4, verified §3.3 |
+| **F-4** | **Recorded, accurate, nothing re-opened; no ratification claimed** — remains an **open owner item** | §14.5, verified §3.4 |
+| **F-5** | **Closed** — counts corrected (7 source/config, 9 test files); fixture exercises declared | §14.6, verified §3.5 |
+| **V-1** | **Closed** — NC-R2 line citation `:322` → `:321` | §14.11 |
+
+### 15.7 What remains
+
+1. **Physical iPhone device acceptance — outstanding, and NOT claimed anywhere.** The only gate with
+   no agent substitute: Chromium E2E is not real iOS Safari, and no automated result in this report or
+   any other stands in for it. What to check: start a new workout on a template whose slot has a
+   prescribed rest and a program note; confirm the rest shows on the subtitle line and the
+   `Program note:` block shows above the inputs; confirm typing a session note leaves the program note
+   unchanged and the two stay separate; reload mid-workout and confirm both survive. A workout started
+   **before** this deploy correctly shows rest but **no** program note — that is the
+   no-reconstruction rule working, not a defect.
+2. **Owner awareness, now live:** every prescription note already in the program became visible during
+   execution from the first workout started after this deploy, with no per-note opt-out. Any note
+   written as private planning text rather than an execution cue should be edited or cleared in the
+   program editor.
+3. **F-4's open authorization item** — ratify or adjust the ROADMAP rows 1–3 reclassification, and
+   decide whether `STATUS.md` should mirror the PI-007 state ROADMAP now asserts.
+4. **`docs/STATUS.md` is deliberately still at `a122855`** — release state is the designated closeout
+   editor's to write from evidence, not the implementer's. It does not yet record `7fb7c0b`.
+5. **The concurrent PI-012/PI-017 work remains uncommitted**, including the `docs/process/` directory
+   the reports link to.
+
+---
+
+READY FOR PI-018 OWNER DEVICE ACCEPTANCE
