@@ -117,6 +117,20 @@ export interface TodayBundleExerciseEntryDto {
   // on a live response; `startSession` (activeSession.ts) is what defaults
   // an absent value when freezing it into `ActiveSessionExerciseDto.measurement`.
   measurement?: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
+  // workout-prescription-context-architecture-evaluation.md §4/§7 C-2 — this
+  // slot's program note (`exercise_prescriptions.notes`), frozen into the
+  // session snapshot at `startSession` and shown read-only on the workout
+  // card as "Program note:". OPTIONAL here while the server's own mirror
+  // (src/server/today/service.ts's TodayBundleExerciseEntry) declares it
+  // required, and that asymmetry is the point — the same mandatory tolerance
+  // rule warm-up routines follow (warmup evaluation §8.1, R-1): both the
+  // service worker's `today-bundle` cache and the IndexedDB `bundleCache`
+  // keep serving pre-upgrade copies after deploy, which have no such key at
+  // all, and the Phase 5 L-4 regression (a cached bundle lacking
+  // `appliedModifiers` made offline start throw) is exactly what assuming
+  // otherwise costs. Absent means "no note to show", never an error — and it
+  // is never backfilled from the current program definition (C-1).
+  prescriptionNotes?: string | null;
 }
 
 export interface ActiveSessionSetDto {

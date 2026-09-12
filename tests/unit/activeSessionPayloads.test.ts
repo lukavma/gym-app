@@ -13,6 +13,7 @@ import {
   setLogUpsertPayloadSchema,
   setLogDeletePayloadSchema,
 } from "@/domain/sync/schema";
+import { STRATEGY_VERSIONS, wrapPrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot";
 
 // Regression coverage for BLOCKER-1 ("skip, exercise notes, and in-session
 // set edits never reach PostgreSQL because the enqueued payload is missing
@@ -167,6 +168,89 @@ describe("buildSessionExerciseUpsertPayload", () => {
       notes: "elbow felt tight on set 2",
     });
     expect(sessionExerciseUpsertPayloadSchema.safeParse(payload).success).toBe(true);
+  });
+
+  // U-3 (docs/reviews/workout-prescription-context-architecture-evaluation.md
+  // §2 R-B / §10) — THE strip hazard, and the only reason PI-018 touches a
+  // Zod schema at all. The frozen snapshot rides to the server INSIDE this
+  // payload's `prescription` field, and this builder `.parse()`s the payload.
+  // Zod 3's `z.object` strips undeclared keys silently rather than rejecting
+  // them, so if `prescriptionNotes` were absent from
+  // `prescriptionSnapshotDataSchema` the note would survive in the local
+  // IndexedDB aggregate (never parsed) and vanish on the wire — no error
+  // anywhere, and the note gone on cross-device adopt or post-eviction
+  // resume. Reverting only that schema key must fail THIS test (NC-1).
+  it("carries a snapshot's prescriptionNotes through the payload parse instead of silently stripping it", () => {
+    const note = "Pause 1 s on the chest.\nElbows ~45°.";
+    const payload = buildSessionExerciseUpsertPayload({
+      id: sessionExerciseId,
+      sessionId,
+      exerciseId: newId(),
+      position: 0,
+      source: "template",
+      prescription: wrapPrescriptionSnapshot({
+        exerciseId: "00000000-0000-0000-0000-000000000001",
+        exerciseName: "Bench Press",
+        scheme: { type: "fixed", sets: 3, reps: 5 },
+        targetRir: { min: 1, max: 2 },
+        restSeconds: 150,
+        progression: {
+          strategyId: "manual",
+          strategyVersion: STRATEGY_VERSIONS.manual,
+          config: {},
+          classification: "user_defined",
+        },
+        appliedModifiers: null,
+        prefill: { loadKg: 100, reps: 5 },
+        prescriptionNotes: note,
+      }),
+      measurementProfile: "load_reps",
+      loadBasis: "unspecified",
+      skipped: false,
+      notes: null,
+    });
+
+    expect(payload.prescription?.snapshot.prescriptionNotes).toBe(note);
+    // The sibling frozen field the card renders on the same line, asserted
+    // here too so a schema regression cannot pass by keeping only one.
+    expect(payload.prescription?.snapshot.restSeconds).toBe(150);
+    expect(sessionExerciseUpsertPayloadSchema.safeParse(payload).success).toBe(true);
+    // §3.4 — the note rides INSIDE `prescription`; no new top-level payload
+    // key is introduced, and the `.strict()` key set is unchanged.
+    expect("prescriptionNotes" in payload).toBe(false);
+  });
+
+  it("carries an explicit null prescriptionNotes (frozen 'no program note') rather than dropping the key", () => {
+    const payload = buildSessionExerciseUpsertPayload({
+      id: sessionExerciseId,
+      sessionId,
+      exerciseId: newId(),
+      position: 0,
+      source: "template",
+      prescription: wrapPrescriptionSnapshot({
+        exerciseId: "00000000-0000-0000-0000-000000000001",
+        exerciseName: "Bench Press",
+        scheme: { type: "fixed", sets: 3, reps: 5 },
+        targetRir: null,
+        restSeconds: null,
+        progression: {
+          strategyId: "manual",
+          strategyVersion: STRATEGY_VERSIONS.manual,
+          config: {},
+          classification: "user_defined",
+        },
+        appliedModifiers: null,
+        prefill: { loadKg: null, reps: null },
+        prescriptionNotes: null,
+      }),
+      measurementProfile: "load_reps",
+      loadBasis: "unspecified",
+      skipped: false,
+      notes: null,
+    });
+
+    expect(payload.prescription?.snapshot).toHaveProperty("prescriptionNotes");
+    expect(payload.prescription?.snapshot.prescriptionNotes).toBeNull();
   });
 
   it("throws instead of silently returning when the required sessionId is missing", () => {

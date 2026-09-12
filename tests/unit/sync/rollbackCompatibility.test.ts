@@ -8,6 +8,7 @@ import {
   sessionExerciseUpsertPayloadSchema as liveSessionExerciseUpsertPayloadSchema,
 } from "@/domain/sync/schema";
 import type { ActiveSessionSetDto } from "@/sync/types";
+import { STRATEGY_VERSIONS, wrapPrescriptionSnapshot } from "@/domain/schemas/prescriptionSnapshot";
 
 // athletic-measurement-profiles-architecture-evaluation.md §13.5 (NC-13),
 // §14.5 — the rollback-compatibility boundary the O-7/O-13 select was
@@ -155,5 +156,121 @@ describe("NC-13 — rollback compatibility across the profile-scoped emission bo
     });
 
     expect(widenedPreMigrationSchema.safeParse(payload).success).toBe(true);
+  });
+});
+
+// PI-018 U-4 (docs/reviews/workout-prescription-context-architecture-evaluation.md
+// §7 C-5 / §10) — the rollback boundary for `prescriptionNotes`, which is
+// structurally UNLIKE the `measurementProfile`/`loadBasis` limit above.
+//
+// Those two are TOP-LEVEL keys on a `.strict()` payload schema, so an older
+// server rejects the whole op and it dead-letters. `prescriptionNotes` lives
+// one level down, inside `prescription`, which is parsed by the NON-strict
+// `prescriptionSnapshotSchema` — so an older server silently STRIPS the key
+// and applies the op. The row stores a snapshot without the note; sets,
+// session and everything else are unaffected. A rollback degrades; it does
+// not dead-letter.
+//
+// Frozen literal, deliberately NOT imported from the live module — the same
+// rule this file's own header states: the live module's future evolution
+// must not be able to drag this proof forward with it.
+const preFeaturePrescriptionSnapshotDataSchema = z.object({
+  exerciseId: z.string().uuid(),
+  exerciseName: z.string(),
+  // The full setScheme/rirBand/progression vocabulary is irrelevant to this
+  // proof and is loosened here on purpose: the only thing under test is
+  // whether an UNKNOWN NESTED KEY is stripped or rejected, which is decided
+  // by the object's strictness, not by its members' own shapes.
+  scheme: z.unknown(),
+  targetRir: z.unknown(),
+  restSeconds: z.number().int().positive().nullable(),
+  progression: z.unknown(),
+  appliedModifiers: z.unknown(),
+  prefill: z.unknown(),
+  measurement: z.unknown().optional(),
+  // …and NO `prescriptionNotes` key — that is the point.
+});
+
+const preFeaturePrescriptionSnapshotSchema = z.object({
+  v: z.literal(1),
+  snapshot: preFeaturePrescriptionSnapshotDataSchema,
+});
+
+const preFeatureSessionExerciseUpsertPayloadSchema = z
+  .object({
+    id: uuidv7Schema,
+    sessionId: uuidv7Schema,
+    exerciseId: z.string().uuid().optional(),
+    position: z.number().int().min(0).optional(),
+    source: z.enum(["template", "adhoc"]).optional(),
+    prescription: preFeaturePrescriptionSnapshotSchema.nullable().optional(),
+    measurementProfile: z.string().optional(),
+    loadBasis: z.string().nullable().optional(),
+    skipped: z.boolean().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+  })
+  .strict();
+
+function newBuildPayloadCarryingANote() {
+  return buildSessionExerciseUpsertPayload({
+    id: newId(),
+    sessionId: newId(),
+    exerciseId: newId(),
+    position: 0,
+    source: "template",
+    prescription: wrapPrescriptionSnapshot({
+      exerciseId: "00000000-0000-0000-0000-000000000001",
+      exerciseName: "Bench Press",
+      scheme: { type: "fixed", sets: 3, reps: 5 },
+      targetRir: { min: 1, max: 2 },
+      restSeconds: 150,
+      progression: {
+        strategyId: "manual",
+        strategyVersion: STRATEGY_VERSIONS.manual,
+        config: {},
+        classification: "user_defined",
+      },
+      appliedModifiers: null,
+      prefill: { loadKg: 100, reps: 5 },
+      prescriptionNotes: "Pause 1 s on the chest.",
+    }),
+    measurementProfile: "load_reps",
+    loadBasis: "unspecified",
+    skipped: false,
+    notes: null,
+  });
+}
+
+describe("U-4 — PI-018 rollback compatibility: a nested new key degrades, it does not dead-letter", () => {
+  it("a new-build sessionExercise op carrying prescriptionNotes still PARSES against a frozen pre-feature schema", () => {
+    const payload = newBuildPayloadCarryingANote();
+    expect(payload.prescription?.snapshot.prescriptionNotes).toBe("Pause 1 s on the chest.");
+
+    const rolledBack = preFeatureSessionExerciseUpsertPayloadSchema.safeParse(payload);
+    expect(rolledBack.success).toBe(true);
+  });
+
+  it("the rolled-back parse STRIPS the note rather than rejecting the op, and keeps every pre-existing snapshot field", () => {
+    const payload = newBuildPayloadCarryingANote();
+    const rolledBack = preFeatureSessionExerciseUpsertPayloadSchema.safeParse(payload);
+    expect(rolledBack.success).toBe(true);
+    if (!rolledBack.success) return;
+
+    const snapshot = rolledBack.data.prescription?.snapshot as Record<string, unknown> | undefined;
+    // Stripped — the old server stores a snapshot without the note…
+    expect(snapshot && "prescriptionNotes" in snapshot).toBe(false);
+    // …and nothing else about the op is harmed: `restSeconds`, which has
+    // been in the snapshot since Phase 3, still arrives (this is exactly the
+    // §7 C-1 "rest but no note" asymmetry, seen from the wire side).
+    expect(snapshot?.restSeconds).toBe(150);
+    expect(rolledBack.data.skipped).toBe(false);
+  });
+
+  it("and it still parses against the LIVE schema, where the note survives", () => {
+    const payload = newBuildPayloadCarryingANote();
+    const live = liveSessionExerciseUpsertPayloadSchema.safeParse(payload);
+    expect(live.success).toBe(true);
+    if (!live.success) return;
+    expect(live.data.prescription?.snapshot.prescriptionNotes).toBe("Pause 1 s on the chest.");
   });
 });

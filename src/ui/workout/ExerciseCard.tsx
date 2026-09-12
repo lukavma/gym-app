@@ -5,7 +5,7 @@ import Link from "next/link";
 import { formatScheme, type SetScheme } from "@/domain/schemes/setScheme";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { schemeDefaultReps } from "@/domain/progression/workingTargets";
-import { formatSetLine, minutesSecondsLabel } from "@/domain/measurement/format";
+import { formatRestSeconds, formatSetLine, minutesSecondsLabel } from "@/domain/measurement/format";
 import {
   dimensionsOf,
   type LoadBasis,
@@ -221,6 +221,23 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
 
   const scheme = exercise.prescription?.snapshot.scheme ?? null;
   const targetRir = exercise.prescription?.snapshot.targetRir ?? null;
+  // workout-prescription-context-architecture-evaluation.md §5 — the two
+  // PRESCRIPTION instructions, read from this slot's own frozen snapshot and
+  // nowhere else: no path here consults the live `exercise_prescriptions`
+  // row, so a program edit mid-workout cannot change what this card shows
+  // (C-1), and a snapshot frozen before this feature shipped simply has
+  // neither key (`undefined`) and renders nothing extra.
+  const restSeconds = exercise.prescription?.snapshot.restSeconds ?? null;
+  // §5.3 — the whitespace guard is defensive rather than load-bearing (the
+  // write path already trims); it collapses "null", "key absent" and
+  // "whitespace only" into the single "render nothing" branch. NOT to be
+  // confused with `exercise.notes`, the editable session note rendered by
+  // the "Add notes" textarea at the bottom of this card.
+  const rawPrescriptionNotes = exercise.prescription?.snapshot.prescriptionNotes;
+  const prescriptionNotes =
+    typeof rawPrescriptionNotes === "string" && rawPrescriptionNotes.trim() !== ""
+      ? rawPrescriptionNotes
+      : null;
 
   // O-8 — a prefilled or currently-typed duration >= 60 s additionally shows
   // as `m:ss` beside the seconds figure; reuses format.ts's
@@ -304,10 +321,18 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-base font-medium text-slate-50">{exercise.exerciseName}</p>
+          {/* §5.1 — prescribed rest joins the existing subtitle rather than
+              adding a line on a phone. Riding inside this `scheme` guard
+              creates no dead branch: `scheme` is required in
+              `prescriptionSnapshotDataSchema`, so a snapshot with rest and no
+              scheme cannot exist. §5.3 — an absent value renders NOTHING, not
+              a placeholder and not a stray separator, matching how the RIR
+              clause already drops out entirely. */}
           {scheme && (
             <p className="text-xs text-slate-400">
               {formatScheme(scheme)}
               {targetRir ? ` @ RIR ${targetRir.min}-${targetRir.max}` : ""}
+              {restSeconds !== null ? ` · Rest ${formatRestSeconds(restSeconds)}` : ""}
             </p>
           )}
           {exercise.source === "adhoc" && <p className="text-xs text-slate-500">Ad-hoc</p>}
@@ -353,6 +378,34 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
           {exercise.skipped ? "Unskip" : "Skip"}
         </button>
       </div>
+
+      {/*
+        §5.2 — the program's own instruction for this slot, READ-ONLY and
+        deliberately distinct from the editable session notes below: a
+        different table (`exercise_prescriptions.notes` frozen into the
+        snapshot, vs `session_exercises.notes`), a different lifecycle, and a
+        label that states the origin. "Program note:" rather than
+        "Prescribed:" — the scheme/RIR/rest line above is equally prescribed,
+        so that label would not have distinguished anything.
+
+        A sibling of the header flex row, not a child of it, so a long note
+        gets the full card width instead of being squeezed against the Skip
+        button. Outside the `!exercise.skipped` guard on purpose (like the
+        scheme line): a skipped slot is one tap from being unskipped, and the
+        instruction is what informs that tap.
+
+        `whitespace-pre-wrap` keeps the athlete's own line breaks — they are
+        part of the instruction — and `break-words` stops a long unbroken
+        token from widening the card and giving the page a horizontal
+        scrollbar. Not clamped: the whole point is that the instruction is
+        visible BEFORE the set (§5.2's accepted trade-off).
+      */}
+      {prescriptionNotes !== null && (
+        <p className="text-xs break-words whitespace-pre-wrap text-slate-400">
+          <span className="text-slate-500">Program note: </span>
+          {prescriptionNotes}
+        </p>
+      )}
 
       {recommendation && !exercise.skipped && (
         <RecommendationCard

@@ -104,6 +104,24 @@ export interface TodayBundleExerciseEntry {
   // cached pre-upgrade client's own bundle type (which has no such key)
   // keeps parsing identically; the server always populates it.
   measurement?: { profile: MeasurementProfile; loadBasis: LoadBasis | null };
+  // workout-prescription-context-architecture-evaluation.md §4 — this slot's
+  // `exercise_prescriptions.notes`, carried so `startSession` can freeze it
+  // into the session snapshot (read-only "Program note:" on the workout
+  // card). REQUIRED here, and the asymmetry with the client mirror
+  // (TodayBundleExerciseEntryDto, where it is optional) is deliberate: H-10
+  // constrains the CLIENT mirror only — a bundle cached before this feature
+  // shipped genuinely has no such key — and says nothing about the server
+  // type, which always has a value to give (`p.notes` is `string | null`,
+  // never absent). Required here therefore makes a forgotten population site
+  // a compile error, and matches the dominant shape on this interface
+  // (`restSeconds`, `appliedModifiers`, `prefill` are all required).
+  //
+  // Carried straight from the prescription row, NOT through
+  // `buildPrescriptionSnapshotData`: that builder's job is the week-modifier
+  // and working-target derivation, and fields that are carried rather than
+  // derived already bypass it (`measurement` below does the same). See the
+  // architecture review's L-1.
+  prescriptionNotes: string | null;
 }
 
 export interface ActiveSessionSetDto {
@@ -599,6 +617,12 @@ export async function buildTodayBundle(
                 profile: exercise.measurementProfile as MeasurementProfile,
                 loadBasis: exercise.loadBasis as LoadBasis | null,
               },
+              // Read per prescription ROW, so two slots of the same exercise
+              // in one template keep their own instructions (C-6) — the
+              // `*ByExercise` maps above are keyed by exerciseId, this is
+              // not. Verbatim: the prescription note is not derived, not
+              // modified by week modifiers, and not trimmed again here.
+              prescriptionNotes: p.notes,
             });
           }
 

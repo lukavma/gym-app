@@ -58,6 +58,30 @@ export const prescriptionSnapshotDataSchema = z.object({
       loadBasis: loadBasisSchema.nullable(),
     })
     .optional(),
+  // workout-prescription-context-architecture-evaluation.md §3.3/§7 — the
+  // program's own `exercise_prescriptions.notes` for this slot, frozen here
+  // at session start and read-only for the rest of the workout. Named
+  // `prescriptionNotes`, not `notes`, because the card renders it one
+  // dereference away from `session_exercises.notes` (the editable session
+  // note) — a `string | null` collision no type checker would catch (§4).
+  //
+  // Additive and OPTIONAL, exactly like `measurement` above: a v1 snapshot
+  // written before this release has no such key and must still parse
+  // unchanged, so `v` stays 1 and no upgrader exists (ADR-008). Absent means
+  // "this session never froze a note" and must never be reconstructed from
+  // the current program definition (§7 C-1).
+  //
+  // Declaring it here is load-bearing, not cosmetic (§2 R-B): the snapshot
+  // travels to the server inside `sessionExerciseUpsertPayloadSchema`'s
+  // `prescription` field, and `buildSessionExerciseUpsertPayload` `.parse()`s
+  // that payload — Zod 3's `z.object` STRIPS undeclared keys silently, so a
+  // note absent from this schema would live on in the local IndexedDB
+  // aggregate (never parsed) while vanishing from the wire, with no error
+  // anywhere. tests/unit/activeSessionPayloads.test.ts pins that.
+  //
+  // No `.trim()`: a transform here would rewrite historical values on read.
+  // The write path already trims (`domain/prescriptions/schema.ts`).
+  prescriptionNotes: z.string().max(2000).nullable().optional(),
 });
 export type PrescriptionSnapshotData = z.infer<typeof prescriptionSnapshotDataSchema>;
 

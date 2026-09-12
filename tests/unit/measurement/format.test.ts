@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSetLine, type FormattableSet } from "@/domain/measurement/format";
+import { formatRestSeconds, formatSetLine, type FormattableSet } from "@/domain/measurement/format";
 
 // docs/reviews/athletic-measurement-profiles-architecture-evaluation.md §15.4
 // (the eight example lines, verbatim) and O-8 (duration's additional `m:ss`
@@ -96,5 +96,39 @@ describe("formatSetLine — O-8's m:ss display at or above 60 s", () => {
     expect(
       formatSetLine("load_duration", "total", { ...EMPTY, weightKg: 20, durationS: 125 }),
     ).toBe("20 kg · 125 s · 2:05");
+  });
+});
+
+// U-5 (docs/reviews/workout-prescription-context-architecture-evaluation.md
+// §5.1/§10) — `formatRestSeconds` is the PRESCRIBED-rest renderer for the
+// workout card's subtitle. Clock-only by design: unlike `formatDurationS`'s
+// dual `"150 s · 2:30"` form (a logged set showing its stored figure beside a
+// clock reading), a rest target is only ever read as a clock, so the dual
+// form would only bloat a phone subtitle. Under 60 s `minutesSecondsLabel`
+// returns null and the plain-seconds fallback applies.
+describe("formatRestSeconds — §5.1's prescribed-rest boundaries", () => {
+  it("renders plain seconds below the 60 s boundary", () => {
+    expect(formatRestSeconds(1)).toBe("1 s");
+    expect(formatRestSeconds(45)).toBe("45 s");
+    expect(formatRestSeconds(59)).toBe("59 s");
+  });
+
+  it("switches to m:ss at exactly 60 s and above (inclusive boundary)", () => {
+    expect(formatRestSeconds(60)).toBe("1:00");
+    expect(formatRestSeconds(61)).toBe("1:01");
+    expect(formatRestSeconds(90)).toBe("1:30");
+    expect(formatRestSeconds(150)).toBe("2:30");
+  });
+
+  it("keeps counting minutes past an hour rather than growing an h:mm:ss form", () => {
+    expect(formatRestSeconds(3599)).toBe("59:59");
+    expect(formatRestSeconds(3600)).toBe("60:00");
+  });
+
+  it("never emits the logged-set dual form (no ' s · ' anywhere)", () => {
+    // The regression guard for "someone reused formatDurationS here":
+    // that would render 150 as "150 s · 2:30".
+    expect(formatRestSeconds(150)).not.toContain("·");
+    expect(formatRestSeconds(3600)).not.toContain("·");
   });
 });

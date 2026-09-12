@@ -192,6 +192,9 @@ Rules:
 | `targetRir` | O | O | rejected | rejected | rejected | rejected |
 | `baselineLoadKg` | O | rejected | O | rejected | rejected | O |
 | `restSeconds` | O | O | O | O | O | O |
+| `notes` | O | O | O | O | O | O |
+
+`notes` is profile-independent and rejected by nothing. Since PI-018 it also reaches the frozen `PrescriptionSnapshot` as `prescriptionNotes` and is displayed read-only on the workout card; the row exists so this matrix reads as complete rather than as silence about a field that now travels with the session.
 
 **Deload semantics for the athletic variants, stated explicitly** (§9.4): `setMultiplier` applies to `sets` of all four scheme types identically; `loadMultiplier` applies to `prefill.loadKg` where the profile has one; `targetRirShift` only where a target-RIR band exists. **Nothing in v1 reduces `distanceM` or `durationS`** — a deload week on a distance or duration scheme is a sets-and-load deload only, with `appliedModifiers` recording the full modifier set so history stays unambiguous.
 

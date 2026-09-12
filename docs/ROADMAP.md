@@ -9,17 +9,18 @@ This file owns priorities and dependencies, not detailed specifications or imple
 
 | Order | Priority | Outcome and dependency |
 | --- | --- | --- |
-| 1 — Now | Catalog Expansion 1 closeout | Consume the existing implementation review and Sonnet's preflight/report corrections; close the separately authorized release, per-client update, postdeployment and device gates. [STATUS](STATUS.md) records observed evidence; no duplicate implementation review. |
-| 2 — Now | Documentation consolidation | Establish STATUS, ROADMAP and BACKLOG, preserve current PI inputs and historical reports, and review this documentation change. Local preparation overlaps Sonnet's task by owner instruction; it does not certify step 1 complete. |
-| 3 — Next | [PI-007 Recovery improvement](BACKLOG.md#pi-007) | The next small product slice after catalog closeout/documentation: ordinary recovery check-in completeness and scale clarity within the existing model. |
-| 4 — Next | [PI-009 account data export](BACKLOG.md#pi-009) | Selected user-accessible product feature after Recovery. Settle bounded coverage/format/flow and acceptance before implementation; an operator backup is not this deliverable. |
-| 5 — Queued, selected | [PI-010 backup/recovery verification](BACKLOG.md#pi-010) | Separate engineering task after export: establish actual backup posture and demonstrate recovery. Define access and safe verification scope before executing any operational work. |
-| 6 — Queued, selected | [PI-011 Dashboard v2](BACKLOG.md#pi-011) | Scope/design first, then implementation against accepted scope, after backup/recovery verification. V2 is explicitly on the roadmap; no chart, metric or redesign bundle is preselected here. |
+| 1 — Closed | Catalog Expansion 1 closeout | Closed per [STATUS](STATUS.md): commit `57868e2` deployed, the D-CE1-1(ii) postdeployment check passed, and owner iPhone acceptance confirmed 2026-09-10. Retained here for order continuity; D-CE1-1(i) coverage of clients other than the tested iPhone remains unrecorded. |
+| 2 — Closed | Documentation consolidation | Closed per [STATUS](STATUS.md): the [independent review](reviews/post-p10-documentation-ios-review.md) approved closeout 2026-09-10, and BACKLOG preservation landed as `355e381`. STATUS, ROADMAP and BACKLOG now exist and are the standing authorities. |
+| 3 — In flight | [PI-007 Recovery improvement](BACKLOG.md#pi-007) | Recovery check-in completeness and scale clarity within the existing model. Implemented and committed (`c2d98c8`, then the device-remediation follow-up `cb33264`). Deployment and owner device acceptance are separate gates and are not asserted here. |
+| 4 — Next | [PI-018 workout prescription context](BACKLOG.md#pi-018) | Owner-inserted between Recovery and export, 2026-09-11: show the prescribed rest and the program's prescription notes on the workout card, frozen per slot at start. Bounded read-path slice; no timer, no progression change. Depends on nothing above it; carries no competing prescribed-rest field ([PI-015](BACKLOG.md#pi-015)'s own rule). |
+| 5 — Next | [PI-009 account data export](BACKLOG.md#pi-009) | Selected user-accessible product feature after Recovery. Settle bounded coverage/format/flow and acceptance before implementation; an operator backup is not this deliverable. |
+| 6 — Queued, selected | [PI-010 backup/recovery verification](BACKLOG.md#pi-010) | Separate engineering task after export: establish actual backup posture and demonstrate recovery. Define access and safe verification scope before executing any operational work. |
+| 7 — Queued, selected | [PI-011 Dashboard v2](BACKLOG.md#pi-011) | Scope/design first, then implementation against accepted scope, after backup/recovery verification. V2 is explicitly on the roadmap; no chart, metric or redesign bundle is preselected here. |
 
 This order expresses owner priorities. It does not assert technical dependencies where none have
-been established, or authorize all six implementations in this documentation task. Catalog release
-closure and applicable review/design gates still govern starting dependent work.
-The current catalog preflight may advance independently; final release closeout remains Sonnet's task.
+been established, and it authorizes no implementation or release by itself. Applicable review/design
+gates still govern starting dependent work, and rows 1–2 are recorded as closed from
+[STATUS](STATUS.md)'s evidence rather than re-certified here.
 
 ## Real use and deferred choices
 
@@ -30,7 +31,7 @@ if a material real-use defect appears.
 
 - [PI-013 e1RM Release B](BACKLOG.md#pi-013) retains its existing **at least one block of Release A use**,
   binding fire-rate prototype and applicable design/owner-decision gates. Profiles being delivered
-  does not discharge them. It is not added to the six-step implementation sequence.
+  does not discharge them. It is not added to the selected implementation sequence.
 - [PI-001](BACKLOG.md#pi-001) entry-error warnings, [PI-002](BACKLOG.md#pi-002) training-date correction
   and [PI-006](BACKLOG.md#pi-006) History deletion remain demand-driven with their respective
   calibration/design/dependency gates.
@@ -49,7 +50,9 @@ if a material real-use defect appears.
 Accepted backlog ideas: [PI-014 daily check-in reminder](BACKLOG.md#pi-014),
 [PI-015 set-rest timer](BACKLOG.md#pi-015) and its dependent [PI-016 short-rest hint](BACKLOG.md#pi-016).
 Their scope, implementation and placement are unselected; they do not replace or insert work into
-the six-step order above. Recovery's check-in semantics inform PI-014; the timer can stand without a hint.
+the order above. Recovery's check-in semantics inform PI-014; the timer can stand without a hint.
+[PI-018](BACKLOG.md#pi-018) **displays** the `restSeconds` target PI-015 would count down and adds no
+competing field, so it neither selects PI-015 nor discharges its OD-05 reconciliation or platform gates.
 The [iOS beta distribution evaluation](reviews/ios-beta-distribution-evaluation.md) passed
 [documentation review](reviews/post-p10-documentation-ios-review.md); its recommendation remains
 pending owner selection. It recommends retaining the PWA now and considering a bounded owner-only native prototype

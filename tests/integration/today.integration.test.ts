@@ -291,6 +291,149 @@ describe("buildTodayBundle (PGlite integration)", () => {
     expect(exerciseDto.sets[0]).toMatchObject({ durationS: 45 });
   });
 
+  // PI-018 I-1 (docs/reviews/workout-prescription-context-architecture-evaluation.md
+  // §10) — the bundle half of the feature, at the source. `prescriptionNotes`
+  // is carried straight off the prescription ROW (the architecture review's
+  // L-1: it is a carried field, not a derived one, so it deliberately does
+  // not pass through `buildPrescriptionSnapshotData`), and C-6's duplicate
+  // slots must keep their own instructions — the risk worth testing is not
+  // the snapshot but that something upstream keys by `exerciseId` and
+  // collapses the two.
+  it("PI-018 — a bundle entry carries its prescription's notes verbatim, and null when unset", async () => {
+    const user = await insertTestUser(db);
+    const exercise = await createExercise(db, user.id, {
+      name: "Bench Press",
+      equipment: "barbell",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+    });
+    const program = await createProgram(db, user.id, { name: "Program A" });
+    const withNotes = await createTemplate(db, user.id, program.id, { name: "Push Day" });
+    if (!withNotes) throw new Error("expected template");
+    const note = "Pause 1 s on the chest.\nElbows ~45°.";
+    const created = await createPrescription(db, user.id, withNotes.id, {
+      exerciseId: exercise.id,
+      scheme: fixedScheme,
+      progression: { strategyId: "manual" },
+      restSeconds: 150,
+      notes: note,
+    });
+    if (!created) throw new Error("expected prescription");
+
+    const now = new Date("2026-01-15T10:00:00.000Z");
+    const block = await createBlock(db, user.id, program.id, {
+      name: "Block A",
+      goal: "general",
+      startDate: "2026-01-01",
+      weeksPlanned: 16,
+      schedule: [{ templateId: withNotes.id }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, user.id, block.id);
+
+    const bundle = await buildTodayBundle(db, user.id, now);
+    if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+    const entry = bundle.today.exercises[0]!;
+    // Verbatim — not trimmed again, not reshaped, line breaks intact.
+    expect(entry.prescriptionNotes).toBe(note);
+    expect(entry.restSeconds).toBe(150);
+  });
+
+  it("PI-018 — a prescription with no notes yields null (never undefined, never a placeholder)", async () => {
+    const user = await insertTestUser(db);
+    const exercise = await createExercise(db, user.id, {
+      name: "Bench Press",
+      equipment: "barbell",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+    });
+    const program = await createProgram(db, user.id, { name: "Program A" });
+    const template = await createTemplate(db, user.id, program.id, { name: "Push Day" });
+    if (!template) throw new Error("expected template");
+    const created = await createPrescription(db, user.id, template.id, {
+      exerciseId: exercise.id,
+      scheme: fixedScheme,
+      progression: { strategyId: "manual" },
+    });
+    if (!created) throw new Error("expected prescription");
+
+    const block = await createBlock(db, user.id, program.id, {
+      name: "Block A",
+      goal: "general",
+      startDate: "2026-01-01",
+      weeksPlanned: 16,
+      schedule: [{ templateId: template.id }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, user.id, block.id);
+
+    const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));
+    if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+    const entry = bundle.today.exercises[0]!;
+    expect(entry.prescriptionNotes).toBeNull();
+    expect(entry.restSeconds).toBeNull();
+  });
+
+  it("PI-018 C-6 — two prescriptions of the SAME exercise produce two entries with their own notes and rest", async () => {
+    const user = await insertTestUser(db);
+    const exercise = await createExercise(db, user.id, {
+      name: "Bench Press",
+      equipment: "barbell",
+      mechanics: "compound",
+      laterality: "bilateral",
+      loadStepKg: 2.5,
+      contributions: [{ muscleGroupId: "quads", role: "primary", weight: 1 }],
+    });
+    const program = await createProgram(db, user.id, { name: "Program A" });
+    const template = await createTemplate(db, user.id, program.id, { name: "Push Day" });
+    if (!template) throw new Error("expected template");
+
+    // `exercise_prescriptions` is unique on (template_id, position) only —
+    // duplicate slots of one exercise are a supported shape, and exactly what
+    // PI-012's linked top-set/back-off would use.
+    const top = await createPrescription(db, user.id, template.id, {
+      exerciseId: exercise.id,
+      scheme: fixedScheme,
+      progression: { strategyId: "manual" },
+      restSeconds: 180,
+      notes: "Top set: leave 1 in the tank.",
+    });
+    const backoff = await createPrescription(db, user.id, template.id, {
+      exerciseId: exercise.id,
+      scheme: fixedScheme,
+      progression: { strategyId: "manual" },
+      restSeconds: 90,
+      notes: "Back-off: same bar speed, no grinders.",
+    });
+    if (!top || !backoff) throw new Error("expected two prescriptions");
+
+    const block = await createBlock(db, user.id, program.id, {
+      name: "Block A",
+      goal: "general",
+      startDate: "2026-01-01",
+      weeksPlanned: 16,
+      schedule: [{ templateId: template.id }],
+    });
+    if (!block) throw new Error("expected block");
+    await activateBlock(db, user.id, block.id);
+
+    const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));
+    if (bundle.today.kind !== "scheduled") throw new Error("expected scheduled");
+    expect(bundle.today.exercises).toHaveLength(2);
+
+    const [first, second] = bundle.today.exercises;
+    expect(first!.exerciseId).toBe(second!.exerciseId);
+    expect(first!.prescriptionId).not.toBe(second!.prescriptionId);
+    expect(first!.prescriptionNotes).toBe("Top set: leave 1 in the tank.");
+    expect(first!.restSeconds).toBe(180);
+    expect(second!.prescriptionNotes).toBe("Back-off: same bar speed, no grinders.");
+    expect(second!.restSeconds).toBe(90);
+  });
+
   it("resolves no_schedule with a null activeSession when the user has no active program", async () => {
     const user = await insertTestUser(db);
     const bundle = await buildTodayBundle(db, user.id, new Date("2026-01-15T10:00:00.000Z"));

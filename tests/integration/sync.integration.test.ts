@@ -221,6 +221,169 @@ describe("sync service (PGlite integration)", () => {
     expect(row?.prescription).toEqual(originalSnapshot);
   });
 
+  // PI-018 I-2 / NC-3
+  // (docs/reviews/workout-prescription-context-architecture-evaluation.md §10)
+  // — the same write-once property as the test above, now proved for the
+  // field the feature adds, and proved through the FULL persistence round
+  // trip: the note must reach `session_exercises.prescription` verbatim
+  // (nothing on the server path strips a nested key), must survive a verbatim
+  // replay of the create op, and must be untouched by a later update op —
+  // including one that smuggles a different snapshot — after the program
+  // definition itself has changed. That last part is what "later program
+  // edits must not change a running workout" actually means server-side.
+  it("PI-018 — persists a frozen prescriptionNotes verbatim and keeps it immutable across replay, a program edit and a later update op", async () => {
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    const startedAt = new Date().toISOString();
+    const frozenNote = "Pause 1 s on the chest.\nElbows ~45°.";
+    const originalSnapshot = wrapPrescriptionSnapshot({
+      ...buildSnapshot(exerciseId, exerciseName).snapshot,
+      prescriptionNotes: frozenNote,
+    });
+
+    const createOps: SyncOpEnvelope[] = [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: { id: sessionId, startedAt },
+      },
+      {
+        opId: newId(),
+        entity: "sessionExercise",
+        operation: "upsert",
+        payload: {
+          id: sessionExerciseId,
+          sessionId,
+          exerciseId,
+          position: 0,
+          source: "template",
+          prescription: originalSnapshot,
+        },
+      },
+    ];
+
+    const created = await applySyncBatch(db, userId, createOps);
+    expect(created.rejected).toEqual([]);
+
+    async function readRow() {
+      const [row] = await db
+        .select()
+        .from(sessionExercises)
+        .where(eq(sessionExercises.id, sessionExerciseId));
+      return row;
+    }
+
+    async function readSnapshot() {
+      return (await readRow())?.prescription as
+        { snapshot: { prescriptionNotes?: string | null } } | undefined;
+    }
+
+    // Step 1 — persisted verbatim, nested key and all.
+    expect((await readSnapshot())?.snapshot.prescriptionNotes).toBe(frozenNote);
+
+    // Step 2 (NC-3) — a byte-for-byte replay of the create op is idempotent.
+    const replay = await applySyncBatch(db, userId, createOps);
+    expect(replay.rejected).toEqual([]);
+    expect((await readSnapshot())?.snapshot.prescriptionNotes).toBe(frozenNote);
+
+    // Step 3 — the live program definition changes after the freeze.
+    await updatePrescription(db, userId, prescriptionId, {
+      notes: "rewritten while the workout was running",
+      restSeconds: 30,
+    });
+    expect((await readSnapshot())?.snapshot.prescriptionNotes).toBe(frozenNote);
+
+    // Step 4 — a later update op, even one smuggling a snapshot that carries
+    // a different note, is ignored for `prescription` (write-once on insert).
+    const smuggled = wrapPrescriptionSnapshot({
+      ...buildSnapshot(exerciseId, exerciseName).snapshot,
+      prescriptionNotes: "smuggled instruction",
+    });
+    const updateOp: SyncOpEnvelope = {
+      opId: newId(),
+      entity: "sessionExercise",
+      operation: "upsert",
+      payload: { id: sessionExerciseId, sessionId, skipped: true, prescription: smuggled },
+    };
+    const updated = await applySyncBatch(db, userId, [updateOp]);
+    expect(updated.applied).toEqual([updateOp.opId]);
+
+    // Read the row back HERE — BEFORE the replay below. This is what makes
+    // the smuggled-snapshot step discriminate at all (implementation review
+    // F-2): step 5 replays the original create op, which on a broken update
+    // path would write `originalSnapshot` straight back, so an assertion made
+    // only after the replay cannot tell a working write-once update path from
+    // one that overwrites `prescription`. NC-R2 — adding
+    // `patch.prescription = payload.prescription` to the sessionExercise
+    // update path in src/server/sync/service.ts — must fail on these lines.
+    const afterUpdate = await readRow();
+    expect(afterUpdate?.prescription).toEqual(originalSnapshot);
+    expect(
+      (afterUpdate?.prescription as { snapshot: { prescriptionNotes?: string | null } } | undefined)
+        ?.snapshot.prescriptionNotes,
+    ).toBe(frozenNote);
+    // …and the update op genuinely APPLIED its own permitted field, so this
+    // cannot pass merely because the whole op was ignored or rejected.
+    expect(afterUpdate?.skipped).toBe(true);
+
+    // Step 5 (NC-3) — and the original create op replayed once more, after
+    // that update, still changes nothing.
+    const replayAfterUpdate = await applySyncBatch(db, userId, createOps);
+    expect(replayAfterUpdate.rejected).toEqual([]);
+
+    const [finalRow] = await db
+      .select()
+      .from(sessionExercises)
+      .where(eq(sessionExercises.id, sessionExerciseId));
+    expect(finalRow?.skipped).toBe(true);
+    expect(finalRow?.prescription).toEqual(originalSnapshot);
+  });
+
+  // The complementary case: a snapshot frozen WITHOUT the key (the legacy
+  // shape — every session started before this feature shipped) persists with
+  // the key still absent. Nothing on the write path invents it, and §7 C-1's
+  // no-reconstruction rule therefore holds at the storage layer too.
+  it("PI-018 C-1 — a snapshot with no prescriptionNotes key persists with the key still absent", async () => {
+    const sessionId = newId();
+    const sessionExerciseId = newId();
+    const legacySnapshot = buildSnapshot(exerciseId, exerciseName);
+    expect("prescriptionNotes" in legacySnapshot.snapshot).toBe(false);
+
+    const applied = await applySyncBatch(db, userId, [
+      {
+        opId: newId(),
+        entity: "workoutSession",
+        operation: "upsert",
+        payload: { id: sessionId, startedAt: new Date().toISOString() },
+      },
+      {
+        opId: newId(),
+        entity: "sessionExercise",
+        operation: "upsert",
+        payload: {
+          id: sessionExerciseId,
+          sessionId,
+          exerciseId,
+          position: 0,
+          source: "template",
+          prescription: legacySnapshot,
+        },
+      },
+    ]);
+    expect(applied.rejected).toEqual([]);
+
+    const [row] = await db
+      .select()
+      .from(sessionExercises)
+      .where(eq(sessionExercises.id, sessionExerciseId));
+    const stored = row?.prescription as { snapshot: Record<string, unknown> };
+    expect("prescriptionNotes" in stored.snapshot).toBe(false);
+    // …while the field that HAS been frozen since Phase 3 is still there —
+    // the "rest but no note" asymmetry, at the storage layer.
+    expect(stored.snapshot.restSeconds).toBe(90);
+  });
+
   it("enforces at most one in-progress session per user, and supports takeover via explicit discard", async () => {
     const session1 = newId();
     const create1: SyncOpEnvelope = {

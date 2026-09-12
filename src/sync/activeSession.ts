@@ -198,6 +198,15 @@ function buildSnapshotFromBundleEntry(entry: TodayBundleExerciseEntryDto): Presc
     },
     appliedModifiers: entry.appliedModifiers,
     prefill: entry.prefill,
+    // workout-prescription-context-architecture-evaluation.md §7 C-2/C-3 —
+    // the single freeze site for the program note. `?? null` is load-bearing:
+    // a bundle served from the SW cache or `bundleCache` after deploy has no
+    // `prescriptionNotes` key at all (R-1 tolerance), and a freshly frozen
+    // snapshot must always CARRY the key, `null` when unknown or empty,
+    // rather than reproducing the source's absence. Old snapshots keep their
+    // absent key untouched; nothing ever reconstructs a missing note from
+    // the current program definition (C-1).
+    prescriptionNotes: entry.prescriptionNotes ?? null,
   });
 }
 

@@ -57,6 +57,22 @@ export function minutesSecondsLabel(durationS: number): string | null {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+// workout-prescription-context-architecture-evaluation.md §5.1 — the
+// PRESCRIBED rest target, rendered for the workout card's existing
+// prescription subtitle (`3 × 5 @ RIR 1-2 · Rest 2:30`). Reuses
+// `minutesSecondsLabel` above rather than re-deriving the floor/divide
+// arithmetic, per that helper's own instruction.
+//
+// Deliberately NOT `formatDurationS`'s dual `"150 s · 2:30"` form: that form
+// exists so a *logged* set shows its stored figure beside a clock reading,
+// whereas a prescribed rest target is only ever read as a clock, and the
+// dual form would bloat a compact phone subtitle for no gain. Under 60 s
+// `minutesSecondsLabel` returns null, so the plain-seconds form is the
+// fallback: 45 -> "45 s", 60 -> "1:00".
+export function formatRestSeconds(restSeconds: number): string {
+  return minutesSecondsLabel(restSeconds) ?? `${restSeconds} s`;
+}
+
 function formatDurationS(durationS: number): string {
   const secondsLabel = `${durationS} s`;
   const mmss = minutesSecondsLabel(durationS);

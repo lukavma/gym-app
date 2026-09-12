@@ -52,13 +52,16 @@ One GET endpoint (`/api/today-bundle`) returns everything needed to run today's 
 
 ```text
 { activeProgram, activeBlock {…, weekIndex, isDeload, weekOverrides},
-  todayTemplate + effective prescriptions (modifiers applied),
+  todayTemplate + effective prescriptions (modifiers applied,
+                  incl. restSeconds and the slot's prescriptionNotes),
   perExercise: { previousPerformance (last 3 non-deload), pendingRecommendation?,
                  history for engine (last 5) },
   exercises metadata (loadStepKg…), generatedAt }
 ```
 
 Fetched on every Today screen load while online; cached in `bundleCache`. Staleness is acceptable and displayed ("as of 07:41"). The bundle includes engine history so an offline completion can compute recommendations locally with the same pure domain code.
+
+Every **new** bundle field is optional on the client mirror (`TodayBundleExerciseEntryDto` in `src/sync/types.ts`) even where the server type declares it required — `prescriptionNotes` (PI-018) follows `warmupRoutines` and `measurement` here. Both the service worker's `today-bundle` cache and the IndexedDB `bundleCache` keep serving pre-upgrade copies after a deploy, which have no such key at all, so every read site must handle absence at compile time; the Phase 5 L-4 regression (a cached bundle lacking `appliedModifiers` made offline start throw) is what assuming otherwise costs. Absence means "nothing to show", never an error, and is never backfilled from current program data.
 
 ## 5. Write path (always the same, online or not)
 

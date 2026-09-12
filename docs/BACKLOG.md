@@ -27,7 +27,7 @@ These allocations organize known work and discussion; they do not add accepted b
 
 Follow-up accepted **backlog ideas**: PI-014 daily check-in reminder, PI-015 set-rest timer,
 PI-016 optional short-rest hint. These are unselected implementation candidates; the selected
-six-step order is unchanged. Platform feasibility and a possible later prototype are evaluated in
+order is unchanged. Platform feasibility and a possible later prototype are evaluated in
 the [pending iOS evaluation](reviews/ios-beta-distribution-evaluation.md), not decided by these entries.
 
 | ID | Current disposition |
@@ -48,6 +48,7 @@ the [pending iOS evaluation](reviews/ios-beta-distribution-evaluation.md), not d
 | [PI-014](#pi-014) | Optional daily check-in reminder — accepted idea, scope/platform unselected |
 | [PI-015](#pi-015) | Set-rest timer — accepted idea, behavior/platform design-gated |
 | [PI-016](#pi-016) | Optional short-rest hint — accepted idea, depends on PI-015 semantics |
+| [PI-018](#pi-018) | Workout prescription context — selected, inserted between Recovery and export; architecture accepted, implementation in flight |
 
 <details>
 <summary>Preserved source introduction</summary>
@@ -680,7 +681,7 @@ and [roadmap evaluation's progression-scope constraint](reviews/post-p10-roadmap
 
 ## PI-013 — e1RM Release B advisory starting suggestion
 
-**Status: Deferred; existing usage and design gates retained. Not in the selected six-step sequence.**
+**Status: Deferred; existing usage and design gates retained. Not in the selected sequence.**
 This entry indexes an already discussed feature; it creates no new scope decision.
 
 Release A tracker/what-if is implemented. Measurement Profiles R1–R3 provide the capability boundary.
@@ -822,6 +823,50 @@ change progression, modify prescriptions or alter e1RM evidence. Acceptance must
 manual timing, background/resume, skip/disable and a user continuing immediately without interruption.
 Training use should establish whether this adds value beyond the timer's own display before selection.
 Platform reference: [pending iOS evaluation](reviews/ios-beta-distribution-evaluation.md).
+
+<a id="pi-018"></a>
+
+## PI-018 — Workout prescription context (prescribed rest + program notes)
+
+**Status: Selected; owner-inserted between [PI-007](#pi-007) Recovery and [PI-009](#pi-009) export, 2026-09-11.**
+Architecture [evaluation](reviews/workout-prescription-context-architecture-evaluation.md) and its
+[independent review](reviews/workout-prescription-context-architecture-review.md) are accepted
+(`APPROVED — READY FOR PI-018 IMPLEMENTATION`, five non-blocking LOW findings). Source: owner
+observation during real training — the workout card shows the scheme and RIR band, but the rest
+target and the instructions written in the program exercise editor are invisible exactly when they
+are needed.
+
+**Accepted scope.** Display this slot's prescribed rest on the workout card's existing prescription
+subtitle (`3 × 5 @ RIR 1-2 · Rest 2:30`), and its prescription notes as a labelled, read-only
+`Program note:` block, visually and structurally distinct from the editable session notes already on
+the card. Both are **frozen per prescription slot at workout start** (ADR-007 snapshot-on-use), so
+they survive offline start, reload/resume, sync and cross-device adoption, and a later program edit
+cannot change a running workout. Two slots of the same exercise in one template keep their own
+instructions.
+
+**Compatibility rules, binding.** `prescriptionNotes` is an **additive optional** key on the existing
+`v: 1` `PrescriptionSnapshot` — no migration, no snapshot-version bump, no new top-level sync payload
+key, no IndexedDB `DB_VERSION` bump. Existing snapshots are never rewritten and missing instructions
+are **never reconstructed** from current program data: a session already in flight across the deploy
+correctly shows rest but no note, and that asymmetry is the rule working, not a defect.
+
+**Explicit exclusions.** No rest timer, countdown or auto-start; no notifications or locked-screen
+alerts; no short-rest warning; no progression, prefill or recommendation change; no app-wide
+redesign; no History presentation; no editing prescription notes from inside the workout; no backfill.
+
+**Relationship to [PI-015](#pi-015)/[PI-016](#pi-016).** This displays PI-015's existing nullable
+`restSeconds` target and introduces **no competing prescribed rest field**, which is PI-015's own
+stated requirement. It does not select PI-015, does not amend or discharge [OD-05](architecture/open-decisions.md),
+and adds nothing PI-016 depends on. PI-015 and PI-016 remain unselected and design-gated.
+
+**Owner awareness before deploy (not a decision to make).** Every prescription note that already
+exists in the program becomes visible during execution on the next workout started after deploy;
+there is no per-note opt-out in this design. Any note written as private planning text rather than an
+execution cue should be edited or cleared in the program editor beforehand.
+
+Duplicate-slot support here is a property of the existing model (`exercise_prescriptions` is unique
+on `(template_id, position)` only) and is not a [PI-012](#pi-012) Set Groups deliverable; PI-012's
+scope, architecture and scheduling are unchanged by this entry.
 
 ## Deferred direction and operating rule
 

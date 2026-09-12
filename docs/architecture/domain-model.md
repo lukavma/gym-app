@@ -188,8 +188,12 @@ Computed by a pure domain function at Today/bundle build time, then **frozen int
 ```text
 PrescriptionSnapshot = { exerciseId, exerciseName, scheme, targetRir?, restSeconds?,
                          progression: {strategyId, strategyVersion, config, classification},
-                         appliedModifiers?: WeekModifiers, prefill: {loadKg?, reps?} }
+                         appliedModifiers?: WeekModifiers, prefill: {loadKg?, reps?},
+                         measurement?: {profile, loadBasis?},
+                         prescriptionNotes?: string|null }
 ```
+
+`measurement` (Athletic Measurement Profiles Release 2) and `prescriptionNotes` (PI-018) are **additive optional** keys on the same `v: 1` shape: a snapshot written before either release has no such key and parses unchanged, so neither bumped the version and neither has an upgrade function. `prescriptionNotes` is the slot's own `exercise_prescriptions.notes`, frozen at session start and read-only for the rest of the workout — deliberately *not* named `notes`, which is the separate, editable `session_exercises.notes`. An absent `prescriptionNotes` means "this session never froze one" and is **never** reconstructed from the current program definition.
 
 ---
 
