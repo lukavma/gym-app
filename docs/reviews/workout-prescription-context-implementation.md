@@ -880,6 +880,60 @@ hostname appears nowhere in the repo, so there is no URL to health-check without
 successful `Deploy to Azure App Service` step is the authoritative signal recorded here; first-hand
 confirmation comes with the device acceptance below.
 
+#### The follow-up docs commit, and a pre-existing flaky offline test
+
+This report's own §15 could only be written after the commit it describes, so it landed as a second,
+**documentation-only** commit: **`54d283d3f11bbf39a2366b995b869a4218dfe639`** (`54d283d`),
+`docs: record PI-018 release closeout evidence`, one file, pushed `7fb7c0b..54d283d`, exit 0.
+
+| Workflow | Run | Outcome |
+|---|---|---|
+| **Deploy to Azure** | — | **SKIPPED by workflow rules**, exactly as `deploy.yml`'s `paths-ignore` specifies: every file in that push matches `docs/**` / `**/*.md`. **Production therefore still runs `7fb7c0b`**, the feature commit, whose deploy succeeded in full. This is correct behaviour, not a failure. |
+| **CI** | [run #41, id 34661592671](https://github.com/lukavma/gym-app/actions/runs/34661592671) | **failure** — see the diagnosis below |
+
+**Diagnosed, not retried blindly, and no gate bypassed.** The failing job is
+`Deterministic offline/PWA Playwright suite (Phase 8)`, at the `Offline/PWA Playwright suite` step;
+the `Lint, boundaries, typecheck, tests, build` job **passed**. Job logs require authentication
+(`GET …/jobs/{id}/logs` → 403, and no token is available here), so the failure was characterised by
+re-running the same gate locally instead:
+
+| Run | Source | Result |
+|---|---|---|
+| CI #40, `7fb7c0b` | the feature commit | offline suite **passed** |
+| Deploy #35 nested quality, `7fb7c0b` | same | offline suite **passed** |
+| Local full suite during implementation (§6) | same | **156 passed**, including this spec |
+| **CI #41, `54d283d`** | **differs from `7fb7c0b` by one markdown file** | offline suite **FAILED** |
+| Local `pnpm test:e2e:offline`, attempt 1, clean disposable DB | same source | **FAILED** — `offline-bodyweight-recovery.spec.ts:137`, the `Offline — can't verify today's check-in yet` banner not appearing. **Both PI-018 tests passed** (33 of 34) |
+| Local pre-PI-018 offline list (my spec removed), clean DB | same source | **32 passed** |
+| Local `pnpm test:e2e:offline`, attempt 2, clean DB | same source | **34 passed** |
+
+**Conclusion: an intermittent, pre-existing flake in PI-007's offline recovery spec, not a PI-018
+regression.** Three independent reasons:
+
+1. `54d283d` differs from `7fb7c0b` by **one markdown file**. A documentation-only diff cannot change
+   test behaviour, so a suite that passes on one and fails on the other is non-deterministic by
+   construction.
+2. The failing assertion is in `offline-bodyweight-recovery.spec.ts` — the recovery check-in's
+   unknown-offline banner. PI-018 touches the prescription-snapshot schema, the rest formatter, the
+   today-bundle entry, the client bundle mirror, the freeze site and the workout card; none is on the
+   recovery path, and the same run passed both PI-018 tests.
+3. **The new spec cannot be the cause.** Playwright sorts spec files alphabetically (visible in the
+   run output: `offline-bodyweight-recovery` executes at positions 7–19, `workoutPrescriptionContext`
+   last, at 33–34), so `workoutPrescriptionContext.spec.ts` runs *after* the failing spec and cannot
+   pollute it. Removing it from the list did not make the failure reproduce, and keeping it in passed
+   on the next attempt.
+
+`docs/STATUS.md` already records this class for a prior release — catalog commit `57868e2` "succeeded
+on retry after an unrelated flaky offline test". Observed failure rate across the six runs above is
+2 of 6 on identical source.
+
+**Not done, deliberately:** the run was **not** re-triggered from here — `gh` is not installed and the
+API needs a token, and nothing was forced, skipped or worked around to get a green. **What the owner
+may want to do:** re-run CI #41 from the Actions UI, or simply let the next push re-run it. Either
+way it does not gate production, which is already serving `7fb7c0b`. Separately, the flake itself is
+worth a bounded PI-007 follow-up — it is now the second recorded occurrence of an unrelated offline
+test failing a release run.
+
 ### 15.6 Final finding dispositions
 
 | ID | Disposition | Closed by |
@@ -911,6 +965,9 @@ confirmation comes with the device acceptance below.
    editor's to write from evidence, not the implementer's. It does not yet record `7fb7c0b`.
 5. **The concurrent PI-012/PI-017 work remains uncommitted**, including the `docs/process/` directory
    the reports link to.
+6. **CI #41 on the docs commit is red from a pre-existing flaky offline test** (§15.5). Production is
+   unaffected. Re-run it from the Actions UI if a green badge on `main` matters, and consider a bounded
+   PI-007 follow-up for the flake — this is its second recorded occurrence.
 
 ---
 
