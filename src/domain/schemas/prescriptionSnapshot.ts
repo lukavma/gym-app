@@ -27,11 +27,22 @@ const prefillSchema = z.object({
 });
 export type Prefill = z.infer<typeof prefillSchema>;
 
-const snapshotProgressionSchema = z.object({
+const snapshotProgressionFieldsSchema = {
   strategyId: strategyIdSchema,
   strategyVersion: z.number().int().positive(),
   config: z.record(z.string(), z.unknown()),
   classification: z.enum(["heuristic", "user_defined"]),
+};
+
+const snapshotProgressionSchema = z.object({
+  ...snapshotProgressionFieldsSchema,
+  // set-groups-architecture-evaluation.md §5.3/manifest item 5 — additive
+  // optional, present only when the frozen scheme is `groups`: the
+  // per-group resolved progression, mirroring
+  // `registry.ts`'s `ResolvedProgression.groups`. A snapshot written before
+  // this release has no such key and must still parse (same additive
+  // precedent as `measurement`/`prescriptionNotes` below).
+  groups: z.record(z.string(), z.object(snapshotProgressionFieldsSchema)).optional(),
 });
 
 export const prescriptionSnapshotDataSchema = z.object({
@@ -82,6 +93,13 @@ export const prescriptionSnapshotDataSchema = z.object({
   // No `.trim()`: a transform here would rewrite historical values on read.
   // The write path already trims (`domain/prescriptions/schema.ts`).
   prescriptionNotes: z.string().max(2000).nullable().optional(),
+  // set-groups-architecture-evaluation.md §5.3/manifest item 5 — additive
+  // optional, present only when `scheme.type === "groups"`: one resolved
+  // {loadKg, reps} prefill per group key, built the same way the slot-level
+  // `prefill` below always has been. `prefill` itself keeps the FIRST
+  // group's values for a `groups` scheme, so every existing reader (History,
+  // the pre-Stage-A card) stays correct without change.
+  groupPrefills: z.record(z.string(), prefillSchema).optional(),
 });
 export type PrescriptionSnapshotData = z.infer<typeof prescriptionSnapshotDataSchema>;
 

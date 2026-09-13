@@ -35,6 +35,10 @@ export interface SetLogRowFields extends NumberedSet {
   durationS: number | null;
   loggedAt: string;
   notes: string | null;
+  // set-groups-architecture-evaluation.md §4.4 — carried through a renumber
+  // so a group's attribution survives a sibling set's deletion untouched
+  // (renumbering never touches keys).
+  groupKey?: string | null;
 }
 
 export interface SetLogOp {
@@ -73,12 +77,19 @@ export function buildSetDeletionOps<T extends SetLogRowFields>({
   // slot's actual frozen `measurement.profile` — never relies on this
   // default.
   profile = DEFAULT_MEASUREMENT_PROFILE,
+  // set-groups-architecture-evaluation.md §5.4/rev. 3 V-1 — same
+  // profile-scoped emission rule as `setLogFullRowOp`: `groupKey` is emitted
+  // for the renumber upserts ONLY when the slot is grouped. Defaults to
+  // `false` so every pre-existing caller/test keeps building the identical
+  // byte shape.
+  isGrouped = false,
   newOpId = newId,
 }: {
   sessionExerciseId: string;
   setId: string;
   sets: readonly T[];
   profile?: MeasurementProfile;
+  isGrouped?: boolean;
   newOpId?: () => string;
 }): SetDeletionOps<T> {
   const plan = planSetDeletion(sets, setId);
@@ -109,6 +120,7 @@ export function buildSetDeletionOps<T extends SetLogRowFields>({
         // forbidden keys omitted entirely. For `load_reps` this is exactly
         // {weightKg, reps, rir}, byte for byte.
         ...measuredFieldsForProfile(profile, set),
+        ...(isGrouped ? { groupKey: set.groupKey ?? null } : {}),
       }),
     });
   }

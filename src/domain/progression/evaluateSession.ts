@@ -7,6 +7,11 @@ import {
 import { evaluateLoadProgression } from "./loadProgression";
 import { evaluateRepProgression } from "./repProgression";
 import { modalWorkingLoad } from "./loadHelpers";
+import {
+  bridgeUngroupedHistoryEntry,
+  buildGroupEvaluationUnits,
+  stripGroupKey,
+} from "./groupEvaluation";
 import type {
   EvaluationBlockContext,
   EvaluationContext,
@@ -54,6 +59,10 @@ export interface EvaluatedRecommendation {
   classification: "heuristic" | "user_defined";
   config: Record<string, unknown>;
   draft: RecommendationDraft;
+  // set-groups-architecture-evaluation.md §5.3/manifest item 8 — the group
+  // this record belongs to, or `null` for an ungrouped slot (never omitted,
+  // so every caller can key results uniformly).
+  groupKey: string | null;
 }
 
 function evaluateStrategy(
@@ -67,11 +76,21 @@ function evaluateStrategy(
   return evaluateRepProgression(ctx, config as RepProgressionConfig);
 }
 
+// A `groups` scheme has no top-level `sets` field (setScheme.ts §4.2's
+// deliberate compile-error design); `evaluateSession`'s own dispatch never
+// calls this function for one (it branches to `evaluateGroupedExercise`
+// first), so this is a defensive fallback for a case that is also
+// structurally unreachable, not a meaningful value.
+function prescribedSetsOf(scheme: PrescriptionSnapshotData["scheme"]): number {
+  return scheme.type === "groups" ? 0 : scheme.sets;
+}
+
 function unsupportedSchemeDraft(
   input: SessionExerciseEvaluationInput,
   snapshot: PrescriptionSnapshotData,
 ): RecommendationDraft {
-  const { loadKg, mixed } = modalWorkingLoad(input.workSets);
+  const workSets = stripGroupKey(input.workSets);
+  const { loadKg, mixed } = modalWorkingLoad(workSets);
   return {
     action: "none",
     reasonCodes: ["UNSUPPORTED_SCHEME"],
@@ -80,12 +99,11 @@ function unsupportedSchemeDraft(
         scheme: snapshot.scheme,
         ...(snapshot.targetRir ? { targetRir: snapshot.targetRir } : {}),
       },
-      workSets: input.workSets,
+      workSets,
       derived: {
-        setsCompleted: input.workSets.length,
-        prescribedSets: snapshot.scheme.sets,
-        finalSetRir:
-          input.workSets.length > 0 ? input.workSets[input.workSets.length - 1]!.rir : null,
+        setsCompleted: workSets.length,
+        prescribedSets: prescribedSetsOf(snapshot.scheme),
+        finalSetRir: workSets.length > 0 ? workSets[workSets.length - 1]!.rir : null,
         workingLoadKg: loadKg,
         mixedLoads: mixed,
       },
@@ -93,6 +111,79 @@ function unsupportedSchemeDraft(
     },
     confidence: "low",
   };
+}
+
+// set-groups-architecture-evaluation.md §5.3/D-2 — independent per-group
+// progression: one evaluation, one persisted record, per group. Strategies
+// are NEVER modified (§5.4) — `buildGroupEvaluationUnits` does the
+// projection/windowing; this loop only resolves each group's effective
+// strategy/config (per-group override, else the slot default) and augments
+// the strategy's own output with the group-identifying `inputs.prescribed.group`
+// and `inputs.extraWorkSets` (§5.4/§5.5, rev. 3 V-1 — both omitted entirely
+// for an ungrouped record, which this function never touches).
+function evaluateGroupedExercise(
+  exercise: SessionExerciseEvaluationInput,
+  snapshot: PrescriptionSnapshotData,
+  input: SessionEvaluationInput,
+): EvaluatedRecommendation[] {
+  const scheme = snapshot.scheme;
+  if (scheme.type !== "groups") return [];
+  const units = buildGroupEvaluationUnits({
+    snapshot,
+    scheme,
+    workSets: exercise.workSets,
+    history: exercise.history,
+    block: input.block,
+    exercise: { id: exercise.exerciseId, loadStepKg: exercise.loadStepKg },
+    sessionId: input.sessionId,
+    performedAt: input.startedAt,
+    isDeload: input.isDeload,
+  });
+
+  const results: EvaluatedRecommendation[] = [];
+  for (const { group, ctx, partition } of units) {
+    const override = snapshot.progression.groups?.[group.key];
+    const strategyId = override?.strategyId ?? snapshot.progression.strategyId;
+    // §6.3 rule L-1 (Stage B) / a plain per-group choice in Stage A — a
+    // group whose effective strategy is `manual` progresses independently of
+    // its siblings: no draft, no record, exactly like an ungrouped manual
+    // slot (D-2 — "independent groups receive independent progression").
+    if (strategyId === "manual") continue;
+    // Stage B — defensive, structurally unreachable: `checkPrescriptionCompatibility`
+    // rejects any linked group whose effective strategy isn't already
+    // `manual` (the branch above), so this can only ever fire against a
+    // snapshot that predates that gate or bypassed it. A linked group must
+    // never produce a competing recommendation regardless.
+    if (group.link) continue;
+
+    const rawConfig = override?.config ?? snapshot.progression.config;
+    const parsed = STRATEGY_CONFIG_SCHEMAS[strategyId].safeParse(rawConfig);
+    if (!parsed.success) continue;
+    const config = parsed.data as Record<string, unknown>;
+
+    const draft = evaluateStrategy(strategyId, ctx, config);
+    draft.inputs.prescribed.group = {
+      key: group.key,
+      label: group.label,
+      setsMin: group.sets.min,
+      setsMax: group.sets.max,
+    };
+    draft.inputs.extraWorkSets = partition.extra;
+
+    if (draft.action === "none" && draft.reasonCodes.length === 0) continue;
+
+    results.push({
+      sessionExerciseId: exercise.sessionExerciseId,
+      exerciseId: exercise.exerciseId,
+      strategyId,
+      strategyVersion: STRATEGY_VERSIONS[strategyId],
+      classification: override?.classification ?? snapshot.progression.classification,
+      config,
+      draft,
+      groupKey: group.key,
+    });
+  }
+  return results;
 }
 
 export function evaluateSession(input: SessionEvaluationInput): EvaluatedRecommendation[] {
@@ -107,18 +198,26 @@ export function evaluateSession(input: SessionEvaluationInput): EvaluatedRecomme
     // manual (§8).
     if (exercise.skipped || !exercise.prescription) continue;
     const snapshot = exercise.prescription;
-    const strategyId = snapshot.progression.strategyId;
-    if (strategyId === "manual") continue;
 
     // §11.2/§11.3 site #1, NC-9 — progression strategies are load_reps-only
     // in v1 (N-13: reps-profile rep-progression is deferred); skip BEFORE
     // even checking scheme compatibility, with the same silent-skip
-    // treatment `manual` (above) and an unparseable config (below) already
-    // get — no draft, no row, no reason code. This is independent of
-    // `unsupportedSchemeDraft` below, which stays reserved for an actual
-    // scheme/strategy mismatch on a load_reps exercise (X-19).
+    // treatment an unparseable config (below) already gets — no draft, no
+    // row, no reason code.
     const profile = snapshot.measurement?.profile ?? DEFAULT_MEASUREMENT_PROFILE;
     if (profile !== DEFAULT_MEASUREMENT_PROFILE) continue;
+
+    // set-groups-architecture-evaluation.md §5.3 — a `groups` scheme is
+    // evaluated per group, independent of the slot-level `strategyId` (which
+    // is only the DEFAULT for groups that don't override it — a slot default
+    // of `manual` with an overriding group must still progress that group).
+    if (snapshot.scheme.type === "groups") {
+      results.push(...evaluateGroupedExercise(exercise, snapshot, input));
+      continue;
+    }
+
+    const strategyId = snapshot.progression.strategyId;
+    if (strategyId === "manual") continue;
 
     let draft: RecommendationDraft;
     let config: Record<string, unknown>;
@@ -145,9 +244,23 @@ export function evaluateSession(input: SessionEvaluationInput): EvaluatedRecomme
             scheme: snapshot.scheme,
             ...(snapshot.targetRir ? { targetRir: snapshot.targetRir } : {}),
           },
-          workSets: exercise.workSets,
+          // set-groups-architecture-evaluation.md §5.4 discipline — an
+          // ungrouped slot's persisted `inputs.workSets` must stay
+          // byte-identical to before Stage A (rev. 3 V-1/NC-9): callers may
+          // uniformly tag every PerformedSet with `groupKey` (server/client
+          // work-set mapping is shared with the grouped path), so this
+          // branch strips it back off before it can reach a strategy's own
+          // `inputs.workSets = sets` passthrough.
+          workSets: stripGroupKey(exercise.workSets),
         },
-        history: exercise.history,
+        // set-groups-architecture-evaluation.md §5.6 reverse bridge — a
+        // historical entry that was itself a `groups` scheme contributes
+        // only its OWN first group's sets and PROJECTED scheme (resolved
+        // from that entry's own frozen snapshot), never every group's sets
+        // pooled together; an ordinarily-ungrouped entry is unaffected.
+        // Symmetric to the forward bridge `buildGroupHistory` applies for a
+        // currently-grouped slot.
+        history: exercise.history.map(bridgeUngroupedHistoryEntry),
         block: input.block,
         exercise: { id: exercise.exerciseId, loadStepKg: exercise.loadStepKg },
       };
@@ -168,6 +281,7 @@ export function evaluateSession(input: SessionEvaluationInput): EvaluatedRecomme
       classification: snapshot.progression.classification,
       config,
       draft,
+      groupKey: null,
     });
   }
   return results;

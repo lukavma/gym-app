@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { formatScheme } from "@/domain/schemes/setScheme";
+import { formatScheme, isGroupsScheme, type GroupsScheme } from "@/domain/schemes/setScheme";
 import { planSetDeletion } from "@/domain/sync/setNumbering";
 import { formatSetLine, minutesSecondsLabel } from "@/domain/measurement/format";
 import {
@@ -159,7 +159,16 @@ export function HistoryDetail({ id }: { id: string }) {
               <p className="text-base font-medium text-slate-50">{exercise.exerciseName}</p>
               {exercise.prescription && (
                 <p className="text-xs text-slate-400">
-                  {formatScheme(exercise.prescription.snapshot.scheme)}
+                  {/* M-6 — a grouped scheme's own per-group RIR band is
+                      embedded inline by `formatScheme` itself; this is a
+                      pure addition for the `groups` case only — the other
+                      four scheme types never displayed a slot-level RIR
+                      suffix here at all, and still don't (the second
+                      argument is only consumed by the `groups` branch). */}
+                  {formatScheme(
+                    exercise.prescription.snapshot.scheme,
+                    exercise.prescription.snapshot.targetRir,
+                  )}
                 </p>
               )}
               {exercise.prescription?.snapshot.appliedModifiers && (
@@ -168,66 +177,75 @@ export function HistoryDetail({ id }: { id: string }) {
                 </p>
               )}
               {exercise.skipped && <p className="text-xs text-amber-400">Skipped</p>}
-              <ul className="mt-2 flex flex-col gap-1">
-                {exercise.sets.map((set) => (
-                  <HistorySetRow
-                    key={set.id}
-                    set={set}
-                    profile={exercise.measurement.profile}
-                    loadBasis={exercise.measurement.loadBasis}
-                    syncError={syncErrors[set.id]}
-                    onSave={(patch) => {
-                      // L-8 remediation — `set` here is this render's
-                      // pre-edit row, so it's exactly what a failed
-                      // correction must revert back to. `updateLocalSet`
-                      // (the optimistic apply) and the revert both go
-                      // through `submitHistorySetCorrection`
-                      // (src/ui/history/correctionSubmit.ts), which awaits
-                      // `correctHistorySet` and reverts + surfaces an error
-                      // if it rejects (O-13's schema `.parse()` made that
-                      // reachable) instead of leaving an unhandled
-                      // rejection alongside a phantom edit.
-                      const previous: HistorySetCorrectionPatch = {
-                        weightKg: set.weightKg,
-                        reps: set.reps,
-                        rir: set.rir,
-                        distanceM: set.distanceM,
-                        durationS: set.durationS,
-                        isWarmup: set.isWarmup,
-                      };
-                      clearSyncError(set.id);
-                      void submitHistorySetCorrection(set.id, exercise.id, patch, {
-                        applyOptimistic: () => updateLocalSet(exercise.id, set.id, patch),
-                        revertOptimistic: () => updateLocalSet(exercise.id, set.id, previous),
-                        onError: (message) => setSyncError(set.id, message),
-                      });
-                    }}
-                    onDelete={() => {
-                      // `exercise.sets` here is the pre-deletion list, which
-                      // is what deleteHistorySet needs to plan renumbering,
-                      // and (L-8) exactly what a failed delete must restore.
-                      // `exercise.measurement.profile` (O-13, §12.3) decides
-                      // which keys the renumber upserts carry.
-                      const previousSets = exercise.sets;
-                      clearSyncError(set.id);
-                      void submitHistorySetDeletion(
-                        exercise.id,
-                        set.id,
-                        exercise.sets,
-                        exercise.measurement.profile,
-                        {
-                          applyOptimistic: () => removeLocalSet(exercise.id, set.id),
-                          revertOptimistic: () => restoreLocalSets(exercise.id, previousSets),
-                          onError: (message) => setSyncError(set.id, message),
-                        },
-                      );
-                    }}
-                  />
-                ))}
-                {exercise.sets.length === 0 && (
-                  <li className="text-xs text-slate-500">No sets logged.</li>
-                )}
-              </ul>
+              {(() => {
+                const scheme = exercise.prescription?.snapshot.scheme;
+                const groupsScheme = scheme && isGroupsScheme(scheme) ? scheme : null;
+                return (
+                  <ul className="mt-2 flex flex-col gap-1">
+                    {exercise.sets.map((set) => (
+                      <HistorySetRow
+                        key={set.id}
+                        set={set}
+                        profile={exercise.measurement.profile}
+                        loadBasis={exercise.measurement.loadBasis}
+                        groupsScheme={groupsScheme}
+                        syncError={syncErrors[set.id]}
+                        onSave={(patch) => {
+                          // L-8 remediation — `set` here is this render's
+                          // pre-edit row, so it's exactly what a failed
+                          // correction must revert back to. `updateLocalSet`
+                          // (the optimistic apply) and the revert both go
+                          // through `submitHistorySetCorrection`
+                          // (src/ui/history/correctionSubmit.ts), which awaits
+                          // `correctHistorySet` and reverts + surfaces an error
+                          // if it rejects (O-13's schema `.parse()` made that
+                          // reachable) instead of leaving an unhandled
+                          // rejection alongside a phantom edit.
+                          const previous: HistorySetCorrectionPatch = {
+                            weightKg: set.weightKg,
+                            reps: set.reps,
+                            rir: set.rir,
+                            distanceM: set.distanceM,
+                            durationS: set.durationS,
+                            isWarmup: set.isWarmup,
+                            groupKey: set.groupKey,
+                          };
+                          clearSyncError(set.id);
+                          void submitHistorySetCorrection(set.id, exercise.id, patch, {
+                            applyOptimistic: () => updateLocalSet(exercise.id, set.id, patch),
+                            revertOptimistic: () => updateLocalSet(exercise.id, set.id, previous),
+                            onError: (message) => setSyncError(set.id, message),
+                          });
+                        }}
+                        onDelete={() => {
+                          // `exercise.sets` here is the pre-deletion list, which
+                          // is what deleteHistorySet needs to plan renumbering,
+                          // and (L-8) exactly what a failed delete must restore.
+                          // `exercise.measurement.profile` (O-13, §12.3) decides
+                          // which keys the renumber upserts carry.
+                          const previousSets = exercise.sets;
+                          clearSyncError(set.id);
+                          void submitHistorySetDeletion(
+                            exercise.id,
+                            set.id,
+                            exercise.sets,
+                            exercise.measurement.profile,
+                            {
+                              applyOptimistic: () => removeLocalSet(exercise.id, set.id),
+                              revertOptimistic: () => restoreLocalSets(exercise.id, previousSets),
+                              onError: (message) => setSyncError(set.id, message),
+                            },
+                            groupsScheme !== null,
+                          );
+                        }}
+                      />
+                    ))}
+                    {exercise.sets.length === 0 && (
+                      <li className="text-xs text-slate-500">No sets logged.</li>
+                    )}
+                  </ul>
+                );
+              })()}
             </li>
           ))}
       </ul>
@@ -242,6 +260,7 @@ export function HistorySetRow({
   set,
   profile,
   loadBasis,
+  groupsScheme = null,
   onSave,
   onDelete,
   syncError,
@@ -249,6 +268,10 @@ export function HistorySetRow({
   set: HistorySetDetail;
   profile: MeasurementProfile;
   loadBasis: LoadBasis | null;
+  // set-groups-architecture-evaluation.md §7/§11.3 — the session's frozen
+  // scheme when it is `groups`, so this row can render the label and offer
+  // the correction chip; `null` for an ungrouped session.
+  groupsScheme?: GroupsScheme | null;
   onSave: (patch: HistorySetCorrectionPatch) => void;
   onDelete: () => void;
   // L-8 remediation — set once a correction or deletion for THIS row was
@@ -271,7 +294,9 @@ export function HistorySetRow({
   // fabricated or defaulted while the athlete is only touching the profile's
   // own fields).
   const [isWarmup, setIsWarmup] = useState(set.isWarmup);
+  const [groupKey, setGroupKey] = useState<string | null>(set.groupKey);
   const [error, setError] = useState<string | null>(null);
+  const groupLabel = groupsScheme?.groups.find((g) => g.key === set.groupKey)?.label ?? null;
 
   const parsedDuration = parseDecimalInput(duration);
   const durationMmss = parsedDuration !== null ? minutesSecondsLabel(parsedDuration) : null;
@@ -393,6 +418,10 @@ export function HistorySetRow({
                 distanceM: distanceMValue,
                 durationS: durationSValue,
                 isWarmup,
+                // L-3 (independent review) — §4.4 rule 1: a warm-up set
+                // carries no group, including through a post-session
+                // History correction.
+                ...(groupsScheme ? { groupKey: isWarmup ? null : groupKey } : {}),
               });
               setEditing(false);
             }}
@@ -426,6 +455,27 @@ export function HistorySetRow({
           />
           Warm-up set
         </label>
+        {/* set-groups-architecture-evaluation.md §11.3 — "the set row's edit
+            form gains the same chip; moving a set between groups is an
+            evaluation-relevant edit." An empty option clears attribution
+            (§4.4 rule 3's "unattributed" work set). */}
+        {groupsScheme && (
+          <label className="flex flex-col gap-1 text-xs text-slate-400">
+            Group
+            <select
+              value={groupKey ?? ""}
+              onChange={(e) => setGroupKey(e.target.value === "" ? null : e.target.value)}
+              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
+            >
+              <option value="">Unattributed</option>
+              {groupsScheme.groups.map((g) => (
+                <option key={g.key} value={g.key}>
+                  {g.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {error && <p className="text-xs text-red-400">{error}</p>}
       </li>
     );
@@ -436,6 +486,7 @@ export function HistorySetRow({
       <div className="flex items-center justify-between text-sm text-slate-300">
         <span>
           {set.isWarmup ? <span className="text-slate-500">W · </span> : null}
+          {!set.isWarmup && groupLabel && <span className="text-slate-500">{groupLabel} · </span>}
           {formatSetLine(profile, loadBasis, set)}
         </span>
         <span className="flex gap-2">

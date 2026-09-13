@@ -109,6 +109,41 @@ export async function readOutboxStatusCounts(
   }
 }
 
+// V-3 (independent verification) — the Sync issues screen already shows a
+// dead-lettered op's `entity` and `deadReason` to a real user
+// (dead-letter.spec.ts's "Inspect" assertions); this reads the same two
+// fields directly from IndexedDB so a FAILING `waitForOutboxDrained` can put
+// them in the test's own failure output instead of requiring a fresh,
+// separately-instrumented repro. No payload/credential fields are read —
+// only the entity name and the short, enum-like rejection reason.
+export async function readOutboxDeadLetters(
+  page: Page,
+): Promise<{ entity: string; reason: string | undefined }[]> {
+  return page.evaluate(async () => {
+    const req = indexedDB.open("gym-app");
+    const db: IDBDatabase = await new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error as unknown as Error);
+    });
+    try {
+      const tx = db.transaction("outbox", "readonly");
+      const all: { status: string; entity: string; deadReason?: string }[] = await new Promise(
+        (resolve, reject) => {
+          const r = tx.objectStore("outbox").getAll();
+          r.onsuccess = () =>
+            resolve(r.result as { status: string; entity: string; deadReason?: string }[]);
+          r.onerror = () => reject(r.error as unknown as Error);
+        },
+      );
+      return all
+        .filter((op) => op.status === "dead")
+        .map((op) => ({ entity: op.entity, reason: op.deadReason }));
+    } finally {
+      db.close();
+    }
+  });
+}
+
 // HIGH-2 — polls the client's IndexedDB outbox directly (pwa-offline-
 // strategy.md §3/§5) via `expect.poll`, not `page.waitForFunction` with an
 // async callback: `waitForFunction`'s predicate must itself return the
@@ -119,10 +154,31 @@ export async function readOutboxStatusCounts(
 // both "pending" count and "dead" count to be zero — a dead-lettered op is
 // not a drained op, it's silent data loss, and this must fail loudly on it
 // rather than treat it as a successful sync.
+//
+// V-3 (independent verification) — the assertion itself is unchanged
+// (still the same `expect.poll(...).toEqual({pending:0, dead:0})`, with the
+// same timeout, same retries); on FAILURE only, before re-throwing, this
+// now reads back whichever ops actually dead-lettered and folds their
+// entity/reason into the thrown error's own message, so the next occurrence
+// of a Set-Groups-offline-style dead letter (docs/reviews/set-groups-stage-
+// a-implementation.md §12.3.3) is diagnosable from the test's own failure
+// output instead of needing to be re-litigated from scratch.
 export async function waitForOutboxDrained(page: Page, timeoutMs = 20_000): Promise<void> {
-  await expect
-    .poll(() => readOutboxStatusCounts(page), { timeout: timeoutMs })
-    .toEqual({ pending: 0, dead: 0 });
+  try {
+    await expect
+      .poll(() => readOutboxStatusCounts(page), { timeout: timeoutMs })
+      .toEqual({ pending: 0, dead: 0 });
+  } catch (err) {
+    const deadLetters = await readOutboxDeadLetters(page).catch(() => []);
+    const original = err instanceof Error ? err.message : String(err);
+    if (deadLetters.length === 0) throw err;
+    const detail = deadLetters
+      .map((d) => `${d.entity}: ${d.reason ?? "(no reason recorded)"}`)
+      .join("; ");
+    throw new Error(
+      `waitForOutboxDrained: ${deadLetters.length} dead-lettered op(s) — ${detail}\n\nOriginal failure:\n${original}`,
+    );
+  }
 }
 
 // offline-sync.spec.ts needs a real, SW-served offline reload, which only

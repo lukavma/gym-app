@@ -60,10 +60,11 @@ export async function submitHistorySetDeletion(
   sets: readonly SetLogRowFields[],
   profile: MeasurementProfile,
   callbacks: HistoryEditCallbacks,
+  isGrouped = false,
 ): Promise<void> {
   callbacks.applyOptimistic();
   try {
-    await deleteHistorySet(sessionExerciseId, setId, sets, profile);
+    await deleteHistorySet(sessionExerciseId, setId, sets, profile, isGrouped);
   } catch {
     callbacks.revertOptimistic();
     callbacks.onError(DELETION_FAILED_MESSAGE);

@@ -13,15 +13,20 @@ import {
   wrapPrescriptionSnapshot,
   STRATEGY_VERSIONS,
   type PrescriptionSnapshot,
+  type PrescriptionSnapshotData,
 } from "@/domain/schemas/prescriptionSnapshot";
 import { buildSetDeletionOps } from "@/domain/sync/setDeletionOps";
 import { resolveImplicitDecision } from "@/domain/progression/implicitDecision";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
-import { applyInSessionDecisionToPrefill } from "@/domain/progression/evaluationTarget";
+import {
+  applyInSessionDecisionToPrefill,
+  applyInSessionDecisionsToGroupPrefills,
+} from "@/domain/progression/evaluationTarget";
 import {
   evaluateSession,
   type SessionExerciseEvaluationInput,
 } from "@/domain/progression/evaluateSession";
+import { hasEvaluableStrategy } from "@/domain/progression/groupEvaluation";
 import type {
   PerformedExercise,
   PerformedSet,
@@ -44,6 +49,7 @@ import type {
   ActiveSessionDto,
   ActiveSessionExerciseDto,
   ActiveSessionSetDto,
+  RecommendationDto,
   TodayBundleExerciseEntryDto,
   TodayWarmupRoutineDto,
 } from "./types";
@@ -100,6 +106,9 @@ function normalizeActiveSessionSet(set: ActiveSessionSetDto): ActiveSessionSetDt
     ...set,
     distanceM: set.distanceM ?? null,
     durationS: set.durationS ?? null,
+    // set-groups-architecture-evaluation.md §8 IndexedDB row — same
+    // "sanitise on read" precedent as distanceM/durationS above.
+    groupKey: set.groupKey ?? null,
   };
 }
 
@@ -112,6 +121,13 @@ function normalizeActiveSessionExercise(
       profile: DEFAULT_MEASUREMENT_PROFILE,
       loadBasis: DEFAULT_LOAD_BASIS_FOR_LOAD_PROFILE,
     },
+    // set-groups-architecture-evaluation.md §4.5's unknown-key defence,
+    // applied on read: a stale cached aggregate's per-group recommendation
+    // whose key no longer exists in the (possibly since-edited) template is
+    // harmless to keep around locally — the card only ever looks one up by
+    // the keys the CURRENT snapshot's scheme actually has — but normalising
+    // an absent array to `[]` keeps every reader from re-deriving `?? []`.
+    recommendations: exercise.recommendations ?? [],
     sets: exercise.sets.map(normalizeActiveSessionSet),
   };
 }
@@ -195,9 +211,28 @@ function buildSnapshotFromBundleEntry(entry: TodayBundleExerciseEntryDto): Presc
       strategyVersion: STRATEGY_VERSIONS[entry.progression.strategyId],
       config: entry.progression.config,
       classification: entry.progression.classification,
+      // set-groups-architecture-evaluation.md §5.3 — mirrors the per-group
+      // resolved progression verbatim; absent on an ungrouped bundle entry
+      // (and on any bundle cached before this release).
+      ...(entry.progression.groups
+        ? {
+            groups: Object.fromEntries(
+              Object.entries(entry.progression.groups).map(([key, rp]) => [
+                key,
+                {
+                  strategyId: rp.strategyId,
+                  strategyVersion: STRATEGY_VERSIONS[rp.strategyId],
+                  config: rp.config,
+                  classification: rp.classification,
+                },
+              ]),
+            ),
+          }
+        : {}),
     },
     appliedModifiers: entry.appliedModifiers,
     prefill: entry.prefill,
+    ...(entry.groupPrefills ? { groupPrefills: entry.groupPrefills } : {}),
     // workout-prescription-context-architecture-evaluation.md §7 C-2/C-3 —
     // the single freeze site for the program note. `?? null` is load-bearing:
     // a bundle served from the SW cache or `bundleCache` after deploy has no
@@ -296,10 +331,19 @@ function recommendationDecisionOp(recommendationId: string, decision: DecisionFi
 // setLog emitters can never disagree). For `load_reps` this reduces to
 // exactly today's nine keys, byte for byte (NC-1). Exported for direct unit
 // testing — see tests/unit/sync/setLogEmission.test.ts.
+// set-groups-architecture-evaluation.md §5.4/rev. 3 V-1 — `groupKey` is
+// emitted ONLY for a grouped slot, exactly like O-13's profile-scoped
+// pattern for the measured fields: an ungrouped slot's op omits the key
+// entirely (never `null`), keeping it byte-identical to before Stage A
+// (A-10/NC-9). `isGrouped` is the caller's own knowledge of the slot's
+// FROZEN scheme shape, not derived from `set.groupKey` (which would
+// conflate "ungrouped" with "grouped but unattributed", §4.4 rule 3 — both
+// are `null` on the set itself).
 export function setLogFullRowOp(
   sessionExerciseId: string,
   set: ActiveSessionSetDto,
   profile: MeasurementProfile,
+  isGrouped: boolean,
 ) {
   return {
     opId: newId(),
@@ -313,8 +357,13 @@ export function setLogFullRowOp(
       loggedAt: set.loggedAt,
       notes: set.notes,
       ...measuredFieldsForProfile(profile, set),
+      ...(isGrouped ? { groupKey: set.groupKey ?? null } : {}),
     }),
   };
+}
+
+function isGroupedExercise(exercise: ActiveSessionExerciseDto): boolean {
+  return exercise.prescription?.snapshot.scheme.type === "groups";
 }
 
 export interface StartSessionInput {
@@ -360,6 +409,11 @@ export function startSession(input: StartSessionInput): Promise<ActiveSessionDto
       // recommendationForDeload is the defensive backstop that keeps a deload
       // session decision-free regardless of what the bundle entry claims.
       recommendation: recommendationForDeload(input.isDeload, entry.pendingRecommendation),
+      // set-groups-architecture-evaluation.md §5.3 — every group's pending
+      // recommendation rides into the session verbatim, same rule as the
+      // ungrouped `recommendation` above; empty on an ungrouped bundle
+      // entry or one cached before this release.
+      recommendations: input.isDeload ? [] : (entry.pendingRecommendations ?? []),
       // Frozen exactly once, here — never re-derived live from the current
       // exercise row afterward (ADR-007's snapshot-on-use discipline,
       // applied to this field the same way as `prescription`). `entry`'s
@@ -556,18 +610,25 @@ export interface LogSetInput {
   durationS?: number | null;
   isWarmup?: boolean;
   notes?: string | null;
+  // set-groups-architecture-evaluation.md §4.4/§11.4 — the group selected on
+  // the card at the moment of Log. The card always supplies one for a
+  // grouped slot; ignored (forced to `null`) for a warm-up set (rule 1) and
+  // for an ungrouped slot.
+  groupKey?: string | null;
 }
 
 export function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
   return serialize(async () => {
     const session = await requireLocalSession();
     const exercise = findExercise(session, input.sessionExerciseId);
+    const grouped = isGroupedExercise(exercise);
+    const isWarmupValue = input.isWarmup ?? false;
     const setId = newId();
     const loggedAt = new Date().toISOString();
     const set: ActiveSessionSetDto = {
       id: setId,
       setNumber: nextSetNumber(exercise),
-      isWarmup: input.isWarmup ?? false,
+      isWarmup: isWarmupValue,
       weightKg: input.weightKg,
       reps: input.reps,
       rir: input.rir,
@@ -581,10 +642,13 @@ export function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
       durationS: input.durationS ?? null,
       loggedAt,
       notes: input.notes ?? null,
+      groupKey: grouped && !isWarmupValue ? (input.groupKey ?? null) : null,
     };
     exercise.sets.push(set);
 
-    const ops: OutboxOpInput[] = [setLogFullRowOp(exercise.id, set, exercise.measurement.profile)];
+    const ops: OutboxOpInput[] = [
+      setLogFullRowOp(exercise.id, set, exercise.measurement.profile, grouped),
+    ];
 
     // progression-engine.md §7 — the implicit decision: the FIRST work set
     // resolves a still-pending recommendation. Committed in the same IndexedDB
@@ -594,36 +658,71 @@ export function logSet(input: LogSetInput): Promise<ActiveSessionDto> {
     // H-1 remediation — gated through recommendationForDeload so a deload
     // session can never enqueue an implicit decision, even a resumed session
     // hydrated before this fix that still carries `exercise.recommendation`.
-    const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
+    //
     // `input.weightKg !== null` — a type-safety backstop, not a live branch:
-    // `exercise.recommendation` is only ever populated server-side for a
-    // `load_reps` slot (evaluateSession.ts's own profile gate, NC-9), whose
-    // card always supplies a real weight, so this narrows `input.weightKg`
-    // from §15.3's widened `number | null` back to the `number`
-    // `resolveImplicitDecision` (unmodified, load_reps-only) still requires,
-    // without touching that function's own signature.
-    if (!set.isWarmup && input.weightKg !== null && rec && rec.decision.status === "pending") {
-      const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
-      if (isFirstWorkSet) {
-        const implicit = resolveImplicitDecision(
-          { action: rec.action, target: rec.target },
-          { weightKg: input.weightKg },
-          // Engine targets are already rounded to loadStepKg; 0 degrades the
-          // comparison to exact-value equality, which is then still correct.
-          exercise.loadStepKg ?? 0,
-        );
-        if (implicit) {
-          const decision: DecisionFields = {
-            status: implicit.status,
-            chosen: implicit.chosen,
-            decidedAt: loggedAt,
-            source: implicit.source,
-          };
-          exercise.recommendation = {
-            ...rec,
-            decision: { ...decision },
-          };
-          ops.push(recommendationDecisionOp(rec.id, decision));
+    // a recommendation is only ever populated server-side for a `load_reps`
+    // slot (evaluateSession.ts's own profile gate, NC-9), whose card always
+    // supplies a real weight, so this narrows `input.weightKg` from §15.3's
+    // widened `number | null` back to the `number` `resolveImplicitDecision`
+    // (unmodified, load_reps-only) still requires, without touching that
+    // function's own signature.
+    if (grouped) {
+      // set-groups-architecture-evaluation.md §5.3 A-9 — "first `g7k2` work
+      // set decides only `g7k2`'s record": per-key implicit decision, never
+      // touching a sibling group's pending record.
+      if (!set.isWarmup && input.weightKg !== null && set.groupKey) {
+        const recs = exercise.recommendations ?? [];
+        const idx = recs.findIndex((r) => r.groupKey === set.groupKey);
+        const rec = idx >= 0 ? recommendationForDeload(session.isDeload, recs[idx]!) : null;
+        if (rec && rec.decision.status === "pending") {
+          const isFirstWorkSetOfGroup =
+            exercise.sets.filter((s) => !s.isWarmup && s.groupKey === set.groupKey).length === 1;
+          if (isFirstWorkSetOfGroup) {
+            const implicit = resolveImplicitDecision(
+              { action: rec.action, target: rec.target },
+              { weightKg: input.weightKg },
+              exercise.loadStepKg ?? 0,
+            );
+            if (implicit) {
+              const decision: DecisionFields = {
+                status: implicit.status,
+                chosen: implicit.chosen,
+                decidedAt: loggedAt,
+                source: implicit.source,
+              };
+              const next = [...recs];
+              next[idx] = { ...rec, decision: { ...decision } };
+              exercise.recommendations = next;
+              ops.push(recommendationDecisionOp(rec.id, decision));
+            }
+          }
+        }
+      }
+    } else {
+      const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
+      if (!set.isWarmup && input.weightKg !== null && rec && rec.decision.status === "pending") {
+        const isFirstWorkSet = exercise.sets.filter((s) => !s.isWarmup).length === 1;
+        if (isFirstWorkSet) {
+          const implicit = resolveImplicitDecision(
+            { action: rec.action, target: rec.target },
+            { weightKg: input.weightKg },
+            // Engine targets are already rounded to loadStepKg; 0 degrades the
+            // comparison to exact-value equality, which is then still correct.
+            exercise.loadStepKg ?? 0,
+          );
+          if (implicit) {
+            const decision: DecisionFields = {
+              status: implicit.status,
+              chosen: implicit.chosen,
+              decidedAt: loggedAt,
+              source: implicit.source,
+            };
+            exercise.recommendation = {
+              ...rec,
+              decision: { ...decision },
+            };
+            ops.push(recommendationDecisionOp(rec.id, decision));
+          }
         }
       }
     }
@@ -643,18 +742,34 @@ export type ExplicitDecisionInput =
 // Custom (modify) from the recommendation card. One-time: only a pending
 // recommendation can be decided; the local state flips immediately and the
 // decision op rides the same outbox path as every other execution fact.
+//
+// set-groups-architecture-evaluation.md §5.3 — `groupKey` selects WHICH
+// group's card is being decided on a grouped slot; defaults to `null`
+// (the ungrouped case), so every existing call site keeps working
+// unchanged.
 export function decideRecommendation(
   sessionExerciseId: string,
   input: ExplicitDecisionInput,
+  groupKey: string | null = null,
 ): Promise<ActiveSessionDto> {
   return serialize(async () => {
     const session = await requireLocalSession();
     const exercise = findExercise(session, sessionExerciseId);
     // H-1 remediation — a deload session has nothing to decide, even if a
-    // stale pre-fix local session still carries `exercise.recommendation`
-    // (the RecommendationCard is never rendered for one either — see
+    // stale pre-fix local session still carries a recommendation (the
+    // RecommendationCard is never rendered for one either — see
     // ExerciseCard.tsx — so this is a defensive backstop, not the primary gate).
-    const rec = recommendationForDeload(session.isDeload, exercise.recommendation);
+    let rec: RecommendationDto | null;
+    let groupIndex = -1;
+    let groupRecs: RecommendationDto[] = [];
+    if (groupKey !== null) {
+      groupRecs = exercise.recommendations ?? [];
+      groupIndex = groupRecs.findIndex((r) => r.groupKey === groupKey);
+      rec =
+        groupIndex >= 0 ? recommendationForDeload(session.isDeload, groupRecs[groupIndex]!) : null;
+    } else {
+      rec = recommendationForDeload(session.isDeload, exercise.recommendation);
+    }
     if (!rec || rec.decision.status !== "pending") {
       throw new Error("No pending recommendation to decide");
     }
@@ -673,7 +788,14 @@ export function decideRecommendation(
       decidedAt: new Date().toISOString(),
       source: "explicit",
     };
-    exercise.recommendation = { ...rec, decision: { ...decision } };
+    const decided: RecommendationDto = { ...rec, decision: { ...decision } };
+    if (groupIndex >= 0) {
+      const next = [...groupRecs];
+      next[groupIndex] = decided;
+      exercise.recommendations = next;
+    } else {
+      exercise.recommendation = decided;
+    }
 
     await commitSessionMutation({
       session,
@@ -687,10 +809,13 @@ export function decideRecommendation(
 // §15.3 — widened to the two new dimensions so a non-`load_reps` card's
 // edit form can patch them too; `Partial` already made every existing key
 // optional, so this is additive for every pre-Release-2 caller.
+// set-groups-architecture-evaluation.md §4.4/§11.3 — `groupKey` additionally
+// widened here so the set row's edit form and the History correction chip
+// can change a set's group attribution (an evaluation-relevant edit).
 export type EditSetPatch = Partial<
   Pick<
     ActiveSessionSetDto,
-    "weightKg" | "reps" | "rir" | "distanceM" | "durationS" | "isWarmup" | "notes"
+    "weightKg" | "reps" | "rir" | "distanceM" | "durationS" | "isWarmup" | "notes" | "groupKey"
   >
 >;
 
@@ -714,7 +839,14 @@ export function editSet(
 
     await commitSessionMutation({
       session,
-      ops: [setLogFullRowOp(exercise.id, set, exercise.measurement.profile)],
+      ops: [
+        setLogFullRowOp(
+          exercise.id,
+          set,
+          exercise.measurement.profile,
+          isGroupedExercise(exercise),
+        ),
+      ],
     });
     void flushOutbox();
     return session;
@@ -736,6 +868,7 @@ export function deleteSet(sessionExerciseId: string, setId: string): Promise<Act
       setId,
       sets: exercise.sets,
       profile: exercise.measurement.profile,
+      isGrouped: isGroupedExercise(exercise),
     });
     // Already gone — emitting a delete op would be harmless, but a renumbering
     // pass over rows we have no reason to touch would not be.
@@ -789,18 +922,32 @@ export function setSessionNotes(notes: string | null): Promise<ActiveSessionDto>
 // filter, because a non-`load_reps` prescription's `progression.strategyId`
 // can only be `manual` (§9.2's compatibility gate) — the pre-existing
 // `strategyId === "manual"` skip already excludes it.
+// set-groups-architecture-evaluation.md §5.4/§4.4 — widened to carry
+// `groupKey` through (defaulting to `null` for a caller with no such field,
+// which is every pre-Stage-A caller and every ungrouped exercise's own
+// sets), matching the uniform-attach-then-`stripGroupKey` discipline
+// `groupEvaluation.ts` documents. This was the one place the offline client
+// evaluator (`buildClientRecommendationOps` below) silently dropped
+// attribution before this fix: both a grouped exercise's OWN work sets and
+// its history entries' sets funnel through this single mapper, so
+// `evaluateSession`'s per-group partitioning (`workSets.filter(s =>
+// s.groupKey === group.key)`) would have matched nothing at all for a
+// completion evaluated offline, ungrouped-only fallback aside — never
+// exercised until this remediation pass added dedicated offline-grouped
+// coverage.
 function toPerformedSets(
   sets: readonly {
     isWarmup: boolean;
     weightKg: number | null;
     reps: number | null;
     rir: number | null;
+    groupKey?: string | null;
   }[],
 ): PerformedSet[] {
   const result: PerformedSet[] = [];
   for (const s of sets) {
     if (s.isWarmup || s.weightKg === null || s.reps === null) continue;
-    result.push({ weightKg: s.weightKg, reps: s.reps, rir: s.rir });
+    result.push({ weightKg: s.weightKg, reps: s.reps, rir: s.rir, groupKey: s.groupKey ?? null });
   }
   return result;
 }
@@ -818,7 +965,13 @@ async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<
   for (const exercise of session.exercises) {
     if (exercise.skipped || !exercise.prescription) continue;
     const snapshot = exercise.prescription.snapshot;
-    if (snapshot.progression.strategyId === "manual") continue;
+    // M-2 (independent review) — group-aware: a `groups` scheme whose SLOT
+    // default is manual but which has a non-manual group override must still
+    // reach `evaluateSession`'s own per-group dispatch, which already handles
+    // this correctly (progression-engine.md §5.1). A bare
+    // `strategyId === "manual"` check here silently dropped the whole
+    // exercise before that dispatch ever ran.
+    if (!hasEvaluableStrategy(snapshot)) continue;
     const entry = bundleEntries.get(exercise.exerciseId);
     const loadStepKg = exercise.loadStepKg ?? entry?.loadStepKg;
     if (loadStepKg === undefined) continue;
@@ -836,14 +989,32 @@ async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<
       workSets: toPerformedSets(h.sets),
     }));
 
+    // L-1 (independent review) — the per-group sibling of the ungrouped
+    // overlay below, mirroring `server/progression/service.ts`'s
+    // `overlayInSessionDecisions` branch-for-branch: a `groups` scheme's
+    // in-session decisions live in `exercise.recommendations` (plural), never
+    // the singular `exercise.recommendation`, so only the group-keyed overlay
+    // applies to `groupPrefills`. Without this, an offline completion under
+    // rep-progression read `ctx.prescription.prefill.reps` as the still-frozen
+    // pre-decision value whenever an accept/modify chose different reps,
+    // diverging from what the server would have computed for the same facts.
+    const decidedSnapshot: PrescriptionSnapshotData =
+      snapshot.scheme.type === "groups"
+        ? applyInSessionDecisionsToGroupPrefills(
+            snapshot,
+            new Map(
+              (exercise.recommendations ?? [])
+                .filter((r): r is typeof r & { groupKey: string } => r.groupKey !== null)
+                .map((r) => [r.groupKey, r.decision]),
+            ),
+          )
+        : applyInSessionDecisionToPrefill(snapshot, exercise.recommendation?.decision ?? null);
+
     inputs.push({
       sessionExerciseId: exercise.id,
       exerciseId: exercise.exerciseId,
       skipped: exercise.skipped,
-      prescription: applyInSessionDecisionToPrefill(
-        snapshot,
-        exercise.recommendation?.decision ?? null,
-      ),
+      prescription: decidedSnapshot,
       workSets: toPerformedSets(exercise.sets.slice().sort((a, b) => a.setNumber - b.setNumber)),
       history,
       loadStepKg,
@@ -877,6 +1048,19 @@ async function buildClientRecommendationOps(session: ActiveSessionDto): Promise<
       blockId: session.blockId,
       sourceSessionId: session.id,
       sourceSessionExerciseId: result.sessionExerciseId,
+      // set-groups-architecture-evaluation.md §5.3/rev. 3 V-1 — this was
+      // missing entirely before this remediation pass: a grouped exercise
+      // completed OFFLINE produces one `EvaluatedRecommendation` per group
+      // (each with its own real `groupKey`), but the op built here dropped
+      // it on the floor, so every offline-computed record synced as if it
+      // were ungrouped (`groupKey: null`) — two such records for the same
+      // (exercise, block) would then collide on `uq_recs_one_pending`
+      // (coalesce(group_key,'') is identical for both), dead-lettering one
+      // of them as `recommendation_conflict` on reconnect. Omitted entirely
+      // for an ungrouped result (`groupKey === null`), matching the
+      // recommendationUpsertPayloadSchema's own emission rule and the
+      // server's own `evaluateSession`-derived `groupKey` on the online path.
+      ...(result.groupKey !== null ? { groupKey: result.groupKey } : {}),
       strategyId: result.strategyId,
       strategyVersion: result.strategyVersion,
       classification: result.classification,

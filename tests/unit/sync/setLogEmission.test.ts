@@ -72,7 +72,7 @@ describe("setLogFullRowOp — profile-scoped emission (O-13, NC-1 client half)",
   for (const profile of MEASUREMENT_PROFILES) {
     it(`profile ${profile}: emits exactly the profile-independent keys union the permitted keys`, () => {
       const set = makeSet(profile);
-      const op = setLogFullRowOp(newId(), set, profile);
+      const op = setLogFullRowOp(newId(), set, profile, false);
 
       const expectedKeys = [...PROFILE_INDEPENDENT_KEYS, ...permittedKeysOf(profile)].sort();
       expect(Object.keys(op.payload).sort()).toEqual(expectedKeys);
@@ -107,7 +107,7 @@ describe("setLogFullRowOp — profile-scoped emission (O-13, NC-1 client half)",
       notes: "bumped weight",
     };
 
-    const op = setLogFullRowOp(sessionExerciseId, set, "load_reps");
+    const op = setLogFullRowOp(sessionExerciseId, set, "load_reps", false);
 
     expect(op.payload).toEqual({
       id: set.id,
@@ -162,7 +162,7 @@ describe("setLogFullRowOp — profile-scoped emission (O-13, NC-1 client half)",
       loggedAt: new Date(0).toISOString(),
       notes: null,
     };
-    const op = setLogFullRowOp(newId(), set, "load_distance");
+    const op = setLogFullRowOp(newId(), set, "load_distance", false);
 
     expect(op.payload).toMatchObject({ weightKg: 40, distanceM: 25, durationS: null });
     expect("durationS" in op.payload).toBe(true);
@@ -180,7 +180,7 @@ describe("setLogFullRowOp — profile-scoped emission (O-13, NC-1 client half)",
   // restoring production code.)
   it("negative control — a load_reps-shaped expectation does not fit a load_distance set's emitted keys", () => {
     const set = makeSet("load_distance");
-    const op = setLogFullRowOp(newId(), set, "load_distance");
+    const op = setLogFullRowOp(newId(), set, "load_distance", false);
     const loadRepsShapedKeys = [...PROFILE_INDEPENDENT_KEYS, "weightKg", "reps", "rir"].sort();
 
     expect(() => {

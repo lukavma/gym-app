@@ -34,6 +34,13 @@ export interface HistorySetSummaryDto {
   distanceM: number | null;
   durationS: number | null;
   isWarmup: boolean;
+  // set-groups-architecture-evaluation.md §5.6 — needed by the offline
+  // client's own per-group evaluation fallback. Optional here (unlike the
+  // server's own mirror) so a bundle cached before this release, which has
+  // no such key on its embedded history sets, still parses — every group's
+  // history is then empty for an offline completion until the next
+  // successful bundle fetch (self-healing, §5.3's stated degradation).
+  groupKey?: string | null;
 }
 
 export interface HistorySessionSummaryDto {
@@ -72,6 +79,11 @@ export interface RecommendationDto {
   computedBy: "server" | "client";
   createdAt: string;
   decision: RecommendationDecisionDto;
+  // set-groups-architecture-evaluation.md §5.3 — the group this record
+  // belongs to; `null` for an ungrouped slot. Optional here (unlike the
+  // server's own mirror) so a bundle/session cached before this release
+  // still parses; absent reads exactly like `null`.
+  groupKey?: string | null;
 }
 
 export interface TodayBundleExerciseEntryDto {
@@ -99,6 +111,14 @@ export interface TodayBundleExerciseEntryDto {
   // this exercise in the active block. Shown as the proposed target with
   // accept/modify/reject; never folded into `prefill` (not a Decision yet).
   pendingRecommendation: RecommendationDto | null;
+  // set-groups-architecture-evaluation.md §5.3 — one entry per group with a
+  // pending recommendation, present only for a `groups` scheme. Optional
+  // (unlike the server's own mirror) for the same pre-upgrade-cache
+  // tolerance every additive bundle key on this interface already has.
+  pendingRecommendations?: RecommendationDto[];
+  // set-groups-architecture-evaluation.md §5.3 — one resolved prefill per
+  // group key, present only for a `groups` scheme.
+  groupPrefills?: Record<string, { loadKg: number | null; reps: number | null }>;
   // pwa-offline-strategy.md §4 splits what the single `history` array used
   // to serve into two roles: `previousPerformance` (last 3 non-deload
   // sessions, for display) and `history` (last 5, for the future
@@ -153,6 +173,12 @@ export interface ActiveSessionSetDto {
   durationS: number | null;
   loggedAt: string;
   notes: string | null;
+  // set-groups-architecture-evaluation.md §4.4 — the group this set is
+  // attributed to on a grouped slot; `null`/absent on an ungrouped slot or
+  // for an unattributed set. Optional so a pre-upgrade aggregate (no such
+  // key at all) still parses; `normalizeActiveSession` fills it with `null`
+  // on read, same precedent as `distanceM`/`durationS`.
+  groupKey?: string | null;
 }
 
 export interface ActiveSessionExerciseDto {
@@ -170,8 +196,14 @@ export interface ActiveSessionExerciseDto {
   loadStepKg: number | null;
   // The recommendation being decided at this workout — copied from the
   // bundle's pendingRecommendation at session start, updated locally when a
-  // decision is made (progression-engine.md §7). Null when none exists.
+  // decision is made (progression-engine.md §7). Null when none exists. For
+  // a grouped slot this is the null-key (pre-conversion legacy) entry only,
+  // if any — see `recommendations` below for the per-group ones.
   recommendation: RecommendationDto | null;
+  // set-groups-architecture-evaluation.md §5.3 — one recommendation per
+  // group with a pending/decided record this session, present only for a
+  // `groups` scheme; updated locally the same way `recommendation` is.
+  recommendations?: RecommendationDto[];
   // Release 2 (athletic-measurement-profiles-architecture-evaluation.md
   // §21.2, §12.1) — the slot's measurement profile/load basis, FROZEN once
   // at `startSession` from the bundle entry's own `measurement` (never

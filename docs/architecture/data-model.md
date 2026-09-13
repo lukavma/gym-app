@@ -243,6 +243,7 @@ Indexes: `uq_sessions_one_in_progress` — unique `(user_id)` partial `WHERE sta
 | distance_m | numeric(7,2) | null, ck `> 0 and <= 99999.99` |
 | duration_s | numeric(7,2) | null, ck `> 0 and <= 86400` |
 | measurement_profile | text | not null default 'load_reps' — copied from the parent slot at insert, never updated; **no separate enum CHECK**: membership is enforced transitively by `ck_set_logs_profile_shape`'s OR-chain (an unknown value matches no branch) and by the composite FK below |
+| group_key | text | null — Set Groups Stage A (`set-groups-architecture-evaluation.md`, migration `0014_*`); the frozen snapshot's `SetGroup.key` this set is attributed to, `null` on an ungrouped slot or for an unattributed set inside a grouped one. No FK: groups are JSONB inside the frozen snapshot, not a row; validity against the parent slot's frozen scheme is a sync-service check, not a DB constraint. |
 | logged_at | timestamptz | not null (client clock) |
 | notes | text | null |
 | created_at / updated_at | timestamptz | |
@@ -259,6 +260,7 @@ Indexes: `uq_sessions_one_in_progress` — unique `(user_id)` partial `WHERE sta
 | block_id | uuid | FK → blocks `ON DELETE SET NULL`, null |
 | source_session_id | uuid | FK → workout_sessions `ON DELETE CASCADE` |
 | source_session_exercise_id | uuid | FK → session_exercises `ON DELETE CASCADE` |
+| group_key | text | null — Set Groups Stage A; mirrors `set_logs.group_key`. Independent per-group progression means one pending recommendation per `(exercise_id, block_id, group_key)`, not per `(exercise_id, block_id)` — see the rebuilt `uq_recs_one_pending` below. `null` for an ungrouped slot. |
 | strategy_id | text | not null |
 | strategy_version | smallint | not null |
 | classification | text | not null, ck in ('evidence_supported','heuristic','user_defined') |
@@ -275,7 +277,7 @@ Indexes: `uq_sessions_one_in_progress` — unique `(user_id)` partial `WHERE sta
 | decision_source | text | null, ck in ('explicit','implicit_first_set') |
 | created_at / updated_at | timestamptz | |
 
-Indexes: `ix_recs_exercise` `(exercise_id, created_at DESC)`; `ix_recs_pending` partial `(user_id) WHERE decision_status = 'pending'`; `uq_recs_one_pending` — unique `(exercise_id, coalesce(block_id, '00000000-…'))` partial `WHERE decision_status = 'pending'` (supersede-before-insert makes this hold).
+Indexes: `ix_recs_exercise` `(exercise_id, created_at DESC)`; `ix_recs_pending` partial `(user_id) WHERE decision_status = 'pending'`; `uq_recs_one_pending` — unique `(exercise_id, coalesce(block_id, '00000000-…'), coalesce(group_key, ''))` partial `WHERE decision_status = 'pending'` (rebuilt in migration `0014_*` to add the `group_key` coalesce, Set Groups Stage A — supersede-before-insert, now key-scoped, makes this hold).
 
 Decision columns are embedded (not a separate table): strictly 0..1 decision per recommendation, appended once — a second table would be joins without integrity gain.
 

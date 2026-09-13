@@ -118,6 +118,14 @@ export const setLogUpsertPayloadSchema = z
     sessionExerciseId: uuidv7Schema,
     setNumber: z.number().int().min(1).optional(),
     isWarmup: z.boolean().optional(),
+    // set-groups-architecture-evaluation.md §4.4/D-1 — the group this work
+    // set is attributed to on a grouped slot. Additive optional, emitted
+    // ONLY for a grouped slot's full-row ops (activeSession.ts's
+    // `setLogFullRowOp`, setDeletionOps.ts's renumber upserts) — an
+    // ungrouped payload omits the key entirely, keeping it byte-identical to
+    // today's (rev. 3 V-1, A-10/NC-9). Validated against the parent slot's
+    // frozen snapshot group keys by the sync service, not by this schema.
+    groupKey: z.string().min(1).max(40).nullable().optional(),
     // §6.1/§12.2 — nullable as of athletic-measurement-profiles: required
     // only for the profiles whose shape needs them, enforced against the
     // parent slot's frozen profile by the sync service (`dimensionsOf`),
@@ -151,6 +159,13 @@ export const recommendationUpsertPayloadSchema = z
     blockId: z.string().uuid().nullable(),
     sourceSessionId: uuidv7Schema,
     sourceSessionExerciseId: uuidv7Schema,
+    // set-groups-architecture-evaluation.md §5.3/D-1/D-2 — the group this
+    // client-computed recommendation belongs to; additive optional, emitted
+    // ONLY for a per-group record (always a real key — recommendations are
+    // immutable once born, so there is no "clear it later" case the setLog
+    // field's nullability exists for), omitted entirely for an ungrouped one
+    // (rev. 3 V-1, A-10/NC-9).
+    groupKey: z.string().min(1).max(40).optional(),
     strategyId: strategyIdSchema,
     strategyVersion: z.number().int().positive(),
     classification: recommendationClassificationSchema,

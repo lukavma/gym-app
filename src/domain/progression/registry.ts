@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { rirBandSchema } from "../schemes/rirBand";
-import type { SchemeType, SetScheme } from "../schemes/setScheme";
+import { projectGroup, type SchemeType, type SetGroup, type SetScheme } from "../schemes/setScheme";
 import { profileSupportsScheme, strategySupportsProfile } from "../measurement/compatibility";
 import type { MeasurementProfile } from "../measurement/profile";
 
@@ -94,6 +94,14 @@ export interface ExerciseLoadContext {
 // (§4.2 — `fixed` has no natural repCap default, it's a genuine user
 // choice, so it's left unset there). Used to pre-fill the config form and
 // to classify heuristic vs. user_defined below.
+// set-groups-architecture-evaluation.md §5.3/L-3 — F-23 closed: the
+// rep-progression branch is now an exhaustive switch over every scheme type
+// (not `scheme.type === "repRange" ? : {}`), so a sixth variant fails to
+// compile here instead of silently defaulting to `{}`. A `groups` scheme has
+// no single repCap default — rep-progression `repCap` is FORBIDDEN at slot
+// level for `groups` (prescriptions/schema.ts's `checkPrescriptionCompatibility`)
+// and resolved per group instead, by `resolveGroupProgression` below against
+// each group's own *projected* scheme.
 export function defaultConfigFor(
   strategyId: StrategyId,
   scheme: SetScheme,
@@ -102,13 +110,81 @@ export function defaultConfigFor(
   switch (strategyId) {
     case "load-progression":
       return loadProgressionConfigSchema.parse({ incrementKg: exercise.loadStepKg });
-    case "rep-progression":
-      return repProgressionConfigSchema.parse(
-        scheme.type === "repRange" ? { repCap: scheme.maxReps } : {},
-      );
+    case "rep-progression": {
+      let repCap: number | undefined;
+      switch (scheme.type) {
+        case "repRange":
+          repCap = scheme.maxReps;
+          break;
+        case "fixed":
+        case "distanceRounds":
+        case "durationRounds":
+        case "groups":
+          repCap = undefined;
+          break;
+      }
+      return repProgressionConfigSchema.parse(repCap !== undefined ? { repCap } : {});
+    }
     case "manual":
       return manualConfigSchema.parse({});
   }
+}
+
+// set-groups-architecture-evaluation.md §5.3 — "For every group:
+// resolveProgression(strategyId, rawSlotConfig ⊕ rawGroupOverride,
+// projectGroup(g), exercise) — defaults are re-derived per group from the
+// projected scheme (so a ranged group's repCap defaults to its own
+// reps.max), and classification is computed per group." The override merges
+// SHALLOWLY over the slot's raw config before either reaches its schema, so
+// a group that overrides only e.g. `repCap` still inherits the slot's other
+// tuned fields (`progressRirGate`, etc.) rather than losing them.
+export function resolveGroupProgression(
+  strategyId: StrategyId,
+  rawSlotConfig: unknown,
+  rawGroupOverride: Record<string, unknown> | undefined,
+  group: SetGroup,
+  exercise: ExerciseLoadContext,
+): ResolvedProgression {
+  const merged =
+    rawGroupOverride === undefined
+      ? rawSlotConfig
+      : {
+          ...(typeof rawSlotConfig === "object" && rawSlotConfig ? rawSlotConfig : {}),
+          ...rawGroupOverride,
+        };
+  return resolveProgression(strategyId, merged, projectGroup(group), exercise);
+}
+
+export interface RawProgressionInput {
+  strategyId: StrategyId;
+  config?: unknown;
+  groups?: Record<string, { strategyId: StrategyId; config?: unknown }>;
+}
+
+// Orchestrates the slot-level resolution (unchanged) plus, for a `groups`
+// scheme, one `resolveGroupProgression` call per group — the single entry
+// point `server/prescriptions/service.ts` uses so the persisted
+// `exercise_prescriptions.progression` JSONB and the frozen snapshot mirror
+// (`prescriptionSnapshot.ts`) are always built the same way.
+export function resolvePrescriptionProgression(
+  input: RawProgressionInput,
+  scheme: SetScheme,
+  exercise: ExerciseLoadContext,
+): ResolvedProgression {
+  const slot = resolveProgression(input.strategyId, input.config, scheme, exercise);
+  if (scheme.type !== "groups") return slot;
+  const groups: Record<string, ResolvedProgression> = {};
+  for (const group of scheme.groups) {
+    const override = input.groups?.[group.key];
+    groups[group.key] = resolveGroupProgression(
+      override?.strategyId ?? input.strategyId,
+      input.config,
+      override?.config as Record<string, unknown> | undefined,
+      group,
+      exercise,
+    );
+  }
+  return { ...slot, groups };
 }
 
 export type ProgressionClassification = "heuristic" | "user_defined";
@@ -117,6 +193,12 @@ export interface ResolvedProgression {
   strategyId: StrategyId;
   config: Record<string, unknown>;
   classification: ProgressionClassification;
+  // set-groups-architecture-evaluation.md §5.3/manifest item 5 — additive
+  // optional, present only for a `groups` scheme: the per-group resolved
+  // progression, keyed by group key, each independently defaulted against
+  // that group's own *projected* scheme (a ranged group's `repCap` default
+  // comes from its own `reps.max`, never the slot's).
+  groups?: Record<string, ResolvedProgression>;
 }
 
 // Config schemas fill defaults deterministically in declared-key order, so a

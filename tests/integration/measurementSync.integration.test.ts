@@ -122,6 +122,8 @@ describe("NC-1 — server supersession field-key lists (R1, server keys)", () =>
     "rir",
     "distanceM",
     "durationS",
+    // set-groups-architecture-evaluation.md §4.4/D-1 — additive.
+    "groupKey",
     "loggedAt",
     "notes",
   ].sort();

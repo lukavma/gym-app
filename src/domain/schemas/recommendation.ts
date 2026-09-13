@@ -50,18 +50,40 @@ const performedSetSchema = z
   })
   .strict();
 
+// set-groups-architecture-evaluation.md §5.4 — "required whenever the record
+// is per-group (absent means 'ungrouped slot')". `setsMin`/`setsMax` record
+// where the evaluation window fell (§5.5), so a reviewer years later can see
+// why the split is where it is without re-deriving it from the scheme.
+const inputsGroupSchema = z
+  .object({
+    key: z.string(),
+    label: z.string(),
+    setsMin: z.number().int().min(1),
+    setsMax: z.number().int().min(1),
+  })
+  .strict();
+
 // progression-engine.md §6 InputsSummary. `derived.mixedLoads` is additive
 // (mandated by §8's "flagged in inputs"); `currentRepTarget` is present for
-// rep-progression evaluations.
+// rep-progression evaluations. `prescribed.group` and `extraWorkSets` are
+// set-groups-architecture-evaluation.md §5.4/§5.5's additive keys — rev. 3
+// V-1's binding emission rule: both are **omitted entirely — not
+// `undefined`, not `[]`** — from every ungrouped record, so the
+// client-computed `recommendation` op for an ungrouped slot stays
+// byte-identical to today's (A-10/NC-9). The requirement is enforced at the
+// builder level (evaluateSession.ts), not by a conditional Zod shape — this
+// stays a plain strict object with two optional additions.
 export const inputsSummarySchema = z
   .object({
     prescribed: z
       .object({
         scheme: setSchemeSchema,
         targetRir: rirBandSchema.optional(),
+        group: inputsGroupSchema.optional(),
       })
       .strict(),
     workSets: z.array(performedSetSchema),
+    extraWorkSets: z.array(performedSetSchema).optional(),
     derived: z
       .object({
         setsCompleted: z.number().int().min(0),

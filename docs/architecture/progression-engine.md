@@ -229,6 +229,49 @@ onSessionCompleted(session):                        # application service, serve
 - **Set edits after evaluation:** while the recommendation is `pending`, an edit to the source session re-runs evaluation and supersedes. After a Decision, no automatic recomputation ever (the user's choice stands); the user can explicitly "recalculate", which supersedes with a fresh record.
 - **Missing evaluation at next workout** (e.g. sync race): prefill falls back to carry-forward; no fabricated recommendation.
 
+### 5.1 Set Groups Stage A — per-group orchestration (`set-groups-architecture-evaluation.md`)
+
+A slot whose frozen scheme is `groups` (§2 of `prescription-model.md`) is evaluated **per group**, independent of the slot-level `strategyId` (which is only the default for a group that doesn't override it):
+
+```text
+for each group in prescription.scheme.groups (in order):
+   projected = projectGroup(group)                 # fixed reps -> {fixed}; ranged -> {repRange}, sets = group.sets.min
+   recorded  = workSets attributed to group.key, in set-number order
+   window    = recorded[0 .. group.sets.min)        # CRITICAL: first N by ORDER, never the best-performing N
+   extra     = recorded[group.sets.min ..]           # audit facts; never gate
+   strategyId = progression.groups?.[group.key]?.strategyId ?? progression.strategyId
+   if strategyId == 'manual' → skip (no draft, no record — independent per group, D-2)
+   ctx = { prescription: {scheme: projected, targetRir: group.targetRir ?? slot.targetRir, prefill: groupPrefills[group.key]},
+           performance: {..., workSets: window}, history: perGroupWindowedHistory }
+   draft = registry[strategyId].evaluate(ctx, config)   # evaluateLoadProgression/evaluateRepProgression — UNCHANGED code
+   draft.inputs.prescribed.group = {key, label, setsMin: group.sets.min, setsMax: group.sets.max}
+   draft.inputs.extraWorkSets = extra
+   if draft.action ≠ 'none' or draft.reasonCodes ≠ []:
+      supersede any pending recommendation for (exercise, block, group.key)
+      # the FIRST group in scheme order also supersedes a pre-conversion NULL-key
+      # pending record (C-1/D-6(a) bridge — see below), closing it out the first
+      # time that group's own key produces a fresh evaluation
+      persist Recommendation(draft, strategyId, version, config, classification, computedBy, groupKey: group.key)
+```
+
+The strategies themselves (`evaluateLoadProgression`, `evaluateRepProgression`) are **never modified** — windowing happens entirely in context construction, so `STRATEGY_VERSIONS` does not bump. A group with zero recorded sets this session still produces a persisted `NO_WORK_SETS_LOGGED` draft (the same "no target invented" rule §8 already states, applied per group) — this is what represents "the athlete skipped the top set today" as a first-class fact rather than an ordinal misreading.
+
+**Identity is per `(exercise, block, group key)`, not per `(exercise, block)`.** Every lookup this section's pseudocode implies — pending recommendation, decision-chosen, carry-forward candidates, in-session decision overlay, cross-device resume — is keyed the same way, with `group key = null` for an ungrouped slot (the degenerate case that keeps existing behaviour byte-identical). **Re-evaluation on edit is restricted to still-pending keys**: editing a set on a completed source session re-evaluates every group in that slot's frozen scheme, but a result is persisted only for a `(sourceSessionExerciseId, groupKey)` pair whose existing record (if any) is still `pending` — a group already decided this session, or superseded by a later session, is never re-evaluated from an older slot (this is what keeps "no automatic recomputation after a Decision", §7, true per group as well as per slot).
+
+**Set Groups Stage B — percent-linked groups never evaluate here.** A group carrying `link` (§2 of
+`prescription-model.md`) must resolve to `strategyId === 'manual'` (rule L-1, enforced at write time by
+`checkPrescriptionCompatibility`); the `if strategyId == 'manual' → skip` line above already removes it
+from this loop on that basis alone. `evaluateGroupedExercise` additionally skips a group with `link`
+unconditionally, before even reading its resolved `strategyId` — a defensive, structurally-unreachable
+belt-and-braces check (mirroring this document's own "`UNSUPPORTED_SCHEME`, defensive, should be
+unreachable" convention for the write path) so a linked group can never produce a competing
+recommendation even against a hypothetical future bug in the write-time gate. Deriving a linked group's
+actual first-set load is entirely a client-side concern (`src/ui/workout/groupSelection.ts`, a pure
+function of the frozen snapshot + current session's sets + `loadStepKg`) — it never reaches this engine
+at all.
+
+**Legacy conversion (C-1, D-6(a)).** The **first** group in scheme order additionally reads an existing **null-key** (pre-conversion, ungrouped) pending record and history/carry-forward candidates as its own, when its own key has none yet — a single-group conversion this way never resets a slot's working load or streaks (a rule, not a decision: the sole group *is* the slot). A multi-group conversion bridges the same way, to the first group only; every other group starts with no automatic legacy-history attribution (the owner-accepted default, `set-groups-architecture-evaluation.md` §19 D-6). Historical rows are never rewritten; the bridge is a **read-time** fallback plus a **write-time** supersede, not a migration step.
+
 ---
 
 ## 6. Recommendation record (persisted shape)
@@ -237,6 +280,7 @@ onSessionCompleted(session):                        # application service, serve
 interface Recommendation {
   id: string;
   exerciseId: string; blockId?: string;
+  groupKey?: string | null;                // Set Groups Stage A — null for an ungrouped slot
   sourceSessionId: string; sourceSessionExerciseId: string;
   strategyId: string; strategyVersion: number;
   classification: RuleClassification;      // from prescription.progression at snapshot time
@@ -258,8 +302,13 @@ interface Recommendation {
 }
 
 interface InputsSummary {
-  prescribed: { scheme: SetScheme; targetRir?: RirBand };
-  workSets: Array<{ weightKg: number; reps: number; rir: number | null }>;
+  prescribed: {
+    scheme: SetScheme;                     // the group's PROJECTED scheme for a per-group record — never the raw `groups` scheme (safety property, NC-7: it would return null from targetRepsPerSet and inflate the fail streak)
+    targetRir?: RirBand;
+    group?: { key: string; label: string; setsMin: number; setsMax: number };  // Set Groups Stage A — required whenever the record is per-group, omitted entirely (not undefined, not present-as-absent) otherwise
+  };
+  workSets: Array<{ weightKg: number; reps: number; rir: number | null }>;   // the evaluation WINDOW for a per-group record — the first `setsMin` recorded sets, in order
+  extraWorkSets?: Array<{ weightKg: number; reps: number; rir: number | null }>;  // Set Groups Stage A — recorded sets beyond the window; present (possibly []) on every per-group record, OMITTED ENTIRELY on an ungrouped one
   derived: { setsCompleted: number; prescribedSets: number; finalSetRir: number | null;
              workingLoadKg: number; currentRepTarget?: number };
   historyDepthUsed: number;
@@ -267,6 +316,8 @@ interface InputsSummary {
 ```
 
 Self-describing forever: a record can be rendered and audited years later without the strategy version's code existing anymore. Old strategy code is **not** kept around; `strategyVersion` documents provenance, the frozen `inputs`/`config`/`reasonCodes` carry the meaning. (Determinism guarantees are scoped to a given strategy version.)
+
+**Wire-contract discipline (Set Groups Stage A, rev. 3 V-1).** `groupKey` (on both the `setLog` and `recommendation` sync payloads) and `inputs.prescribed.group`/`inputs.extraWorkSets` are additive, but the four are emitted **only** for a grouped slot / per-group record — an ungrouped payload omits all four entirely, keeping it byte-identical to before Stage A. This is the same profile-scoped emission pattern the measurement-profile work already established for `distanceM`/`durationS`, applied to group attribution instead of measured dimensions.
 
 ### Reason codes (explainability contract)
 
@@ -326,6 +377,10 @@ The user always wins, with near-zero friction:
 | Set edited while rec pending | Re-evaluate + supersede |
 | Set edited after decision | No auto-recompute; user-triggered recalculation only |
 | Strategy/config changed on template | Applies from next session's snapshot; historical records untouched |
+| Grouped slot: a group has zero recorded sets this session | `action: none`, `NO_WORK_SETS_LOGGED` for THAT group only; the sibling group(s) evaluate normally (Set Groups Stage A — this is "skipped the top set today" as a first-class fact, not an ordinal misread) |
+| Grouped slot: recorded sets beyond a group's `sets.min` | Never gate completion or the RIR check — first `sets.min` by order is the evaluation window; extras are recorded in `inputs.extraWorkSets` and never cherry-picked into the window |
+| Grouped slot: editing a set of an already-decided group | No auto-recompute for that group, even if a sibling group in the same slot is still pending and does get re-evaluated (M-3 — re-evaluation scope is per group key, not per slot) |
+| Grouped slot: a group's own key has no history yet (fresh group, or non-first group on conversion) | Same as "first session ever" above, per group — `INSUFFICIENT_HISTORY` where a strategy needs streaks, no fabricated carry-forward |
 
 ---
 

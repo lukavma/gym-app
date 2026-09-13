@@ -2,12 +2,22 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { exercisePrescriptions, exercises, programs, workoutTemplates } from "@/db/schema";
 import type { AppDb } from "@/db/client";
 import { newId } from "@/domain/ids/uuidv7";
-import type { SetSchemeEnvelope } from "@/domain/schemes/setScheme";
+import {
+  assignGroupKeys,
+  type SetScheme,
+  type SetSchemeEnvelope,
+} from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
-import { resolveProgression, type ResolvedProgression } from "@/domain/progression/registry";
+import {
+  resolvePrescriptionProgression,
+  type RawProgressionInput,
+  type ResolvedProgression,
+  type StrategyId,
+} from "@/domain/progression/registry";
 import {
   checkPrescriptionCompatibility,
   type CreatePrescriptionInput,
+  type ProgressionInput,
   type UpdatePrescriptionInput,
 } from "@/domain/prescriptions/schema";
 import type { MeasurementProfile } from "@/domain/measurement/profile";
@@ -167,6 +177,38 @@ export async function getPrescription(
   return row ? toRecord(row.prescription) : null;
 }
 
+// M-3 (independent review) — resolves `input.groupOverridesByIndex` (a
+// group with no real key yet at request-construction time, addressed by its
+// POSITIONAL INDEX in the submitted `groups` array) onto the FINAL,
+// server-assigned key at that same array position, merging the result into
+// the by-key `groups` map `resolvePrescriptionProgression` already
+// understands. Must be called with `scheme` AFTER `assignGroupKeys` has run,
+// so every position — retained or brand-new — already has its final key.
+// A key-addressed override always wins over an index-addressed one for the
+// same resolved key (defensive; the two are not expected to collide since a
+// group with a real key is never also submitted by index).
+function toRawProgressionInput(input: ProgressionInput, scheme: SetScheme): RawProgressionInput {
+  if (!input.groupOverridesByIndex || Object.keys(input.groupOverridesByIndex).length === 0) {
+    return { strategyId: input.strategyId, config: input.config, groups: input.groups };
+  }
+  if (scheme.type !== "groups") {
+    // Defensive — `checkPrescriptionCompatibility` rejects `groups`
+    // overrides on a non-`groups` scheme regardless; nothing to resolve
+    // positionally against.
+    return { strategyId: input.strategyId, config: input.config, groups: input.groups };
+  }
+  const groups: Record<string, { strategyId: StrategyId; config?: unknown }> = {
+    ...input.groups,
+  };
+  for (const [indexRaw, override] of Object.entries(input.groupOverridesByIndex)) {
+    const index = Number(indexRaw);
+    if (!Number.isInteger(index) || index < 0 || index >= scheme.groups.length) continue;
+    const key = scheme.groups[index]!.key;
+    if (!(key in groups)) groups[key] = override;
+  }
+  return { strategyId: input.strategyId, config: input.config, groups };
+}
+
 export async function createPrescription(
   db: AppDb,
   userId: string,
@@ -178,14 +220,18 @@ export async function createPrescription(
   const exercise = await getOwnedExercise(db, userId, input.exerciseId);
   assertExerciseUsable(exercise);
 
-  const progression = resolveProgression(
-    input.progression.strategyId,
-    input.progression.config,
-    input.scheme.scheme,
+  // set-groups-architecture-evaluation.md §4.2/manifest item 18 — key
+  // generation happens here, once, never re-derived: every group in the
+  // authored scheme that omitted a key (every group on a brand-new
+  // prescription) gets one assigned now.
+  const scheme: SetScheme = assignGroupKeys(input.scheme.scheme);
+  const progression = resolvePrescriptionProgression(
+    toRawProgressionInput(input.progression, scheme),
+    scheme,
     { loadStepKg: exercise.loadStepKg },
   );
   const issues = checkPrescriptionCompatibility(
-    input.scheme.scheme,
+    scheme,
     progression,
     exercise.measurementProfile as MeasurementProfile,
     { targetRir: input.targetRir, baselineLoadKg: input.baselineLoadKg },
@@ -206,7 +252,7 @@ export async function createPrescription(
         templateId,
         exerciseId: input.exerciseId,
         position: nextPosition,
-        scheme: input.scheme,
+        scheme: { v: input.scheme.v, scheme },
         targetRir: input.targetRir ?? null,
         baselineLoadKg: input.baselineLoadKg ?? null,
         restSeconds: input.restSeconds ?? null,
@@ -238,17 +284,49 @@ export async function updatePrescription(
   const exercise = await getOwnedExercise(db, userId, effectiveExerciseId);
   assertExerciseUsable(exercise);
 
-  const effectiveScheme = (input.scheme ?? existing.scheme) as SetSchemeEnvelope;
+  // set-groups-architecture-evaluation.md §4.2 — a retained group echoes its
+  // existing key back (assignGroupKeys leaves an already-keyed group
+  // untouched); only a brand-new group (no key in the patch) gets one
+  // assigned now. An omitted `input.scheme` keeps the stored scheme exactly
+  // (already fully keyed from its own create/update), so it is not
+  // re-passed through `assignGroupKeys` at all.
+  const effectiveScheme: SetScheme =
+    input.scheme !== undefined
+      ? assignGroupKeys(input.scheme.scheme)
+      : (existing.scheme as SetSchemeEnvelope).scheme;
+  const effectiveSchemeVersion = input.scheme?.v ?? (existing.scheme as SetSchemeEnvelope).v;
 
+  // set-groups-architecture-evaluation.md §4.5 — a group REMOVED from the
+  // scheme must also disappear from `progression.groups`; a group ADDED
+  // needs its own resolved entry. Recomputing whenever the SCHEME changes
+  // (not only when `progression` is explicitly patched) is what keeps the
+  // two in sync: the existing resolved progression's slot-level
+  // {strategyId, config} and any surviving group's own resolved entry feed
+  // back in as the "raw" input, so an unrelated scheme edit never perturbs a
+  // group's already-tuned config, and a removed group's stale override can
+  // never trip "unknown group key" on the very next save.
+  const existingProgression = existing.progression as ResolvedProgression;
   const effectiveProgression: ResolvedProgression =
     input.progression !== undefined
-      ? resolveProgression(
-          input.progression.strategyId,
-          input.progression.config,
-          effectiveScheme.scheme,
+      ? resolvePrescriptionProgression(
+          // M-3 — resolves any `groupOverridesByIndex` entry (a group added
+          // in THIS same update, with no real key until `effectiveScheme`
+          // was just built above) onto its final assigned key.
+          toRawProgressionInput(input.progression, effectiveScheme),
+          effectiveScheme,
           { loadStepKg: exercise.loadStepKg },
         )
-      : (existing.progression as ResolvedProgression);
+      : input.scheme !== undefined
+        ? resolvePrescriptionProgression(
+            {
+              strategyId: existingProgression.strategyId,
+              config: existingProgression.config,
+              groups: existingProgression.groups,
+            },
+            effectiveScheme,
+            { loadStepKg: exercise.loadStepKg },
+          )
+        : existingProgression;
 
   // Same "input wins when present, existing row otherwise" rule as
   // `effectiveScheme`/`effectiveProgression` above — an explicit `null`
@@ -259,7 +337,7 @@ export async function updatePrescription(
     input.baselineLoadKg !== undefined ? input.baselineLoadKg : existing.baselineLoadKg;
 
   const issues = checkPrescriptionCompatibility(
-    effectiveScheme.scheme,
+    effectiveScheme,
     effectiveProgression,
     exercise.measurementProfile as MeasurementProfile,
     { targetRir: effectiveTargetRir, baselineLoadKg: effectiveBaselineLoadKg },
@@ -268,7 +346,8 @@ export async function updatePrescription(
 
   const patch: Partial<typeof exercisePrescriptions.$inferInsert> = { updatedAt: new Date() };
   if (input.exerciseId !== undefined) patch.exerciseId = input.exerciseId;
-  if (input.scheme !== undefined) patch.scheme = input.scheme;
+  if (input.scheme !== undefined)
+    patch.scheme = { v: effectiveSchemeVersion, scheme: effectiveScheme };
   if (input.targetRir !== undefined) patch.targetRir = input.targetRir;
   if (input.baselineLoadKg !== undefined) patch.baselineLoadKg = input.baselineLoadKg;
   if (input.restSeconds !== undefined) patch.restSeconds = input.restSeconds;

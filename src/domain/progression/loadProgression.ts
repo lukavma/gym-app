@@ -36,6 +36,15 @@ function targetRepsPerSet(scheme: SetScheme): number | null {
     case "distanceRounds":
     case "durationRounds":
       return null;
+    // set-groups-architecture-evaluation.md §5.4 — this function is only
+    // ever called with a group's own PROJECTED scheme (always `fixed` or
+    // `repRange`, groupEvaluation.ts's `projectGroup`), never with a raw
+    // `groups` scheme — evaluateSession.ts branches to per-group evaluation
+    // before any strategy ever sees one. This arm exists only so the switch
+    // stays exhaustive (a sixth variant must still fail to compile, per this
+    // function's own header comment) and is unreachable in practice.
+    case "groups":
+      return null;
   }
 }
 
@@ -51,6 +60,12 @@ function repShortfall(sets: readonly PerformedSet[], prescribedSets: number, rep
 }
 
 function isCompleted(sets: readonly PerformedSet[], scheme: SetScheme, tolerance: number): boolean {
+  // set-groups-architecture-evaluation.md §5.4 — a raw `groups` scheme never
+  // reaches this function in practice (only a group's own PROJECTED scheme
+  // does); narrowing it away here, before `scheme.sets` is read, is what
+  // keeps the "groups has no top-level sets" compile-error design (§4.2)
+  // from also breaking THIS function's unrelated `scheme.sets` reads below.
+  if (scheme.type === "groups") return false;
   const targetReps = targetRepsPerSet(scheme);
   // No reps dimension to complete against (defensive — see
   // targetRepsPerSet above). A history entry carrying such a scheme
@@ -85,9 +100,38 @@ export function evaluateLoadProgression(
   cfg: LoadProgressionConfig,
 ): RecommendationDraft {
   const sets = ctx.performance.workSets;
-  const scheme = ctx.prescription.scheme;
+  const rawScheme = ctx.prescription.scheme;
   const { loadKg: load, mixed } = modalWorkingLoad(sets);
   const step = ctx.exercise.loadStepKg;
+
+  // set-groups-architecture-evaluation.md §5.4 — a raw `groups` scheme never
+  // reaches this function in practice (evaluateSession.ts always projects a
+  // group before calling here); narrowed away here, before ANY `scheme.sets`
+  // read below, for the same "groups has no top-level sets" compile-error
+  // design (§4.2) `isCompleted`/`evaluateSession.ts` already guard against.
+  if (rawScheme.type === "groups") {
+    return {
+      action: "none",
+      reasonCodes: ["UNSUPPORTED_SCHEME"],
+      inputs: {
+        prescribed: {
+          scheme: rawScheme,
+          ...(ctx.prescription.targetRir ? { targetRir: ctx.prescription.targetRir } : {}),
+        },
+        workSets: sets,
+        derived: {
+          setsCompleted: sets.length,
+          prescribedSets: 0,
+          finalSetRir: sets.length > 0 ? sets[sets.length - 1]!.rir : null,
+          workingLoadKg: load,
+          mixedLoads: mixed,
+        },
+        historyDepthUsed: ctx.history.length,
+      },
+      confidence: "low",
+    };
+  }
+  const scheme = rawScheme;
 
   const inputs: InputsSummary = {
     prescribed: {

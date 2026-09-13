@@ -46,6 +46,12 @@ export const recommendations = pgTable(
     sourceSessionExerciseId: uuid("source_session_exercise_id")
       .notNull()
       .references(() => sessionExercises.id, { onDelete: "cascade" }),
+    // set-groups-architecture-evaluation.md §5.3/D-1 — the group this
+    // recommendation belongs to; NULL for an ungrouped slot. Independent
+    // per-group progression (D-2) needs one pending record PER (exercise,
+    // block, key), not per (exercise, block) — see `uq_recs_one_pending`
+    // below.
+    groupKey: text("group_key"),
     strategyId: text("strategy_id").notNull(),
     strategyVersion: smallint("strategy_version").notNull(),
     classification: text("classification").notNull(),
@@ -65,13 +71,19 @@ export const recommendations = pgTable(
   },
   (table) => [
     // domain-model.md §10 invariant 8 / progression-engine.md §5 — at most
-    // one pending recommendation per (exercise, block); block-less
-    // recommendations share one slot via the zero-uuid coalesce
-    // (data-model.md §2.15). Supersede-before-insert makes this hold.
+    // one pending recommendation per (exercise, block, group key);
+    // block-less recommendations share one slot via the zero-uuid coalesce
+    // (data-model.md §2.15), and key-less (ungrouped) recommendations share
+    // one slot via the empty-string coalesce, same idiom — rebuilt for Set
+    // Groups Stage A (set-groups-architecture-evaluation.md §5.3/A-12) so
+    // independent per-group progression (D-2) can hold one pending record
+    // per group without colliding. Supersede-before-insert (now key-scoped,
+    // `supersedePending`) makes this hold.
     uniqueIndex("uq_recs_one_pending")
       .on(
         table.exerciseId,
         sql`coalesce(${table.blockId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`coalesce(${table.groupKey}, '')`,
       )
       .where(sql`${table.decisionStatus} = 'pending'`),
     index("ix_recs_exercise").on(table.exerciseId, table.createdAt.desc()),

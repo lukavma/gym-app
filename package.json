@@ -21,7 +21,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test": "pnpm test:unit && pnpm test:integration",
     "test:e2e": "playwright test",
-    "test:e2e:offline": "playwright test tests/e2e/offline-cold-launch.spec.ts tests/e2e/offline-sync.spec.ts tests/e2e/offline-set-edit-delete.spec.ts tests/e2e/offline-recommendation.spec.ts tests/e2e/network-flap.spec.ts tests/e2e/duplicate-replay.spec.ts tests/e2e/sync-auth-expiry.spec.ts tests/e2e/takeover.spec.ts tests/e2e/dead-letter.spec.ts tests/e2e/stale-completed-session.spec.ts tests/e2e/storage-persist-status.spec.ts tests/e2e/transient-failure-fifo.spec.ts tests/e2e/lost-response-retry.spec.ts tests/e2e/offline-bodyweight-recovery.spec.ts tests/e2e/workoutPrescriptionContext.spec.ts",
+    "test:e2e:offline": "playwright test tests/e2e/offline-cold-launch.spec.ts tests/e2e/offline-sync.spec.ts tests/e2e/offline-set-edit-delete.spec.ts tests/e2e/offline-recommendation.spec.ts tests/e2e/network-flap.spec.ts tests/e2e/duplicate-replay.spec.ts tests/e2e/sync-auth-expiry.spec.ts tests/e2e/takeover.spec.ts tests/e2e/dead-letter.spec.ts tests/e2e/stale-completed-session.spec.ts tests/e2e/storage-persist-status.spec.ts tests/e2e/transient-failure-fifo.spec.ts tests/e2e/lost-response-retry.spec.ts tests/e2e/offline-bodyweight-recovery.spec.ts tests/e2e/workoutPrescriptionContext.spec.ts tests/e2e/setGroups.spec.ts tests/e2e/setGroupsOffline.spec.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed/run.ts"

@@ -28,6 +28,10 @@ import {
   supersedePending,
 } from "@/server/progression/service";
 import type { RecommendationTarget } from "@/domain/progression/engine";
+import {
+  prescriptionSnapshotSchema,
+  type PrescriptionSnapshotData,
+} from "@/domain/schemas/prescriptionSnapshot";
 import { logBodyweight } from "@/server/bodyweight/service";
 import { logRecovery, RecoveryEntryHasNoMetricError } from "@/server/recovery/service";
 import {
@@ -206,6 +210,7 @@ export const SET_LOG_FIELDS = [
   "rir",
   "distanceM",
   "durationS",
+  "groupKey",
   "loggedAt",
   "notes",
 ] as const;
@@ -793,7 +798,30 @@ function setLogUpdateChangesEvaluationInputs(
   if (writable.has("rir") && payload.rir !== existing.rir) return true;
   if (writable.has("distanceM") && payload.distanceM !== existing.distanceM) return true;
   if (writable.has("durationS") && payload.durationS !== existing.durationS) return true;
+  // set-groups-architecture-evaluation.md §4.4 rule 4 — "changing the group
+  // of a set is an evaluation-relevant edit."
+  if (writable.has("groupKey") && (payload.groupKey ?? null) !== existing.groupKey) return true;
   return false;
+}
+
+// set-groups-architecture-evaluation.md §4.4 rule 2 — a work set's
+// `groupKey` on an ungrouped slot must be null/absent; on a grouped slot it
+// must be one of the frozen snapshot's keys — validated against the PARENT
+// slot's frozen snapshot, rejected as `invalid_payload` otherwise (the
+// analogue of `dimensionsOf(parentProfile)` for measured fields).
+function isValidGroupKeyForSnapshot(
+  snapshot: PrescriptionSnapshotData | null,
+  groupKey: string | null,
+): boolean {
+  if (groupKey === null) return true;
+  if (!snapshot || snapshot.scheme.type !== "groups") return false;
+  return snapshot.scheme.groups.some((g) => g.key === groupKey);
+}
+
+function parseParentSnapshot(prescription: unknown): PrescriptionSnapshotData | null {
+  if (!prescription) return null;
+  const parsed = prescriptionSnapshotSchema.safeParse(prescription);
+  return parsed.success ? parsed.data.snapshot : null;
 }
 
 // §6.4/§13.1 — the row a set op will actually leave behind once its
@@ -962,6 +990,7 @@ async function applySetLogUpsert(
           .select({
             status: workoutSessions.status,
             measurementProfile: sessionExercises.measurementProfile,
+            prescription: sessionExercises.prescription,
           })
           .from(sessionExercises)
           .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
@@ -973,6 +1002,11 @@ async function applySetLogUpsert(
           );
         if (!parent) return rejected(opId, "setLog", "not_found");
         if (parent.status !== "in_progress") return rejected(opId, "setLog", "session_locked");
+
+        const createGroupKey = payload.groupKey ?? null;
+        if (!isValidGroupKeyForSnapshot(parseParentSnapshot(parent.prescription), createGroupKey)) {
+          return rejected(opId, "setLog", "invalid_payload");
+        }
 
         // §12.2 — the hard-coded weightKg/reps gate this replaces becomes
         // profile-scoped: the parent slot's frozen shape (`dimensionsOf`,
@@ -1027,6 +1061,7 @@ async function applySetLogUpsert(
             rir: effectiveRow.rir,
             distanceM: effectiveRow.distanceM,
             durationS: effectiveRow.durationS,
+            groupKey: createGroupKey,
             measurementProfile: parentProfile,
             loggedAt: new Date(payload.loggedAt),
             notes: payload.notes ?? null,
@@ -1102,11 +1137,69 @@ async function applySetLogUpsert(
         return rejected(opId, "setLog", "invalid_measurement");
       }
 
+      // L-3 (independent review) — §4.4 rule 1: a warm-up set carries no
+      // group, enforced here server-side regardless of what a patch submits
+      // (defense in depth beyond the client's own fix, which sends the two
+      // together correctly — this covers a hand-crafted or future-buggy
+      // client that doesn't).
+      //
+      // V-2 (independent verification) — the naive "effective isWarmup"
+      // read below is only trustworthy when THIS op is the LAST one in the
+      // batch to touch `isWarmup`: `writable.has("isWarmup")` is false
+      // exactly when a LATER op will overwrite it, and in that case
+      // `existingRow.setLog.isWarmup` is the PRE-BATCH row, not the
+      // batch-final value — reading it here would force `groupKey` off THIS
+      // op's own row based on a value the batch is about to change anyway,
+      // clobbering a `groupKey` THIS op legitimately set. The fix: skip
+      // forcing here whenever a later op in the batch will also touch
+      // EITHER `isWarmup` or `groupKey`, and let that later op decide
+      // instead. This is sound by induction over the subsumption chain: the
+      // op that is provably the LAST to touch `isWarmup` always reads (or
+      // writes) an accurate value — either directly from its own payload
+      // (never subsumed on that field) or, if it doesn't touch `isWarmup`
+      // itself, from `existingRow`, which by then already reflects every
+      // earlier op's write within this same transaction, including the
+      // true final `isWarmup` set by whichever earlier op WAS the last
+      // toucher. That op's own forcing decision is what actually lands —
+      // deferring here never leaves the invariant unenforced, it just moves
+      // the decision to the op that can make it correctly. Ops in one batch
+      // still apply strictly in order, so this reasoning holds regardless
+      // of how many later ops touch either field.
+      const effectiveIsWarmup = writable.has("isWarmup")
+        ? payload.isWarmup
+        : existingRow.setLog.isWarmup;
+      const laterFields = supersession.laterUpsertFields;
+      const groupKeyForcedNull =
+        effectiveIsWarmup === true &&
+        !laterFields?.has("isWarmup") &&
+        !laterFields?.has("groupKey");
+
+      // set-groups-architecture-evaluation.md §4.4 rule 2 — validated against
+      // the parent slot's frozen snapshot, same rule as creation. Only
+      // queried when this op actually writes a real `groupKey` value (the
+      // common case never pays for it, and a forced-null write is always
+      // valid without asking).
+      if (!groupKeyForcedNull && writable.has("groupKey")) {
+        const [parentForGroupKey] = await tx
+          .select({ prescription: sessionExercises.prescription })
+          .from(sessionExercises)
+          .where(eq(sessionExercises.id, existingRow.setLog.sessionExerciseId));
+        const parentSnapshot = parseParentSnapshot(parentForGroupKey?.prescription ?? null);
+        if (!isValidGroupKeyForSnapshot(parentSnapshot, payload.groupKey ?? null)) {
+          return rejected(opId, "setLog", "invalid_payload");
+        }
+      }
+
       const patch: Partial<typeof setLogs.$inferInsert> = {};
       if (writable.has("setNumber")) patch.setNumber = payload.setNumber;
       if (writable.has("isWarmup")) patch.isWarmup = payload.isWarmup;
       if (writable.has("weightKg")) patch.weightKg = payload.weightKg;
       if (writable.has("reps")) patch.reps = payload.reps;
+      if (groupKeyForcedNull) {
+        patch.groupKey = null;
+      } else if (writable.has("groupKey")) {
+        patch.groupKey = payload.groupKey ?? null;
+      }
       // Evaluated BEFORE the patch lands, against the pre-update row.
       const relevantEdit = setLogUpdateChangesEvaluationInputs(
         existingRow.setLog,
@@ -1238,6 +1331,7 @@ async function applyRecommendationUpsert(
           sessionId: sessionExercises.sessionId,
           exerciseId: sessionExercises.exerciseId,
           sessionUserId: workoutSessions.userId,
+          prescription: sessionExercises.prescription,
         })
         .from(sessionExercises)
         .innerJoin(workoutSessions, eq(sessionExercises.sessionId, workoutSessions.id))
@@ -1252,15 +1346,33 @@ async function applyRecommendationUpsert(
         return rejected(opId, "recommendation", "invalid_payload");
       }
 
+      const sourceSnapshot = parseParentSnapshot(source.prescription);
+      const payloadGroupKey = payload.groupKey ?? null;
+      if (!isValidGroupKeyForSnapshot(sourceSnapshot, payloadGroupKey)) {
+        return rejected(opId, "recommendation", "invalid_payload");
+      }
+
       // §5 supersede-before-insert — same rule as the server's own
       // evaluation path, which is what makes uq_recs_one_pending hold.
-      await supersedePending(tx, userId, payload.exerciseId, payload.blockId);
+      // set-groups-architecture-evaluation.md §5.6/C-1/D-6(a) — the FIRST
+      // group of the source snapshot also supersedes a pre-conversion
+      // null-key pending record, same bridge as the server evaluation path.
+      const firstGroupKey =
+        sourceSnapshot?.scheme.type === "groups"
+          ? (sourceSnapshot.scheme.groups[0]?.key ?? null)
+          : null;
+      const supersedeKeys =
+        payloadGroupKey !== null && firstGroupKey === payloadGroupKey
+          ? [payloadGroupKey, null]
+          : [payloadGroupKey];
+      await supersedePending(tx, userId, payload.exerciseId, payload.blockId, supersedeKeys);
 
       await tx.insert(recommendations).values({
         id: payload.id,
         userId,
         exerciseId: payload.exerciseId,
         blockId: payload.blockId,
+        groupKey: payloadGroupKey,
         sourceSessionId: payload.sourceSessionId,
         sourceSessionExerciseId: payload.sourceSessionExerciseId,
         strategyId: payload.strategyId,

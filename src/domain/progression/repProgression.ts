@@ -32,6 +32,11 @@ function schemeMinReps(scheme: SetScheme): number | null {
     case "distanceRounds":
     case "durationRounds":
       return null;
+    // set-groups-architecture-evaluation.md §5.4 — same unreachable-in-
+    // practice arm as loadProgression.ts's `targetRepsPerSet`: only a
+    // group's own projected scheme ever reaches this function.
+    case "groups":
+      return null;
   }
 }
 
@@ -54,8 +59,35 @@ export function evaluateRepProgression(
   cfg: RepProgressionConfig,
 ): RecommendationDraft {
   const sets = ctx.performance.workSets;
-  const scheme = ctx.prescription.scheme;
+  const rawScheme = ctx.prescription.scheme;
   const { loadKg: load, mixed } = modalWorkingLoad(sets);
+
+  // set-groups-architecture-evaluation.md §5.4 — same unreachable-in-
+  // practice narrowing as evaluateLoadProgression.ts: only a group's own
+  // PROJECTED scheme ever reaches this function.
+  if (rawScheme.type === "groups") {
+    return {
+      action: "none",
+      reasonCodes: ["UNSUPPORTED_SCHEME"],
+      inputs: {
+        prescribed: {
+          scheme: rawScheme,
+          ...(ctx.prescription.targetRir ? { targetRir: ctx.prescription.targetRir } : {}),
+        },
+        workSets: sets,
+        derived: {
+          setsCompleted: sets.length,
+          prescribedSets: 0,
+          finalSetRir: sets.length > 0 ? sets[sets.length - 1]!.rir : null,
+          workingLoadKg: load,
+          mixedLoads: mixed,
+        },
+        historyDepthUsed: ctx.history.length,
+      },
+      confidence: "low",
+    };
+  }
+  const scheme = rawScheme;
 
   const prescribed = {
     scheme,

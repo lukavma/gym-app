@@ -37,6 +37,13 @@ export function schemeDefaultReps(scheme: SetScheme): number | null {
     case "distanceRounds":
     case "durationRounds":
       return null;
+    // set-groups-architecture-evaluation.md §5.3 — a `groups` scheme has no
+    // single default (each group has its own); `buildSnapshot.ts` calls this
+    // per group with that group's own PROJECTED scheme, never with the raw
+    // `groups` scheme, so this arm is unreachable in practice and exists
+    // only to keep the switch exhaustive.
+    case "groups":
+      return null;
   }
 }
 

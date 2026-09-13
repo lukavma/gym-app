@@ -22,7 +22,7 @@ The earlier [roadmap evaluation](reviews/post-p10-roadmap-evaluation.md) is a pr
 its optional-Recovery/use-pause/deferred-dashboard recommendations do not override this decision.
 
 New identifiers allocated here: PI-009 account export; PI-010 backup/recovery verification;
-PI-011 Dashboard v2; PI-012 linked top-set/back-off; PI-013 the existing gated e1RM Release B.
+PI-011 Dashboard v2; PI-012 Set Groups and linked back-offs; PI-013 the existing gated e1RM Release B.
 These allocations organize known work and discussion; they do not add accepted behavior.
 
 Follow-up accepted **backlog ideas**: PI-014 daily check-in reminder, PI-015 set-rest timer,
@@ -43,7 +43,7 @@ the [pending iOS evaluation](reviews/ios-beta-distribution-evaluation.md), not d
 | [PI-009](#pi-009) | Account data export — selected product feature |
 | [PI-010](#pi-010) | Backup posture and demonstrated recovery — selected engineering task |
 | [PI-011](#pi-011) | Dashboard v2 — selected; scope/design before implementation |
-| [PI-012](#pi-012) | Linked top-set/back-off — discussed, unselected, design-gated |
+| [PI-012](#pi-012) | Set Groups — architecture verified, owner decisions accepted; A then B, joint release |
 | [PI-013](#pi-013) | e1RM Release B — deferred behind existing usage/design gates |
 | [PI-014](#pi-014) | Optional daily check-in reminder — accepted idea, scope/platform unselected |
 | [PI-015](#pi-015) | Set-rest timer — accepted idea, behavior/platform design-gated |
@@ -652,11 +652,46 @@ Inputs: [v1 verification](reviews/metrics-dashboard-remediation-verification-2.m
 
 <a id="pi-012"></a>
 
-## PI-012 — Linked top-set/back-off prescriptions
+## PI-012 — Set Groups and linked back-offs
 
-**Status: Discussed idea; unselected, demand-driven and design-gated.**
-Source: the owner's request to retain this discussed idea in this consolidation. No detailed
-accepted specification was found in the current product-ideas input.
+**Status: Architecture verified; D-1…D-6 accepted by the owner on 2026-09-12.**
+Binding [owner addendum](reviews/set-groups-architecture-evaluation.md#19-owner-decisions--accepted-2026-09-12):
+explicit stored group attribution; independent progression for independent groups;
+A then B as verified build stages with a joint release; performed-only percentage
+links with user-entered percentages, nearest-step rounding and manual overrides;
+one backward hop without chains; legacy history bridged to the first group.
+This supersedes the earlier exclusions and open-choice wording preserved below.
+No implementation, production migration or deployment is claimed complete.
+
+**Historical scope and rationale (superseded where the owner addendum differs):**
+Owner clarification, 2026-09-11: introduce generic ordered Set Groups within one exercise
+prescription, each with its own set count or set-count range, rep range and target RIR band.
+Example: Trap Bar Deadlift = Top Set 1×3–5 @ RIR 2 + Backoffs 2–3×5 @ RIR 2–3.
+The same structure must work for Bench, Squat, Bulgarian Split Squats and other compatible
+exercises without exercise-specific logic.
+
+V1 reuses existing load/progression behavior independently per group. Existing set logging stays
+unchanged; groups primarily express prescription/progression intent. RIR remains the canonical
+effort metric. No percentage-derived back-offs, cross-group dependencies, new mesocycle logic or
+separate RPE logic. This scope supersedes linked load derivation as the first deliverable of PI-012;
+the original linked-back-off idea below remains deferred.
+
+Architecture must establish the smallest clean representation in the current domain model:
+- Separate group structure from the progression strategy each group uses.
+- Define stable group identity and how unchanged set logging attributes actual work to groups,
+  including variable set counts, skipped/extra/deleted sets and warm-ups. Do not assume a flat
+  set-number partition is unambiguous or silently pool progression evidence between groups.
+- Define what completes a set-count range and how existing strategies evaluate it; the current
+  fixed/repRange schemes have a fixed integer set count.
+- Preserve snapshots, legacy prescriptions, offline/replay behavior and historical training facts;
+  assess profile compatibility, recommendation/carry-forward identity and existing block modifiers.
+  No physical schema or logging-contract change is preselected; surface any conflict with the
+  unchanged-logging constraint before implementation.
+
+The owner requests the smallest clean product slice. This entry records scope, not implementation
+approval or a priority change; keep the separate workout prescription-notes/rest visibility fix bounded.
+
+**Deferred original idea — linked top-set/back-off prescriptions:**
 
 Intent to evaluate: express a top set and linked back-off work for the same exercise rather than
 maintaining unrelated targets manually. The link's basis (planned top-set load, actually performed

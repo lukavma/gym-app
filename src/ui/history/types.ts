@@ -19,6 +19,10 @@ export interface HistorySetDetail {
   durationS: number | null;
   loggedAt: string;
   notes: string | null;
+  // set-groups-architecture-evaluation.md §7 "History" — the group this set
+  // is attributed to; `null` on an ungrouped session or for an unattributed
+  // set inside a grouped session.
+  groupKey: string | null;
 }
 
 export interface HistoryExerciseDetail {

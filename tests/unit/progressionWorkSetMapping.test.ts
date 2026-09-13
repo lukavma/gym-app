@@ -27,6 +27,7 @@ const loadRepsRows: WorkSetSourceRow[] = [
     reps: 1,
     rir: 0,
     measurementProfile: "load_reps",
+    groupKey: null,
   },
   {
     sessionExerciseId: SE_LOAD_REPS,
@@ -34,6 +35,7 @@ const loadRepsRows: WorkSetSourceRow[] = [
     reps: 5,
     rir: 2,
     measurementProfile: "load_reps",
+    groupKey: null,
   },
   {
     sessionExerciseId: SE_LOAD_REPS_2,
@@ -41,6 +43,7 @@ const loadRepsRows: WorkSetSourceRow[] = [
     reps: 15,
     rir: null,
     measurementProfile: "load_reps",
+    groupKey: null,
   },
 ];
 
@@ -55,6 +58,7 @@ const nonLoadRepsRows: WorkSetSourceRow[] = [
     reps: null,
     rir: null,
     measurementProfile: "distance_time",
+    groupKey: null,
   },
   {
     sessionExerciseId: SE_DURATION,
@@ -62,6 +66,7 @@ const nonLoadRepsRows: WorkSetSourceRow[] = [
     reps: null,
     rir: null,
     measurementProfile: "duration",
+    groupKey: null,
   },
   {
     sessionExerciseId: SE_LOAD_DISTANCE,
@@ -69,6 +74,7 @@ const nonLoadRepsRows: WorkSetSourceRow[] = [
     reps: null,
     rir: null,
     measurementProfile: "load_distance",
+    groupKey: null,
   },
 ];
 
@@ -102,10 +108,12 @@ describe("mapWorkSetRows — §11.3 site #1 SQL→domain boundary (NC-10)", () =
   it("preserves the legitimate single and the legitimate 0 kg bodyweight set verbatim", () => {
     const mapped = mapWorkSetRows(loadRepsRows);
     expect(mapped.get(SE_LOAD_REPS)).toEqual([
-      { weightKg: 140, reps: 1, rir: 0 },
-      { weightKg: 100, reps: 5, rir: 2 },
+      { weightKg: 140, reps: 1, rir: 0, groupKey: null },
+      { weightKg: 100, reps: 5, rir: 2, groupKey: null },
     ]);
-    expect(mapped.get(SE_LOAD_REPS_2)).toEqual([{ weightKg: 0, reps: 15, rir: null }]);
+    expect(mapped.get(SE_LOAD_REPS_2)).toEqual([
+      { weightKg: 0, reps: 15, rir: null, groupKey: null },
+    ]);
   });
 
   it("a load_reps row that ever disagreed with the shape CHECK (defensive, should be unreachable) is skipped, never coerced", () => {
@@ -115,6 +123,7 @@ describe("mapWorkSetRows — §11.3 site #1 SQL→domain boundary (NC-10)", () =
       reps: 5,
       rir: null,
       measurementProfile: "load_reps",
+      groupKey: null,
     };
     expect(mapWorkSetRows([corrupt])).toEqual(new Map());
   });

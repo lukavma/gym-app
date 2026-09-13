@@ -283,7 +283,9 @@ describe("progression-engine §9 matrix", () => {
     // directly) so a regression in either file's table is still caught
     // here at the point registry.supportsScheme is actually consumed.
     const SCHEMES_BY_PROFILE: Record<MeasurementProfile, readonly SchemeType[]> = {
-      load_reps: ["fixed", "repRange"],
+      // set-groups-architecture-evaluation.md §8 — `groups` is additive for
+      // `load_reps` only in Stage A.
+      load_reps: ["fixed", "repRange", "groups"],
       reps: ["fixed", "repRange"],
       load_distance: ["distanceRounds"],
       distance_time: ["distanceRounds"],

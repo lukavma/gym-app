@@ -144,6 +144,7 @@ describe("HistorySetDetail (src/ui/history/types.ts) — every profile's shape r
         ...shapedFields(profile),
         loggedAt: new Date(0).toISOString(),
         notes: null,
+        groupKey: null,
       };
       const restored = roundTrip(set);
       expect(restored).toEqual(set);

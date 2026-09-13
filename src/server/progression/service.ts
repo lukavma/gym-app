@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
 import {
   blocks,
   exercises,
@@ -13,7 +13,12 @@ import {
   evaluateSession,
   type SessionExerciseEvaluationInput,
 } from "@/domain/progression/evaluateSession";
-import { applyInSessionDecisionToPrefill } from "@/domain/progression/evaluationTarget";
+import { hasEvaluableStrategy } from "@/domain/progression/groupEvaluation";
+import {
+  applyInSessionDecisionToPrefill,
+  applyInSessionDecisionsToGroupPrefills,
+  type InSessionDecision,
+} from "@/domain/progression/evaluationTarget";
 import {
   prescriptionSnapshotSchema,
   type PrescriptionSnapshotData,
@@ -37,6 +42,13 @@ import { DEFAULT_MEASUREMENT_PROFILE } from "@/domain/measurement/profile";
 // the client's retried op re-runs both — evaluation happens exactly once per
 // actual in_progress → completed transition, never on no-op replays (which
 // is what keeps "no automatic recomputation after a Decision" true).
+//
+// set-groups-architecture-evaluation.md §5.3/D-2 (Stage A) — independent
+// progression per group means one recommendation record PER (exercise,
+// block, group key), not per (exercise, block). Every lookup and mutation in
+// this file that used to be keyed by (exercise, block) alone is now keyed by
+// (exercise, block, group key), with `groupKey = null` for an ungrouped slot
+// — the degenerate case that keeps every existing behaviour byte-identical.
 
 // progression-engine.md §2 — history window "capped (default 5)".
 const ENGINE_HISTORY_CAP = 5;
@@ -81,6 +93,9 @@ export interface RecommendationDto {
   computedBy: "server" | "client";
   createdAt: string;
   decision: RecommendationDecisionDto;
+  // set-groups-architecture-evaluation.md §5.3 — the group this record
+  // belongs to; `null` for an ungrouped slot.
+  groupKey: string | null;
 }
 
 export function toRecommendationDto(row: RecommendationRow): RecommendationDto {
@@ -105,6 +120,7 @@ export function toRecommendationDto(row: RecommendationRow): RecommendationDto {
       decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
       source: row.decisionSource as RecommendationDecisionDto["source"],
     },
+    groupKey: row.groupKey,
   };
 }
 
@@ -112,6 +128,73 @@ function parseSnapshot(prescription: unknown): PrescriptionSnapshotData | null {
   if (!prescription) return null;
   const parsed = prescriptionSnapshotSchema.safeParse(prescription);
   return parsed.success ? parsed.data.snapshot : null;
+}
+
+// Composite key every per-group lookup in this file shares — exported so
+// server/today/service.ts can look results up the identical way.
+export function exerciseGroupKey(exerciseId: string, groupKey: string | null): string {
+  return `${exerciseId}:${groupKey ?? ""}`;
+}
+
+// set-groups-architecture-evaluation.md §5.3/§5.6 C-1/D-6(a) — the ONE
+// place a group's recommendation is resolved from an `exerciseGroupKey`-
+// keyed map, shared by `server/today/service.ts`'s bundle assembly
+// (pendingRecommendations) AND cross-device resume (`getActiveSession`'s
+// `.recommendations`), so the two can never resolve the bridge differently.
+//
+// Found and fixed during this remediation pass: a first cut of the bridge
+// (both call sites, independently) returned the legacy null-key record
+// UNCHANGED — its own `groupKey` field stayed `null`. Every client-side
+// consumer keys a recommendation to a group by `rec.groupKey === group.key`
+// (ExerciseCard.tsx's card lookup, TodaySection.tsx's preview label lookup,
+// activeSession.ts's implicit-decision and explicit-decision lookups) — a
+// `null` groupKey never matches a real group key, so the bridged
+// recommendation was fetched into the bundle/session correctly but then
+// rendered NOWHERE and could never be decided at all, silently defeating
+// the entire point of the bridge ("surfaced, decided normally"). Caught by
+// a browser-level E2E test (tests/e2e/setGroups.spec.ts), never by a unit
+// or integration test, since those asserted only on the bundle's raw
+// carry-forward/pending-record PRESENCE, never on whether a client-side
+// `groupKey`-keyed lookup could actually find it. The fix remaps the
+// RETURNED copy's `groupKey` to the bridging group's own key — the
+// underlying stored row (and its `id`, which a decision op still targets)
+// is never rewritten (D-6 — "no rewrite of historical rows").
+// Stage B remediation F-2 (set-groups-stage-b-review.md) — `isLinked` is the
+// caller's CURRENT (bundle assembly) or FROZEN-snapshot (cross-device resume)
+// answer to "does this group have a `link` right now"; either way, a linked
+// group must never surface a recommendation as a competing decision surface
+// (§6.3 rule L-1's visible consequence: "no recommendation and no decision …
+// ever"), regardless of whether one was computed or even accepted BEFORE the
+// group became linked. This is the single shared choke point both bundle
+// assembly and resume read through, so filtering here — rather than only at
+// render time — closes the defect at its root: a recommendation that can
+// never be surfaced can never be decided through the UI, and therefore can
+// never reach `getLatestDecisionChosenByExercise` (which only ever returns
+// already-decided rows) to poison a later session's `groupPrefills` fallback.
+// A write-time supersede-on-link was considered and deliberately NOT added:
+// this read filter is provably sufficient (a merely-pending record that is
+// never reachable can never transition to accepted/modified), and a
+// prescription update has no reliable single `blockId` to scope a
+// `supersedePending` call against (a template can be scheduled by more than
+// one block), whereas this filter needs no block-scoping at all.
+export function resolveGroupRecommendation(
+  byExerciseGroupKey: ReadonlyMap<string, RecommendationDto>,
+  exerciseId: string,
+  groupKey: string,
+  isFirstGroup: boolean,
+  isLinked: boolean,
+): RecommendationDto | undefined {
+  if (isLinked) return undefined;
+  const own = byExerciseGroupKey.get(exerciseGroupKey(exerciseId, groupKey));
+  if (own) return own;
+  if (!isFirstGroup) return undefined;
+  const bridged = byExerciseGroupKey.get(exerciseGroupKey(exerciseId, null));
+  return bridged ? { ...bridged, groupKey } : undefined;
+}
+
+function firstGroupKeyOf(snapshot: PrescriptionSnapshotData | null): string | null {
+  if (!snapshot || snapshot.scheme.type !== "groups") return null;
+  return snapshot.scheme.groups[0]?.key ?? null;
 }
 
 // The raw shape `getWorkSetsByExercise`'s join produces, one row per set —
@@ -123,6 +206,10 @@ export interface WorkSetSourceRow {
   reps: number | null;
   rir: number | null;
   measurementProfile: string;
+  // set-groups-architecture-evaluation.md §4.4 — carried through so the
+  // domain layer (groupEvaluation.ts) can partition a slot's work sets by
+  // group without a second query.
+  groupKey: string | null;
 }
 
 // §11.3 site #1 (I-13) — the pure half of the SQL→domain boundary, split out
@@ -142,7 +229,7 @@ export function mapWorkSetRows(rows: readonly WorkSetSourceRow[]): Map<string, P
     // defensive-skip idiom below in this file).
     if (row.weightKg === null || row.reps === null) continue;
     const list = result.get(row.sessionExerciseId) ?? [];
-    list.push({ weightKg: row.weightKg, reps: row.reps, rir: row.rir });
+    list.push({ weightKg: row.weightKg, reps: row.reps, rir: row.rir, groupKey: row.groupKey });
     result.set(row.sessionExerciseId, list);
   }
   return result;
@@ -160,6 +247,7 @@ async function getWorkSetsByExercise(
       reps: setLogs.reps,
       rir: setLogs.rir,
       measurementProfile: sessionExercises.measurementProfile,
+      groupKey: setLogs.groupKey,
     })
     .from(setLogs)
     .innerJoin(sessionExercises, eq(setLogs.sessionExerciseId, sessionExercises.id))
@@ -230,10 +318,18 @@ function blockScope(blockId: string | null) {
   return blockId === null ? isNull(recommendations.blockId) : eq(recommendations.blockId, blockId);
 }
 
+function groupKeyScope(groupKey: string | null) {
+  return groupKey === null
+    ? isNull(recommendations.groupKey)
+    : eq(recommendations.groupKey, groupKey);
+}
+
 // The rep target "as executed THIS session" (evaluationTarget.ts): the
-// latest accepted/modified decision per exercise whose decidedAt falls
-// inside the session window and whose recommendation came from an earlier
-// session — i.e. the recommendation the athlete decided at this workout.
+// latest accepted/modified decision per (exercise, group key) whose
+// decidedAt falls inside the session window and whose recommendation came
+// from an earlier session — i.e. the recommendation the athlete decided at
+// this workout. Keyed by `exerciseGroupKey` so a grouped slot's per-group
+// in-session decisions never collide.
 async function getInSessionDecisionChosen(
   db: AppDb,
   userId: string,
@@ -245,6 +341,7 @@ async function getInSessionDecisionChosen(
   const rows = await db
     .select({
       exerciseId: recommendations.exerciseId,
+      groupKey: recommendations.groupKey,
       decisionChosen: recommendations.decisionChosen,
       decidedAt: recommendations.decidedAt,
     })
@@ -263,25 +360,53 @@ async function getInSessionDecisionChosen(
   const startedAtMs = session.startedAt.getTime();
   const completedAtMs = session.completedAt?.getTime() ?? null;
   for (const row of rows) {
-    if (result.has(row.exerciseId)) continue; // rows are newest-first
+    const key = exerciseGroupKey(row.exerciseId, row.groupKey);
+    if (result.has(key)) continue; // rows are newest-first
     if (!row.decidedAt) continue;
     const decidedMs = row.decidedAt.getTime();
     if (decidedMs < startedAtMs) continue;
     if (completedAtMs !== null && decidedMs > completedAtMs) continue;
     const chosen = (row.decisionChosen ?? null) as RecommendationTarget | null;
-    if (chosen) result.set(row.exerciseId, chosen);
+    if (chosen) result.set(key, chosen);
   }
   return result;
 }
 
+// Applies the in-session decision overlay for one exercise, per group when
+// the frozen scheme is `groups` (evaluationTarget.ts's per-key sibling),
+// else the original single-key overlay — the degenerate case that keeps an
+// ungrouped exercise's prefill overlay byte-identical to before Stage A.
+function overlayInSessionDecisions(
+  snapshot: PrescriptionSnapshotData,
+  exerciseId: string,
+  decisionChosen: ReadonlyMap<string, RecommendationTarget>,
+): PrescriptionSnapshotData {
+  if (snapshot.scheme.type === "groups") {
+    const perGroup = new Map<string, InSessionDecision>();
+    for (const group of snapshot.scheme.groups) {
+      const chosen = decisionChosen.get(exerciseGroupKey(exerciseId, group.key));
+      if (chosen) perGroup.set(group.key, { status: "accepted", chosen });
+    }
+    return applyInSessionDecisionsToGroupPrefills(snapshot, perGroup);
+  }
+  const chosen = decisionChosen.get(exerciseGroupKey(exerciseId, null)) ?? null;
+  return applyInSessionDecisionToPrefill(snapshot, chosen ? { status: "accepted", chosen } : null);
+}
+
 // Exported for the sync service's client-computed-recommendation handler,
 // which must apply the same supersede-before-insert rule (§5) the server's
-// own evaluation path uses.
+// own evaluation path uses. `groupKeys` defaults to `[null]` (the ungrouped
+// case, unchanged); a grouped caller passes `[group.key]`, or
+// `[group.key, null]` for the FIRST group of a scheme — the C-1/D-6(a)
+// bridge: the slot's pre-conversion null-key pending record is superseded
+// the first time that group's OWN key produces a fresh evaluation, "closed
+// out by the group's next record" per the architecture evaluation.
 export async function supersedePending(
   db: AppDb,
   userId: string,
   exerciseId: string,
   blockId: string | null,
+  groupKeys: readonly (string | null)[] = [null],
 ): Promise<void> {
   await db
     .update(recommendations)
@@ -291,6 +416,7 @@ export async function supersedePending(
         eq(recommendations.userId, userId),
         eq(recommendations.exerciseId, exerciseId),
         blockScope(blockId),
+        or(...groupKeys.map(groupKeyScope)),
         eq(recommendations.decisionStatus, "pending"),
       ),
     );
@@ -306,33 +432,26 @@ async function assembleAndEvaluate(
   // Cheap pre-filter mirroring the domain's own skip rules, so ineligible
   // exercises never cost a history query. The domain re-applies the same
   // rules — this is an optimization, not the authority.
+  //
+  // Set Groups release-residual remediation W-2
+  // (set-groups-release-residual-verification.md §7) — this used to filter
+  // on `hasEvaluableStrategy` too, which is false for an all-manual slot and
+  // silently hid a linked group's own lifecycle work (below) from an
+  // all-manual slot entirely. `candidates` is now the base
+  // non-skipped/parseable list only (§14.1's per-group condition table);
+  // `toEvaluate`, derived from it, keeps the ordinary evaluate-and-persist
+  // pipeline's candidate set byte-for-byte identical to before this pass —
+  // M-2's own "manual SLOT default + non-manual GROUP override" case is
+  // still exactly what `hasEvaluableStrategy` (not a bare slot-level
+  // `strategyId !== "manual"` check) exists to keep from being dropped.
   const candidates = exerciseRows
     .map((row) => ({ row, snapshot: parseSnapshot(row.prescription) }))
     .filter(
       (c): c is { row: SessionExerciseRow; snapshot: PrescriptionSnapshotData } =>
-        !c.row.skipped && c.snapshot !== null && c.snapshot.progression.strategyId !== "manual",
+        !c.row.skipped && c.snapshot !== null,
     );
   if (candidates.length === 0) return;
-
-  // Initial evaluation dedupes against client-computed recommendations for
-  // this same session: the offline client enqueues its recommendation ops
-  // ahead of the completion op, so by the time this runs, any client
-  // evaluation of these exact session exercises is already persisted —
-  // re-evaluating them server-side would only churn out duplicate records of
-  // identical content (determinism makes the two paths equivalent,
-  // progression-engine.md §5). Re-evaluation must NOT dedupe — the pending
-  // rec it exists to supersede is itself sourced from this session exercise.
-  let toEvaluate = candidates;
-  if (mode === "initial") {
-    const candidateIds = candidates.map((c) => c.row.id);
-    const existing = await db
-      .select({ sourceSessionExerciseId: recommendations.sourceSessionExerciseId })
-      .from(recommendations)
-      .where(inArray(recommendations.sourceSessionExerciseId, candidateIds));
-    const alreadyEvaluated = new Set(existing.map((r) => r.sourceSessionExerciseId));
-    toEvaluate = candidates.filter((c) => !alreadyEvaluated.has(c.row.id));
-  }
-  if (toEvaluate.length === 0) return;
+  const toEvaluate = candidates.filter((c) => hasEvaluableStrategy(c.snapshot));
 
   const exerciseIds = [...new Set(toEvaluate.map((c) => c.row.exerciseId))];
   const exerciseMetaRows = await db
@@ -354,30 +473,108 @@ async function assembleAndEvaluate(
     };
   }
 
+  // W-2 — widened from `toEvaluate` to `candidates` (a superset) so an
+  // all-manual slot's own logged sets are available to the linked-group
+  // supersession loop below, which no longer runs only over `toEvaluate`.
   const workSets = await getWorkSetsByExercise(
     db,
-    toEvaluate.map((c) => c.row.id),
+    candidates.map((c) => c.row.id),
   );
   const decisionChosen = await getInSessionDecisionChosen(db, userId, session, exerciseIds);
 
   const inputs: SessionExerciseEvaluationInput[] = [];
+  const snapshotBySessionExerciseId = new Map<string, PrescriptionSnapshotData>();
   for (const { row, snapshot } of toEvaluate) {
     const loadStepKg = loadStepById.get(row.exerciseId);
     if (loadStepKg === undefined) continue; // RESTRICT FK — unreachable
     const history = await getEngineHistory(db, userId, row.exerciseId, session);
-    const chosen = decisionChosen.get(row.exerciseId) ?? null;
+    snapshotBySessionExerciseId.set(row.id, snapshot);
     inputs.push({
       sessionExerciseId: row.id,
       exerciseId: row.exerciseId,
       skipped: row.skipped,
-      prescription: applyInSessionDecisionToPrefill(
-        snapshot,
-        chosen ? { status: "accepted", chosen } : null,
-      ),
+      prescription: overlayInSessionDecisions(snapshot, row.exerciseId, decisionChosen),
       workSets: workSets.get(row.id) ?? [],
       history,
       loadStepKg,
     });
+  }
+
+  // Stage B remediation V-1 (set-groups-stage-b-remediation-verification.md
+  // §7), corrected by the release-residual remediation W-1/W-2/W-3
+  // (set-groups-release-residual-verification.md §7 — see §14.1's behaviour
+  // matrix in the implementation report for the full derivation) —
+  // `evaluateGroupedExercise`'s `if (group.link) continue` means a linked
+  // group's OWN evaluation never runs, so a pending record computed before
+  // the group was linked is never superseded by any session completed while
+  // it stays linked; F-2's `isLinked` read-time filter then hides that stale
+  // record only while linked, and unlinking makes it reachable again —
+  // resurfacing a target that predates real, differently-loaded work already
+  // logged into this exact group. Unlike the write-time supersede-on-link
+  // shape F-2 already rejected (no reliable `blockId` exists at a
+  // prescription-EDIT moment, since a template can be scheduled by more than
+  // one block), this runs at SESSION COMPLETION, where `session.blockId` is
+  // already well-defined and already used by every other `supersedePending`
+  // call in this function — so scoping to it is not a new limitation, it is
+  // the existing convention.
+  //
+  // W-1 — a linked group's own evaluation is ALWAYS skipped (unconditional on
+  // `mode`), so it can never have a recommendation row sourced from its own
+  // slot; the neighbouring `toPersist` guard's `reevaluate`-mode condition
+  // ("the record sourced from THIS slot is still pending") can therefore
+  // never be satisfied for a linked group's key, in either mode. Applying
+  // that exact guard here is mathematically equivalent to never running this
+  // loop in `reevaluate` mode — there is no configuration where the guard
+  // would permit a supersede that skipping the mode outright would forbid —
+  // so the loop runs only for `mode === "initial"`, the completion-only
+  // operation the rule was always meant to be. This is what stops correcting
+  // a set in an OLDER session frozen as linked from destroying a NEWER,
+  // legitimate pending record for the same group that a later, unlinked
+  // session already produced.
+  //
+  // W-3 — gated on `!session.isDeload` too, and positioned (as before)
+  // ahead of `evaluateSession`'s own `isDeload` short-circuit, so it must
+  // check the flag itself rather than inherit that short-circuit: A-15 and
+  // `recommendationForDeload` both express "a deload session changes no
+  // recommendation state," and superseding a pending record is a state
+  // change. A deload session with a linked, performed group therefore now
+  // leaves that group's stale record exactly as reachable after a later
+  // unlink as it was before this fix existed — an explicit, documented
+  // exception to the linked-and-performed rule, not an oversight: real work
+  // was logged, but a deload week's own "change nothing" contract wins.
+  //
+  // W-2 — iterates `candidates` (every non-skipped, parseable slot), not
+  // `toEvaluate` (§14.1/M-2's `hasEvaluableStrategy`-filtered subset), so an
+  // all-manual slot's own linked, performed group is still covered — slot
+  // eligibility for ordinary progression is orthogonal to whether a linked
+  // group's stale record needs invalidating.
+  //
+  // Fires ONLY when the group (a) is linked in this session's own FROZEN
+  // snapshot and (b) actually has a logged set THIS session — never for a
+  // linked-but-untouched group (no new fact would justify invalidating
+  // anything, which is also why link→unlink with no intervening workout
+  // correctly leaves the old record reachable again, unchanged), never for a
+  // sibling group or another block (a stale record filed under a different
+  // block that also schedules this template is deliberately left alone), and
+  // never for a `manual`-strategy group (the analogous-looking manual
+  // transition is a distinct, pre-existing, out-of-scope behaviour class —
+  // see the review's V-1 discussion — and widening this fix to cover it
+  // would be exactly the "broader recommendation redesign" the task keeps
+  // out of scope). Only marks already-'pending' rows 'superseded', same
+  // idempotent, replay-safe update every other caller here uses; never
+  // touches an accepted/modified row.
+  if (mode === "initial" && !session.isDeload) {
+    for (const { row, snapshot } of candidates) {
+      if (snapshot.scheme.type !== "groups") continue;
+      const sets = workSets.get(row.id) ?? [];
+      for (const group of snapshot.scheme.groups) {
+        if (!group.link) continue;
+        if (!sets.some((s) => s.groupKey === group.key)) continue;
+        const keys: (string | null)[] =
+          firstGroupKeyOf(snapshot) === group.key ? [group.key, null] : [group.key];
+        await supersedePending(db, userId, row.exerciseId, session.blockId, keys);
+      }
+    }
   }
 
   const results = evaluateSession({
@@ -387,14 +584,49 @@ async function assembleAndEvaluate(
     block: blockContext,
     exercises: inputs,
   });
+  if (results.length === 0) return;
 
-  for (const result of results) {
-    await supersedePending(db, userId, result.exerciseId, session.blockId);
+  // set-groups-architecture-evaluation.md §5.3 M-3 — one existence-and-status
+  // lookup, keyed by (sourceSessionExerciseId, groupKey), serves BOTH modes:
+  // 'initial' dedupes against a client-precomputed record (any status —
+  // "already exists" is enough to skip, matching the pre-Stage-A single-key
+  // rule exactly for an ungrouped slot); 'reevaluate' persists ONLY for a key
+  // whose existing record from THIS slot is still 'pending' — a group
+  // decided this session, or superseded by a later session, is never
+  // re-evaluated from an older slot (A-13b, NC-6).
+  const sessionExerciseIds = [...new Set(toEvaluate.map((c) => c.row.id))];
+  const existingRows = await db
+    .select({
+      sourceSessionExerciseId: recommendations.sourceSessionExerciseId,
+      groupKey: recommendations.groupKey,
+      decisionStatus: recommendations.decisionStatus,
+    })
+    .from(recommendations)
+    .where(inArray(recommendations.sourceSessionExerciseId, sessionExerciseIds));
+  const statusByKey = new Map<string, string>();
+  for (const row of existingRows) {
+    statusByKey.set(`${row.sourceSessionExerciseId}:${row.groupKey ?? ""}`, row.decisionStatus);
+  }
+
+  const toPersist = results.filter((result) => {
+    const key = `${result.sessionExerciseId}:${result.groupKey ?? ""}`;
+    if (mode === "initial") return !statusByKey.has(key);
+    return statusByKey.get(key) === "pending";
+  });
+
+  for (const result of toPersist) {
+    const snapshot = snapshotBySessionExerciseId.get(result.sessionExerciseId) ?? null;
+    const supersedeKeys: (string | null)[] =
+      result.groupKey !== null && firstGroupKeyOf(snapshot) === result.groupKey
+        ? [result.groupKey, null]
+        : [result.groupKey];
+    await supersedePending(db, userId, result.exerciseId, session.blockId, supersedeKeys);
     await db.insert(recommendations).values({
       id: newId(),
       userId,
       exerciseId: result.exerciseId,
       blockId: session.blockId,
+      groupKey: result.groupKey,
       sourceSessionId: session.id,
       sourceSessionExerciseId: result.sessionExerciseId,
       strategyId: result.strategyId,
@@ -412,8 +644,8 @@ async function assembleAndEvaluate(
 }
 
 // Bundle assembly (pwa-offline-strategy.md §4 "pendingRecommendation?"):
-// the at-most-one pending recommendation per exercise in the given block
-// scope, keyed by exercise id.
+// the at-most-one pending recommendation per (exercise, group key) in the
+// given block scope, keyed by `exerciseGroupKey`.
 export async function getPendingRecommendationsByExercise(
   db: AppDb,
   userId: string,
@@ -433,14 +665,15 @@ export async function getPendingRecommendationsByExercise(
         eq(recommendations.decisionStatus, "pending"),
       ),
     );
-  for (const row of rows) result.set(row.exerciseId, toRecommendationDto(row));
+  for (const row of rows)
+    result.set(exerciseGroupKey(row.exerciseId, row.groupKey), toRecommendationDto(row));
   return result;
 }
 
 // prescription-model.md §4 step 1 — "chosen values of latest recommendation
 // Decision for (E, current block)". Only accepted/modified decisions carry
 // chosen values; rejected decisions are transparent (workingTargets.ts), so
-// they are simply not part of this query.
+// they are simply not part of this query. Keyed by `exerciseGroupKey`.
 export async function getLatestDecisionChosenByExercise(
   db: AppDb,
   userId: string,
@@ -452,7 +685,9 @@ export async function getLatestDecisionChosenByExercise(
   const rows = await db
     .select({
       exerciseId: recommendations.exerciseId,
+      groupKey: recommendations.groupKey,
       decisionChosen: recommendations.decisionChosen,
+      decidedAt: recommendations.decidedAt,
     })
     .from(recommendations)
     .where(
@@ -465,17 +700,18 @@ export async function getLatestDecisionChosenByExercise(
     )
     .orderBy(desc(recommendations.decidedAt));
   for (const row of rows) {
-    if (result.has(row.exerciseId)) continue; // newest-first
+    const key = exerciseGroupKey(row.exerciseId, row.groupKey);
+    if (result.has(key)) continue; // newest-first
     const chosen = row.decisionChosen as DecisionChosen | null;
-    if (chosen) result.set(row.exerciseId, chosen);
+    if (chosen) result.set(key, chosen);
   }
   return result;
 }
 
-// Cross-device resume context: for each exercise of an in-progress session,
-// the recommendation the athlete is deciding at this workout — the latest
-// non-superseded record for (exercise, block) sourced from a different
-// session (pending, or already decided during this session).
+// Cross-device resume context: for each (exercise, group key) of an
+// in-progress session, the recommendation the athlete is deciding at this
+// workout — the latest non-superseded record sourced from a different
+// session. Keyed by `exerciseGroupKey`.
 export async function getSessionRecommendationsByExercise(
   db: AppDb,
   userId: string,
@@ -498,8 +734,9 @@ export async function getSessionRecommendationsByExercise(
     )
     .orderBy(desc(recommendations.createdAt));
   for (const row of rows) {
-    if (result.has(row.exerciseId)) continue; // newest-first
-    result.set(row.exerciseId, toRecommendationDto(row));
+    const key = exerciseGroupKey(row.exerciseId, row.groupKey);
+    if (result.has(key)) continue; // newest-first
+    result.set(key, toRecommendationDto(row));
   }
   return result;
 }
@@ -527,6 +764,12 @@ export async function evaluateCompletedSession(
 // upserts/deletes on completed sessions — an in-progress session cannot have
 // sourced a recommendation yet, and a pending rec's source is always a
 // completed session, so the completed-only gate loses nothing.
+//
+// set-groups-architecture-evaluation.md §5.3 M-3 — this GATE is unchanged
+// (still "does ANY pending record sourced from this slot exist"); the fix is
+// inside `assembleAndEvaluate`'s per-(sessionExercise, groupKey) status check
+// above, which is what actually restricts 'reevaluate' mode to still-pending
+// keys.
 export async function reevaluateForSourceSessionExercise(
   db: AppDb,
   userId: string,

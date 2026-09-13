@@ -389,3 +389,84 @@ test("an injected incompatible setLog op on a load_distance slot dead-letters wi
       .catch(() => undefined);
   }
 });
+
+test("V-3 (independent verification) — waitForOutboxDrained's failure diagnostics name the dead-lettered op's entity and reason", async ({
+  page,
+}) => {
+  // Reuses the exact same deterministic dead-letter mechanism as the test
+  // above (an injected `reps` field on a `load_distance` slot, always
+  // rejected `invalid_measurement`) — that rejection itself is already
+  // proven there; this test is ONLY about whether waitForOutboxDrained's
+  // own failure output, once it inevitably observes that dead letter, names
+  // the offending entity and reason rather than a bare count mismatch.
+  await login(page);
+  await ensureNoActiveSession(page);
+
+  const unique = `E2E V-3 Diagnostics ${Date.now()}`;
+  const programInfo = await getActiveProgramInfo(page);
+  const exercise = await createMeasurementExercise(page, {
+    name: unique,
+    equipment: "other",
+    measurementProfile: "load_distance",
+    loadBasis: "total",
+  });
+  const templateId = await createTemplateWithScheme(
+    page,
+    programInfo.programId,
+    exercise.id,
+    unique,
+    {
+      v: 1,
+      scheme: { type: "distanceRounds", sets: 4, distanceM: 20 },
+    },
+  );
+
+  try {
+    await applyScheduleOverride(page, programInfo.blockId, templateId);
+    await page.goto("/today");
+    await ensureNoActiveSession(page);
+
+    await page.getByRole("button", { name: "Start workout" }).click();
+    await page.waitForURL(/\/today\/workout$/);
+
+    await page.getByLabel("Weight in kilograms").fill("60");
+    await page.getByLabel("Distance in metres").fill("20");
+    await page.getByLabel("Time in seconds").fill("12.4");
+    await page.getByRole("button", { name: "Log" }).click();
+    await waitForOutboxDrained(page);
+
+    const slotAndSet = await readActiveSessionSlotAndSet(page);
+    await injectIncompatibleSetLogOp(page, slotAndSet);
+    await expect
+      .poll(async () => (await readInjectedOutboxRecord(page, slotAndSet.setId))?.status, {
+        timeout: 20_000,
+      })
+      .toBe("dead");
+
+    // The zero-dead-letter assertion inside waitForOutboxDrained is
+    // unchanged and still fails here — this only checks what the thrown
+    // error NOW says.
+    let caught: unknown;
+    try {
+      await waitForOutboxDrained(page, 2_000);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("setLog");
+    expect(message).toContain("invalid_measurement");
+  } finally {
+    await page.goto("/today/workout").catch(() => undefined);
+    const discardButton = page.getByRole("button", { name: "Discard workout" });
+    if (await discardButton.isVisible().catch(() => false)) {
+      page.once("dialog", (d) => void d.accept());
+      await discardButton.click();
+      await page.waitForURL(/\/today$/).catch(() => undefined);
+    }
+    await restoreSchedule(page, programInfo.blockId, programInfo.originalSchedulePayload);
+    await page.request
+      .post(`/api/templates/${templateId}/archive`, { data: { action: "archive" } })
+      .catch(() => undefined);
+  }
+});

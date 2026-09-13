@@ -51,6 +51,16 @@ export const setLogs = pgTable(
     distanceM: numeric("distance_m", { precision: 7, scale: 2, mode: "number" }),
     durationS: numeric("duration_s", { precision: 7, scale: 2, mode: "number" }),
     measurementProfile: text("measurement_profile").notNull().default("load_reps"),
+    // set-groups-architecture-evaluation.md §4.3/D-1 — the stable group key
+    // (setScheme.ts's SetGroup.key) this work set is attributed to on a
+    // grouped slot; NULL on an ungrouped slot, and also NULL for a work set
+    // inside a grouped session the athlete hasn't (yet) attributed — that
+    // set still counts for volume and strength estimation but belongs to no
+    // group's evaluation (§4.4 rule 3). No FK to any groups table exists (groups are JSONB
+    // inside the frozen snapshot, not a row) — validity against the parent
+    // slot's frozen scheme is a sync-service check (§4.4 rule 2), not a DB
+    // constraint.
+    groupKey: text("group_key"),
     loggedAt: timestamp("logged_at", { withTimezone: true }).notNull(),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

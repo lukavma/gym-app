@@ -6,7 +6,7 @@ import { LogoutButton } from "@/ui/LogoutButton";
 import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import { getCachedBundle, setCachedBundle } from "@/sync/bundleCache";
 import { fetchRemoteActiveSession } from "@/sync/remoteActiveSession";
-import { formatScheme } from "@/domain/schemes/setScheme";
+import { formatScheme, isGroupsScheme } from "@/domain/schemes/setScheme";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { ACTION_COPY, formatTarget, reasonCopy } from "@/ui/recommendations/copy";
 import { BodyweightQuickLog } from "@/ui/bodyweight/BodyweightQuickLog";
@@ -385,6 +385,17 @@ function TodayResolutionView({
             today.isDeload,
             entry.pendingRecommendation,
           );
+          // set-groups-architecture-evaluation.md §5.3/§11.2 — this preview
+          // is informational only (the decision itself happens in the
+          // workout, progression-engine.md §7), but a grouped slot must show
+          // ITS OWN per-group pending recommendations here too, not just the
+          // (always-empty-for-a-grouped-slot) ungrouped singular the card
+          // used before this fix. `today.isDeload` gate mirrors
+          // `recommendationForDeload` above as a defensive backstop for a
+          // stale cached bundle, matching H-1's precedent — the server
+          // already omits both for a deload week.
+          const groupsScheme = isGroupsScheme(entry.scheme) ? entry.scheme : null;
+          const pendingRecommendations = today.isDeload ? [] : (entry.pendingRecommendations ?? []);
           return (
             <li
               key={entry.prescriptionId}
@@ -392,23 +403,41 @@ function TodayResolutionView({
             >
               <p className="text-base font-medium text-slate-50">{entry.exerciseName}</p>
               <p className="text-xs text-slate-400">
-                {formatScheme(entry.scheme)}
-                {entry.targetRir ? ` @ RIR ${entry.targetRir.min}-${entry.targetRir.max}` : ""}
+                {formatScheme(entry.scheme, entry.targetRir)}
+                {/* M-6 — a grouped scheme embeds each group's own RIR band
+                    inline; the slot band is only appended separately for an
+                    ungrouped scheme. */}
+                {!groupsScheme && entry.targetRir
+                  ? ` @ RIR ${entry.targetRir.min}-${entry.targetRir.max}`
+                  : ""}
               </p>
               {/* Informational preview only — the decision (accept/modify/
                   reject, or implicit via the first work set) happens in the
                   workout itself (progression-engine.md §7). */}
-              {pendingRecommendation && (
-                <p className="mt-1 text-xs text-sky-300">
-                  {ACTION_COPY[pendingRecommendation.action]}
-                  {formatTarget(pendingRecommendation.target)
-                    ? `: ${formatTarget(pendingRecommendation.target)}`
-                    : ""}
-                  {pendingRecommendation.reasonCodes[0]
-                    ? ` — ${reasonCopy(pendingRecommendation.reasonCodes[0])}`
-                    : ""}
-                </p>
-              )}
+              {groupsScheme
+                ? pendingRecommendations.map((rec) => {
+                    const label =
+                      groupsScheme.groups.find((g) => g.key === rec.groupKey)?.label ?? null;
+                    return (
+                      <p key={rec.id} className="mt-1 text-xs text-sky-300">
+                        {label ? `${label}: ` : ""}
+                        {ACTION_COPY[rec.action]}
+                        {formatTarget(rec.target) ? `: ${formatTarget(rec.target)}` : ""}
+                        {rec.reasonCodes[0] ? ` — ${reasonCopy(rec.reasonCodes[0])}` : ""}
+                      </p>
+                    );
+                  })
+                : pendingRecommendation && (
+                    <p className="mt-1 text-xs text-sky-300">
+                      {ACTION_COPY[pendingRecommendation.action]}
+                      {formatTarget(pendingRecommendation.target)
+                        ? `: ${formatTarget(pendingRecommendation.target)}`
+                        : ""}
+                      {pendingRecommendation.reasonCodes[0]
+                        ? ` — ${reasonCopy(pendingRecommendation.reasonCodes[0])}`
+                        : ""}
+                    </p>
+                  )}
             </li>
           );
         })}

@@ -187,13 +187,15 @@ Computed by a pure domain function at Today/bundle build time, then **frozen int
 
 ```text
 PrescriptionSnapshot = { exerciseId, exerciseName, scheme, targetRir?, restSeconds?,
-                         progression: {strategyId, strategyVersion, config, classification},
+                         progression: {strategyId, strategyVersion, config, classification,
+                                       groups?: Record<key, {strategyId, strategyVersion, config, classification}>},
                          appliedModifiers?: WeekModifiers, prefill: {loadKg?, reps?},
+                         groupPrefills?: Record<key, {loadKg?, reps?}>,
                          measurement?: {profile, loadBasis?},
                          prescriptionNotes?: string|null }
 ```
 
-`measurement` (Athletic Measurement Profiles Release 2) and `prescriptionNotes` (PI-018) are **additive optional** keys on the same `v: 1` shape: a snapshot written before either release has no such key and parses unchanged, so neither bumped the version and neither has an upgrade function. `prescriptionNotes` is the slot's own `exercise_prescriptions.notes`, frozen at session start and read-only for the rest of the workout — deliberately *not* named `notes`, which is the separate, editable `session_exercises.notes`. An absent `prescriptionNotes` means "this session never froze one" and is **never** reconstructed from the current program definition.
+`measurement` (Athletic Measurement Profiles Release 2), `prescriptionNotes` (PI-018) and `groupPrefills`/`progression.groups` (Set Groups Stage A, `set-groups-architecture-evaluation.md`) are **additive optional** keys on the same `v: 1` shape: a snapshot written before any of these releases has no such key and parses unchanged, so none bumped the version and none has an upgrade function. `prescriptionNotes` is the slot's own `exercise_prescriptions.notes`, frozen at session start and read-only for the rest of the workout — deliberately *not* named `notes`, which is the separate, editable `session_exercises.notes`. An absent `prescriptionNotes` means "this session never froze one" and is **never** reconstructed from the current program definition. `groupPrefills`/`progression.groups` are present only when `scheme.type === 'groups'`, one entry per group key, resolved through the identical decision → carry-forward → baseline chain above, applied per group; `prefill`/`progression` themselves keep the **first** group's resolved values so every pre-Stage-A reader stays correct unchanged.
 
 ---
 
@@ -224,9 +226,10 @@ One exercise slot inside a session: `{ exerciseId, position, source: template | 
 - `measurementProfile` and `loadBasis` are derived server-side from the exercise row and **frozen at insert** — never updated afterward. The frozen profile equals the exercise's profile at write time (database-enforced) and the exercise's profile cannot change while any slot references it; the frozen basis is not locked at the exercise level (`athletic-measurement-profiles-architecture-evaluation.md` §8.2, §10.1, I-3).
 
 ### SetLog (the atomic fact)
-`{ setNumber, isWarmup, weightKg, reps, rir?: int 0–10 | null, loggedAt, notes? }`
+`{ setNumber, isWarmup, weightKg, reps, rir?: int 0–10 | null, groupKey?: string | null, loggedAt, notes? }`
 
 - `rir` is **nullable and integer**. Null means “not reported” — a first-class state every consumer must handle. No fractional RIR exists anywhere in the domain (EVIDENCE-030: ±~1 rep noise even in ideal conditions; sub-repetition precision would be fake).
+- `groupKey` (Set Groups Stage A) is the stable `SetGroup.key` (`prescription-model.md` §2) this set is attributed to on a grouped slot; `null` on an ungrouped slot, and also `null` for a work set inside a grouped session the athlete hasn't attributed — excluded from every group's evaluation, still counted for volume and strength estimation. A stored fact, never derived from `setNumber` ordering; editable in place (an evaluation-relevant edit) the same way `isWarmup` already is.
 - Sets are created only when performed — planned-but-unlogged sets are UI state derived from `prescription.scheme − logged sets`, never rows.
 - Users may edit or delete their own set logs at any time, including after completion: SetLogs are *the user's record of what happened*, and the user owns that truth. Edits update `updatedAt`; no shadow audit copies in MVP.
 - Ids are client-generated UUIDv7 (offline creation, idempotent sync).
@@ -251,6 +254,7 @@ Persisted output of one progression-engine evaluation, plus what the user did wi
 - Self-describing: stores strategy id + version + config snapshot + inputs summary + reason codes + confidence + classification. Interpretable forever without replaying old code.
 - **The Decision is source-of-truth data** (a user choice); the recommendation itself is derived-but-persisted-for-audit (see `architecture-plan.md` §derived-data).
 - The chosen values of the latest decision are the next session's working target for that exercise — there is no separate mutable “current working weight” state to drift out of sync.
+- Set Groups Stage A adds a nullable `groupKey` (mirroring `SetLog.groupKey`): independent per-group progression means one pending recommendation per `(exercise, block, group key)`, not per `(exercise, block)` — `null` for an ungrouped slot, the existing behaviour unchanged. `inputs.prescribed.group: {key, label, setsMin, setsMax}` and `inputs.extraWorkSets` (recorded sets beyond the evaluation window) are additive keys on the inputs summary, present **only** on a per-group record and **omitted entirely** (not `undefined`, not `[]`) on an ungrouped one — `progression-engine.md` §6/§8 has the full contract.
 
 ### BodyweightEntry / RecoveryEntry
 Simple daily journal facts, one per calendar date:

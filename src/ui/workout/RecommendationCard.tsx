@@ -18,6 +18,10 @@ interface RecommendationCardProps {
   recommendation: RecommendationDto;
   disabled?: boolean;
   onDecide: (decision: ExplicitDecisionInput) => void;
+  // set-groups-architecture-evaluation.md §11.2 — "one per group with a
+  // pending/decided record, labelled". Absent for an ungrouped slot's single
+  // card (unchanged rendering).
+  groupLabel?: string;
 }
 
 function strategyLabel(rec: RecommendationDto): string {
@@ -48,6 +52,7 @@ export function RecommendationCard({
   recommendation: rec,
   disabled = false,
   onDecide,
+  groupLabel,
 }: RecommendationCardProps) {
   const [customOpen, setCustomOpen] = useState(false);
   const [customLoad, setCustomLoad] = useState(
@@ -91,6 +96,11 @@ export function RecommendationCard({
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-sky-900 bg-sky-950/40 px-3 py-2">
+      {groupLabel && (
+        <p className="text-[11px] font-semibold tracking-wide text-sky-400 uppercase">
+          {groupLabel}
+        </p>
+      )}
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-sm font-medium text-sky-200">
           {ACTION_COPY[rec.action]}

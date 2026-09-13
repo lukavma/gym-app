@@ -21,6 +21,11 @@ export type HistorySetCorrectionPatch = Partial<{
   durationS: number | null;
   isWarmup: boolean;
   notes: string | null;
+  // set-groups-architecture-evaluation.md §4.4/§11.3 — reassigns which group
+  // this set belongs to; `null` clears the attribution (an "unattributed"
+  // work set, §4.4 rule 3). Validated against the parent slot's frozen
+  // snapshot server-side, same rule as every other setLog write.
+  groupKey: string | null;
 }>;
 
 // Post-completion set corrections (domain-model.md §7 — SetLog values
@@ -65,8 +70,18 @@ export async function deleteHistorySet(
   setId: string,
   sets: readonly SetLogRowFields[],
   profile: MeasurementProfile,
+  // set-groups-architecture-evaluation.md §5.4/rev. 3 V-1 — same
+  // profile-scoped emission rule as the in-session path: the renumber
+  // upserts carry `groupKey` only when the slot is grouped.
+  isGrouped = false,
 ): Promise<void> {
-  const { deleted, ops } = buildSetDeletionOps({ sessionExerciseId, setId, sets, profile });
+  const { deleted, ops } = buildSetDeletionOps({
+    sessionExerciseId,
+    setId,
+    sets,
+    profile,
+    isGrouped,
+  });
   if (!deleted) return;
 
   await enqueueOps(ops);

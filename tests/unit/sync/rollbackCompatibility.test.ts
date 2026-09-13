@@ -85,7 +85,7 @@ describe("NC-13 — rollback compatibility across the profile-scoped emission bo
       loggedAt: new Date().toISOString(),
       notes: null,
     };
-    const op = setLogFullRowOp(newId(), set, "load_reps");
+    const op = setLogFullRowOp(newId(), set, "load_reps", false);
 
     // The real, unmodified emitter — no distanceM/durationS on the wire at
     // all for load_reps — is what makes this safe: the pre-0013 server's

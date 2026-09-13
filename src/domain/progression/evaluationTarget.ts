@@ -30,3 +30,27 @@ export function applyInSessionDecisionToPrefill(
   if (chosenReps === undefined) return snapshot;
   return { ...snapshot, prefill: { ...snapshot.prefill, reps: chosenReps } };
 }
+
+// set-groups-architecture-evaluation.md §5.3 L-3 — the per-group sibling of
+// the overlay above: "the chosen reps of the in-session decision for
+// (exercise, key) overlay groupPrefills[key].reps before that group's
+// projected context is built; the slot-level prefill is untouched." Keyed by
+// group key (never null — this overlay only applies to a `groups` scheme,
+// which always has real keys); a key with no decision in the map is left
+// exactly as the snapshot already has it.
+export function applyInSessionDecisionsToGroupPrefills(
+  snapshot: PrescriptionSnapshotData,
+  decisionsByGroupKey: ReadonlyMap<string, InSessionDecision>,
+): PrescriptionSnapshotData {
+  if (decisionsByGroupKey.size === 0 || !snapshot.groupPrefills) return snapshot;
+  const groupPrefills = { ...snapshot.groupPrefills };
+  for (const [key, decision] of decisionsByGroupKey) {
+    if (decision.status !== "accepted" && decision.status !== "modified") continue;
+    const chosenReps = decision.chosen?.reps;
+    if (chosenReps === undefined) continue;
+    const existing = groupPrefills[key];
+    if (!existing) continue;
+    groupPrefills[key] = { ...existing, reps: chosenReps };
+  }
+  return { ...snapshot, groupPrefills };
+}

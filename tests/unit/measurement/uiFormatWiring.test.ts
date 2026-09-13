@@ -87,6 +87,7 @@ describe("Release 2 UI wiring — the shared formatter, not an inline template",
       durationS: 5.62,
       loggedAt: new Date(0).toISOString(),
       notes: null,
+      groupKey: null,
     };
     const expected = formatSetLine("distance_time", null, set);
 

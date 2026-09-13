@@ -45,6 +45,10 @@ export interface HistorySetDetail {
   durationS: number | null;
   loggedAt: string;
   notes: string | null;
+  // set-groups-architecture-evaluation.md §7 "History" — the group this set
+  // is attributed to; `null` on an ungrouped session, or for an unattributed
+  // set inside a grouped session (§4.4 rule 3, rendered without a label).
+  groupKey: string | null;
 }
 
 export interface HistoryExerciseDetail {
@@ -200,6 +204,7 @@ export async function getHistorySessionDetail(
       durationS: s.durationS,
       loggedAt: s.loggedAt.toISOString(),
       notes: s.notes,
+      groupKey: s.groupKey,
     });
     setsBySessionExercise.set(s.sessionExerciseId, list);
   }

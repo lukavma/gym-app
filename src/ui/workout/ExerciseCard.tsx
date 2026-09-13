@@ -1,8 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { formatScheme, type SetScheme } from "@/domain/schemes/setScheme";
+import {
+  formatScheme,
+  isGroupsScheme,
+  type GroupsScheme,
+  type SetScheme,
+} from "@/domain/schemes/setScheme";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import { schemeDefaultReps } from "@/domain/progression/workingTargets";
 import { formatRestSeconds, formatSetLine, minutesSecondsLabel } from "@/domain/measurement/format";
@@ -18,6 +23,8 @@ import { useActiveSessionStore } from "@/sync/activeSessionStore";
 import type { EditSetPatch, ExplicitDecisionInput } from "@/sync/activeSession";
 import type { ActiveSessionExerciseDto, ActiveSessionSetDto } from "@/sync/types";
 import { RecommendationCard } from "./RecommendationCard";
+import { describeGroupLink, groupPrefill, nextGroupSelection } from "./groupSelection";
+import type { GroupLinkDescription } from "./groupSelection";
 
 interface ExerciseCardProps {
   exercise: ActiveSessionExerciseDto;
@@ -51,6 +58,12 @@ function nounForProfile(profile: MeasurementProfile): "Set" | "Round" {
 // additions to `workingTargets.ts`: that module is domain/progression's
 // load/rep prefill chain (decision → carry-forward → baseline), which this
 // stage must not extend with athletic logic of its own (HARD BOUNDARIES).
+function formatGroupSetRange(group: { sets: { min: number; max: number } }): string {
+  return group.sets.min === group.sets.max
+    ? `${group.sets.min}`
+    : `${group.sets.min}–${group.sets.max}`;
+}
+
 function schemeDistanceM(scheme: SetScheme | null): number | null {
   return scheme?.type === "distanceRounds" ? scheme.distanceM : null;
 }
@@ -195,8 +208,44 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
   const dims = dimensionsOf(profile);
   const noun = nounForProfile(profile);
 
-  const recommendation = recommendationForDeload(isDeload, exercise.recommendation);
-  const prefill = derivePrefill(exercise, isDeload);
+  const scheme = exercise.prescription?.snapshot.scheme ?? null;
+  // set-groups-architecture-evaluation.md §11.4 — a grouped slot replaces
+  // the single recommendation/prefill chain with a per-group selection.
+  // `null` for every other profile/scheme (Set Groups is `load_reps`-only).
+  const groupsScheme = scheme && isGroupsScheme(scheme) ? scheme : null;
+
+  // §11.4 — derived on mount from the group's own chain (never React state
+  // initialised once and left stale): the first group whose recorded count
+  // is below its `max`, else the last group.
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(() =>
+    groupsScheme ? nextGroupSelection(groupsScheme, exercise.sets) : null,
+  );
+  // True once the athlete has typed into weight/reps since the last
+  // derivation; a chip tap replaces a dirty draft regardless (§11.4 table).
+  const [dirty, setDirty] = useState(false);
+
+  const groupRecommendations = isDeload ? [] : (exercise.recommendations ?? []);
+  const selectedGroupRecommendation = selectedGroupKey
+    ? (groupRecommendations.find((r) => r.groupKey === selectedGroupKey) ?? null)
+    : null;
+
+  const recommendation = groupsScheme
+    ? selectedGroupRecommendation
+    : recommendationForDeload(isDeload, exercise.recommendation);
+  const prefill = groupsScheme
+    ? (() => {
+        const group = groupsScheme.groups.find((g) => g.key === selectedGroupKey);
+        if (!group) return { loadKg: null, reps: null, distanceM: null, durationS: null };
+        const derived = groupPrefill(
+          group,
+          exercise.sets,
+          selectedGroupRecommendation,
+          exercise.prescription?.snapshot.groupPrefills,
+          exercise.loadStepKg,
+        );
+        return { loadKg: derived.loadKg, reps: derived.reps, distanceM: null, durationS: null };
+      })()
+    : derivePrefill(exercise, isDeload);
   const [weight, setWeight] = useState(prefill.loadKg !== null ? String(prefill.loadKg) : "");
   const [reps, setReps] = useState(prefill.reps !== null ? String(prefill.reps) : "");
   const [rir, setRir] = useState("");
@@ -219,7 +268,51 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const scheme = exercise.prescription?.snapshot.scheme ?? null;
+  // set-groups-architecture-evaluation.md §11.4 — "every selection change
+  // re-derives the input row … no re-derivation happens on a render, a
+  // recommendation decision, or a sync event." Keying the effect on
+  // `selectedGroupKey` alone (never on `exercise`/`prefill`) is what makes
+  // that true: only `setSelectedGroupKey` (mount, auto-advance, or a chip
+  // tap) can trigger this reset, and it unconditionally overwrites a dirty
+  // draft — "the athlete initiated the switch … preserving a draft across a
+  // group change IS the hazard."
+  useEffect(() => {
+    if (!groupsScheme) return;
+    setWeight(prefill.loadKg !== null ? String(prefill.loadKg) : "");
+    setReps(prefill.reps !== null ? String(prefill.reps) : "");
+    setDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroupKey]);
+
+  // Stage B remediation F-1 (set-groups-stage-b-review.md) — the selection-
+  // keyed effect above cannot follow a reference-set edit or deletion,
+  // because the selection itself doesn't change (§6.2's two rows: "only the
+  // prefill of not-yet-logged sets follows the edit" / "reference set
+  // deleted: same as 'no sets yet' from that moment on"). This second,
+  // narrowly-scoped effect re-derives the CURRENTLY SELECTED linked group's
+  // weight whenever that derivation changes, while leaving every other
+  // §11.4 rule intact:
+  //   - only while `groupsScheme` and the selected group is linked;
+  //   - only before the group's OWN first set is logged this session — once
+  //     one exists, `groupPrefill`'s "last set logged in this group" rule
+  //     already takes over and must not be disturbed (later sets copy the
+  //     athlete's own log, never re-derive, §6.2's routine default);
+  //   - never while `dirty` — read at the moment this effect actually runs
+  //     (a real dependency change), not listed as a dependency itself, so a
+  //     manual draft typed before or after the proposal last changed is
+  //     never silently overwritten (§11.4's "type into weight/reps" rule).
+  const selectedGroup = groupsScheme?.groups.find((g) => g.key === selectedGroupKey) ?? null;
+  const selectedGroupHasOwnLog = selectedGroup
+    ? exercise.sets.some((s) => !s.isWarmup && s.groupKey === selectedGroup.key)
+    : false;
+  const cleanLinkedProposalKg =
+    selectedGroup?.link && !selectedGroupHasOwnLog ? prefill.loadKg : null;
+  useEffect(() => {
+    if (!selectedGroup?.link || selectedGroupHasOwnLog || dirty) return;
+    setWeight(cleanLinkedProposalKg !== null ? String(cleanLinkedProposalKg) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cleanLinkedProposalKg]);
+
   const targetRir = exercise.prescription?.snapshot.targetRir ?? null;
   // workout-prescription-context-architecture-evaluation.md §5 — the two
   // PRESCRIPTION instructions, read from this slot's own frozen snapshot and
@@ -277,6 +370,7 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
         distanceM: distanceMValue,
         durationS: durationSValue,
         isWarmup,
+        groupKey: groupsScheme ? selectedGroupKey : undefined,
       });
       // §15.3's Copy-forward column: RIR always clears (every profile);
       // `s` additionally clears for `load_distance`/`distance_time` (the
@@ -285,6 +379,24 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
       // athlete's own last entry stays in the box for the next round/set.
       setRir("");
       if (profile === "load_distance" || profile === "distance_time") setDuration("");
+
+      // §11.4 R-4/D-8 — auto-advance at `max`: warm-ups never advance
+      // (already excluded from `nextGroupSelection`'s recorded count), and
+      // the effect above re-derives the input row the instant the selection
+      // actually changes — never carrying this group's load into the next.
+      // The store's `logSet` action commits the post-log session to the
+      // store synchronously before its promise resolves (activeSession.ts),
+      // so an imperative `getState()` read here is already authoritative —
+      // no stale-closure risk from the `exercise` prop.
+      if (groupsScheme && !isWarmup) {
+        const updatedExercise = useActiveSessionStore
+          .getState()
+          .session?.exercises.find((e) => e.id === exercise.id);
+        if (updatedExercise) {
+          const next = nextGroupSelection(groupsScheme, updatedExercise.sets);
+          if (next !== selectedGroupKey) setSelectedGroupKey(next);
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -297,8 +409,32 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
   // offline client evaluator) computed one, and both gate on
   // `profile === "load_reps"` (evaluateSession.ts, NC-9) — no non-`load_reps`
   // profile has a progression engine in this release (§9.2).
-  function handleDecide(decision: ExplicitDecisionInput) {
-    void decideRecommendation(exercise.id, decision);
+  // set-groups-architecture-evaluation.md §11.4 — "prefilled only if that
+  // group is the selected one and no set of that group is logged and not
+  // `dirty` (extends the existing 'only while nothing is logged' rule per
+  // group)". `groupKey` is `null` for the ungrouped card (unchanged rule).
+  function handleDecide(decision: ExplicitDecisionInput, groupKey: string | null = null) {
+    void decideRecommendation(exercise.id, decision, groupKey);
+    if (groupKey !== null) {
+      if (groupKey !== selectedGroupKey || dirty) return;
+      if (exercise.sets.some((s) => s.groupKey === groupKey)) return;
+      const base = exercise.prescription?.snapshot.groupPrefills?.[groupKey] ?? {
+        loadKg: null,
+        reps: null,
+      };
+      if (decision.status === "rejected") {
+        setWeight(base.loadKg !== null ? String(base.loadKg) : "");
+        setReps(base.reps !== null ? String(base.reps) : "");
+      } else if (decision.status === "modified") {
+        if (decision.chosen.loadKg !== undefined) setWeight(String(decision.chosen.loadKg));
+        if (decision.chosen.reps !== undefined) setReps(String(decision.chosen.reps));
+      } else {
+        const target = groupRecommendations.find((r) => r.groupKey === groupKey)?.target;
+        if (target?.loadKg !== undefined) setWeight(String(target.loadKg));
+        if (target?.reps !== undefined) setReps(String(target.reps));
+      }
+      return;
+    }
     if (exercise.sets.length > 0) return;
     const base = exercise.prescription?.snapshot.prefill ?? { loadKg: null, reps: null };
     if (decision.status === "rejected") {
@@ -330,8 +466,13 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
               clause already drops out entirely. */}
           {scheme && (
             <p className="text-xs text-slate-400">
-              {formatScheme(scheme)}
-              {targetRir ? ` @ RIR ${targetRir.min}-${targetRir.max}` : ""}
+              {formatScheme(scheme, targetRir)}
+              {/* M-6 (independent review) — a grouped scheme now embeds each
+                  group's OWN effective RIR band inline (formatScheme's
+                  `groups` case); appending the SLOT band again here would be
+                  the exact bug M-6 reported — one band, wrong for every
+                  group whose own (or the slot's) differs. */}
+              {!groupsScheme && targetRir ? ` @ RIR ${targetRir.min}-${targetRir.max}` : ""}
               {restSeconds !== null ? ` · Rest ${formatRestSeconds(restSeconds)}` : ""}
             </p>
           )}
@@ -407,13 +548,62 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
         </p>
       )}
 
-      {recommendation && !exercise.skipped && (
-        <RecommendationCard
-          recommendation={recommendation}
-          disabled={disabled}
-          onDecide={handleDecide}
-        />
-      )}
+      {/* set-groups-architecture-evaluation.md §11.2 — "one per group with a
+          pending/decided record, labelled". Two cards on one phone card is a
+          density cost judged at device acceptance, not a defect (§11.2). */}
+      {groupsScheme && !exercise.skipped
+        ? groupsScheme.groups.map((group) => {
+            // Stage B remediation F-2 (set-groups-stage-b-review.md) — a
+            // linked group must NEVER render a decision surface, even if a
+            // stale recommendation predates the link (a group linked after
+            // already progressing independently) or survives from a bundle
+            // cached before the server-side fix below. Checking `group.link`
+            // FIRST, unconditionally, is the client-side half of the fix —
+            // the server-side half (`resolveGroupRecommendation` in
+            // server/progression/service.ts) is what keeps such a stale
+            // record out of `exercise.recommendations` in the first place;
+            // this is defence in depth, not the only layer.
+            if (!group.link) {
+              const rec = groupRecommendations.find((r) => r.groupKey === group.key);
+              return rec ? (
+                <RecommendationCard
+                  key={group.key}
+                  recommendation={rec}
+                  disabled={disabled}
+                  groupLabel={group.label}
+                  onDecide={(decision) => handleDecide(decision, group.key)}
+                />
+              ) : null;
+            }
+            // Stage B (set-groups-architecture-evaluation.md §6.3) — a
+            // percent-linked group always resolves to `manual` (L-1); this
+            // note is descriptive only, never an Accept/Keep/Custom decision
+            // surface, which is exactly the "no competing recommendation"
+            // requirement (D-4).
+            const link = describeGroupLink(
+              group,
+              groupsScheme,
+              exercise.sets,
+              exercise.loadStepKg,
+              exercise.prescription?.snapshot.groupPrefills,
+            );
+            return link ? (
+              <GroupLinkNote
+                key={group.key}
+                groupLabel={group.label}
+                link={link}
+                isDirtyDraft={group.key === selectedGroupKey && dirty}
+              />
+            ) : null;
+          })
+        : recommendation &&
+          !exercise.skipped && (
+            <RecommendationCard
+              recommendation={recommendation}
+              disabled={disabled}
+              onDecide={handleDecide}
+            />
+          )}
 
       {exercise.sets.length > 0 && (
         <ul className="flex flex-col gap-1">
@@ -424,6 +614,20 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
               profile={profile}
               loadBasis={exercise.measurement.loadBasis}
               noun={noun}
+              // set-groups-architecture-evaluation.md §7 "History" — the
+              // set-row label prefix, e.g. "Top ·", alongside the existing
+              // "W ·" warm-up prefix. `null` on an ungrouped slot or for an
+              // unattributed set (§4.4 rule 3).
+              groupLabel={
+                groupsScheme && set.groupKey
+                  ? (groupsScheme.groups.find((g) => g.key === set.groupKey)?.label ?? null)
+                  : null
+              }
+              // §11.3 — the set row's own edit form gains the group-
+              // reassignment chip in-session, the identical control (and
+              // rule) History's correction chip already offers post-session.
+              // `null` on an ungrouped slot, which renders no chip at all.
+              groupsScheme={groupsScheme}
               disabled={disabled}
               refused={refusedSetLogIds.has(set.id)}
               onEdit={(patch) => void editSet(exercise.id, set.id, patch)}
@@ -431,6 +635,38 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
             />
           ))}
         </ul>
+      )}
+
+      {/* set-groups-architecture-evaluation.md §11.2/§11.4 — the group chip
+          row. Tapping a chip re-derives the input row unconditionally (the
+          effect above, keyed on `selectedGroupKey`), including a dirty
+          draft, which is the whole point of a stored, athlete-controlled
+          selection: "returning to Top after back-offs brings the top load
+          back, so 'one more top set' is one tap plus Log." */}
+      {groupsScheme && !exercise.skipped && (
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Select group">
+          {groupsScheme.groups.map((group) => {
+            const count = exercise.sets.filter(
+              (s) => !s.isWarmup && s.groupKey === group.key,
+            ).length;
+            const selected = group.key === selectedGroupKey;
+            return (
+              <button
+                key={group.key}
+                type="button"
+                disabled={disabled}
+                onClick={() => setSelectedGroupKey(group.key)}
+                className={`rounded-full border px-3 py-1 text-xs disabled:opacity-50 ${
+                  selected
+                    ? "border-slate-100 bg-slate-100 text-slate-900"
+                    : "border-slate-700 text-slate-300"
+                }`}
+              >
+                {group.label} {count}/{formatGroupSetRange(group)}
+              </button>
+            );
+          })}
+        </div>
       )}
 
       {!exercise.skipped && (
@@ -454,7 +690,10 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
                   type="text"
                   inputMode="decimal"
                   value={weight}
-                  onChange={(e) => setWeight(sanitizeDecimalDraft(e.target.value))}
+                  onChange={(e) => {
+                    setWeight(sanitizeDecimalDraft(e.target.value));
+                    setDirty(true);
+                  }}
                   disabled={disabled}
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base text-slate-50 outline-none focus:border-slate-400 disabled:opacity-50"
                 />
@@ -468,7 +707,10 @@ export function ExerciseCard({ exercise, isDeload, disabled = false }: ExerciseC
                   type="number"
                   inputMode="numeric"
                   value={reps}
-                  onChange={(e) => setReps(e.target.value)}
+                  onChange={(e) => {
+                    setReps(e.target.value);
+                    setDirty(true);
+                  }}
                   disabled={disabled}
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-base text-slate-50 outline-none focus:border-slate-400 disabled:opacity-50"
                 />
@@ -573,11 +815,71 @@ function deriveWarmupToggleDefault(exercise: ActiveSessionExerciseDto): boolean 
   return exercise.sets.at(-1)?.isWarmup ?? false;
 }
 
+// set-groups-architecture-evaluation.md §6.2/§11.2 — the linked-group
+// equivalent of a RecommendationCard: descriptive only (no Accept/Keep/
+// Custom — D-4's "no competing recommendation"), explaining where the
+// group's proposed first-set load came from, including the missing-
+// reference fallback ("no <ref> set logged yet") the design requires to be
+// visible, not silent.
+function GroupLinkNote({
+  groupLabel,
+  link,
+  isDirtyDraft,
+}: {
+  groupLabel: string;
+  link: GroupLinkDescription;
+  // Stage B remediation F-1 (set-groups-stage-b-review.md) — true only for
+  // the currently-selected group's card, and only while its input holds a
+  // manually-typed, not-yet-logged draft. The note must never present a
+  // proposal number as if it's what the box currently holds once the
+  // athlete has typed something else — "ensure the explanatory note
+  // accurately distinguishes a proposal from a manual draft."
+  isDirtyDraft: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+      <p className="text-[11px] font-semibold tracking-wide text-slate-500 uppercase">
+        {groupLabel}
+      </p>
+      {link.referenceLoadKg === null ? (
+        <p className="text-xs text-slate-400">
+          {link.percent}% of {link.refLabel} — no {link.refLabel} set logged yet this session
+          {isDirtyDraft
+            ? "; manual entry — logging as typed, not the linked proposal."
+            : // Stage B remediation F-7 — the fallback claim shows its own
+              // resolved number (true regardless of whether it came from
+              // carry-forward or baseline) rather than unconditionally
+              // asserting a carry-forward that may not exist.
+              link.fallbackLoadKg !== null
+              ? `; using this group's own prefill (${link.fallbackLoadKg} kg).`
+              : ", and this group has no carry-forward or baseline yet."}
+        </p>
+      ) : link.supersededByOwnLog ? (
+        <p className="text-xs text-slate-400">
+          Linked to {link.percent}% of {link.refLabel} ({link.referenceLoadKg} kg).
+        </p>
+      ) : isDirtyDraft ? (
+        <p className="text-xs text-slate-400">
+          {link.percent}% of {link.refLabel} ({link.referenceLoadKg} kg) — manual entry; logging as
+          typed, not the {link.proposedLoadKg} kg proposal.
+        </p>
+      ) : (
+        <p className="text-xs text-slate-300">
+          {link.percent}% of {link.refLabel} ({link.referenceLoadKg} kg) → {link.proposedLoadKg} kg
+          proposed
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SetRow({
   set,
   profile,
   loadBasis,
   noun,
+  groupLabel = null,
+  groupsScheme = null,
   disabled = false,
   refused,
   onEdit,
@@ -587,6 +889,15 @@ function SetRow({
   profile: MeasurementProfile;
   loadBasis: LoadBasis | null;
   noun: "Set" | "Round";
+  // set-groups-architecture-evaluation.md §7 — this set's group label
+  // ("Top", "Back-off"), or `null` on an ungrouped slot / an unattributed
+  // set.
+  groupLabel?: string | null;
+  // §11.3 — the session's frozen scheme when it is `groups`, so this row can
+  // offer the in-session group-reassignment chip; `null` for an ungrouped
+  // slot, matching `HistoryDetail.tsx`'s `HistorySetRow` prop of the same
+  // name and purpose.
+  groupsScheme?: GroupsScheme | null;
   disabled?: boolean;
   // O-16 (§13.4/§15.3) — true when this row's own setLog op dead-lettered
   // for the active session (ExerciseCard matches `refusedSetLogIds` from
@@ -607,6 +918,9 @@ function SetRow({
   // list), so a set mislogged as warm-up/work mid-session can be corrected
   // in place instead of only after completion via History.
   const [isWarmup, setIsWarmup] = useState(set.isWarmup);
+  // §11.3 — seeded from the stored value the same way `isWarmup` is above;
+  // an empty-string option ("Unattributed") clears attribution (§4.4 rule 3).
+  const [groupKey, setGroupKey] = useState<string | null>(set.groupKey ?? null);
   const [error, setError] = useState<string | null>(null);
 
   const parsedDuration = parseDecimalInput(duration);
@@ -732,6 +1046,14 @@ function SetRow({
                 distanceM: distanceMValue,
                 durationS: durationSValue,
                 isWarmup,
+                // L-3 (independent review) — §4.4 rule 1: a warm-up set
+                // carries no group. `logSet` already enforces this at
+                // creation; this edit form could otherwise submit
+                // `isWarmup: true` alongside the select's still-checked
+                // group value, leaving a stored row that contradicts the
+                // invariant even though no evaluation path is affected
+                // (every one already filters warm-ups before partitioning).
+                ...(groupsScheme ? { groupKey: isWarmup ? null : groupKey } : {}),
               });
               setEditing(false);
             }}
@@ -765,6 +1087,27 @@ function SetRow({
           />
           Warm-up {noun.toLowerCase()}
         </label>
+        {/* set-groups-architecture-evaluation.md §11.3 — "the set row's edit
+            form gains the same chip [as History]; moving a set between
+            groups is an evaluation-relevant edit." An empty option clears
+            attribution (§4.4 rule 3's "unattributed" work set). */}
+        {groupsScheme && (
+          <label className="flex flex-col gap-1 text-xs text-slate-400">
+            Group
+            <select
+              value={groupKey ?? ""}
+              onChange={(e) => setGroupKey(e.target.value === "" ? null : e.target.value)}
+              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-50"
+            >
+              <option value="">Unattributed</option>
+              {groupsScheme.groups.map((g) => (
+                <option key={g.key} value={g.key}>
+                  {g.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {error && <p className="text-xs text-red-400">{error}</p>}
       </li>
     );
@@ -774,6 +1117,7 @@ function SetRow({
     <li className="flex items-center justify-between text-sm text-slate-300">
       <span>
         {set.isWarmup ? <span className="text-slate-500">W · </span> : null}
+        {!set.isWarmup && groupLabel && <span className="text-slate-500">{groupLabel} · </span>}
         {formatSetLine(profile, loadBasis, set)}
         {refused && (
           <span className="ml-2 rounded border border-red-800 px-1 text-[10px] text-red-400">

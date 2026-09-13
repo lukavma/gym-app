@@ -8,6 +8,16 @@ import {
 import type { SetScheme } from "@/domain/schemes/setScheme";
 import type { RirBand } from "@/domain/schemes/rirBand";
 
+// set-groups-architecture-evaluation.md §4.2 — `applySetMultiplier` now
+// returns the full `SetScheme` union (it also handles `groups`, which has no
+// top-level `sets`); every case below constructs a `fixed`/`repRange` input
+// and never receives a `groups` result back, so this narrows the return
+// value the same "unreachable, not fabricated" way the production code does.
+function setsOf(scheme: SetScheme): number {
+  if (scheme.type === "groups") throw new Error("unreachable in this test file");
+  return scheme.sets;
+}
+
 describe("applySetMultiplier", () => {
   it("is a no-op when multiplier is undefined", () => {
     const scheme: SetScheme = { type: "fixed", sets: 5, reps: 5 };
@@ -16,17 +26,17 @@ describe("applySetMultiplier", () => {
 
   it("rounds down, per prescription-model.md §5's example (5 sets -> 2)", () => {
     const scheme: SetScheme = { type: "fixed", sets: 5, reps: 5 };
-    expect(applySetMultiplier(scheme, 0.5).sets).toBe(2);
+    expect(setsOf(applySetMultiplier(scheme, 0.5))).toBe(2);
   });
 
   it("never yields fewer than one set", () => {
     const scheme: SetScheme = { type: "fixed", sets: 1, reps: 5 };
-    expect(applySetMultiplier(scheme, 0.5).sets).toBe(1);
+    expect(setsOf(applySetMultiplier(scheme, 0.5))).toBe(1);
   });
 
   it("floors a fractional result that would otherwise round to zero", () => {
     const scheme: SetScheme = { type: "repRange", sets: 3, minReps: 8, maxReps: 12 };
-    expect(applySetMultiplier(scheme, 0.34).sets).toBe(1);
+    expect(setsOf(applySetMultiplier(scheme, 0.34))).toBe(1);
   });
 
   it("preserves every other scheme field", () => {
@@ -46,13 +56,13 @@ describe("applySetMultiplier", () => {
   // valid scheme" (1 <= sets <= 20) true unconditionally.
   it("clamps to the scheme's SETS_MAX (20) instead of overflowing on an out-of-range multiplier", () => {
     const scheme: SetScheme = { type: "fixed", sets: 5, reps: 5 };
-    expect(applySetMultiplier(scheme, 5).sets).toBe(20);
+    expect(setsOf(applySetMultiplier(scheme, 5))).toBe(20);
   });
 
   it("clamps exactly at the SETS_MAX boundary, not past it", () => {
     const scheme: SetScheme = { type: "fixed", sets: 20, reps: 5 };
-    expect(applySetMultiplier(scheme, 1).sets).toBe(20);
-    expect(applySetMultiplier(scheme, 1.5).sets).toBe(20);
+    expect(setsOf(applySetMultiplier(scheme, 1))).toBe(20);
+    expect(setsOf(applySetMultiplier(scheme, 1.5))).toBe(20);
   });
 });
 

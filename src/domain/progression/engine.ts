@@ -20,6 +20,11 @@ export interface PerformedSet {
   weightKg: number;
   reps: number;
   rir: number | null;
+  // set-groups-architecture-evaluation.md §4.4 — the group this set is
+  // attributed to on a grouped slot; `null`/absent on an ungrouped slot, and
+  // also `null` for an unattributed work set inside a grouped session (rule
+  // 3 — excluded from every group's evaluation, still counted elsewhere).
+  groupKey?: string | null;
 }
 
 // progression-engine.md §2 Inputs — one historical (or current) performance
@@ -63,13 +68,32 @@ export interface EvaluationContext {
   recovery?: undefined;
 }
 
+// set-groups-architecture-evaluation.md §5.4 — "required whenever the
+// record is per-group (absent means 'ungrouped slot')".
+export interface InputsSummaryGroup {
+  key: string;
+  label: string;
+  setsMin: number;
+  setsMax: number;
+}
+
 // progression-engine.md §6 — the frozen facts a persisted recommendation
 // carries forever. `derived.mixedLoads` is additive to the §6 interface,
 // mandated by §8's "Mixed loads within work sets → modal load used; flagged
-// in inputs; confidence medium".
+// in inputs; confidence medium". `prescribed.group` and `extraWorkSets` are
+// set-groups-architecture-evaluation.md §5.4/§5.5's additive keys, omitted
+// entirely (never `undefined`, never `[]`) on every ungrouped record — see
+// `inputsSummarySchema`'s comment for the binding emission rule (rev. 3,
+// V-1).
 export interface InputsSummary {
-  prescribed: { scheme: SetScheme; targetRir?: RirBand };
+  prescribed: { scheme: SetScheme; targetRir?: RirBand; group?: InputsSummaryGroup };
+  // §5.5 — the evaluation WINDOW (the first `sets.min` recorded sets, in
+  // set-number order) for a per-group record; the whole recorded set list
+  // for an ungrouped record (unchanged meaning).
   workSets: PerformedSet[];
+  // §5.5 — recorded sets after the window; present (possibly `[]`) on every
+  // per-group record, omitted entirely on every ungrouped one.
+  extraWorkSets?: PerformedSet[];
   derived: {
     setsCompleted: number;
     prescribedSets: number;

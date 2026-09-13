@@ -66,12 +66,81 @@ interface DurationRoundsScheme {
 
 `SCHEME_ENVELOPE_VERSION` stays `1` — additive variants do not bump it. **Schema-accepted in Release 1, offered in the editor starting Release 2**: `setSchemeSchema` and `formatScheme` ship in Release 1 so the shared domain module typechecks and a hand-built non-`load_reps` prescription (created through the API) is representable end to end, but the prescription editor does not offer either variant until Release 2.
 
+### Set Groups (Stage A, `load_reps` only — `set-groups-architecture-evaluation.md`)
+
+An additive variant for **ordered groups within one slot** (a top set plus back-offs, expressed generically — no exercise-specific logic):
+
+```ts
+interface SetGroup {
+  key: string;             // stable, generated once at authoring, never re-derived; unique within the scheme
+  label: string;           // display only, 1–24 chars trimmed ("Top", "Back-off")
+  sets: { min: number; max: number };   // ints, 1 ≤ min ≤ max ≤ 20 (fixed count ⇔ min === max)
+  reps: { min: number; max: number };   // ints, 1 ≤ min ≤ max ≤ 100, span ≤ 30
+  targetRir?: RirBand;      // overrides the slot band for this group only
+  baselineLoadKg?: number;  // overrides the slot baseline for this group only
+  link?: { ref: string; percent: number };  // Stage B — see below
+}
+interface GroupsScheme { type: 'groups'; groups: SetGroup[]; }   // 1–4 groups; Σ sets.max ≤ 20
+// renders "Top 1 × 2 · Back-off 2–3 × 6–8"
+```
+
+**Stage B — percentage-linked group loads (`set-groups-architecture-evaluation.md` §6, owner addendum
+§19 D-4/D-5).** A group's optional `link` names an earlier, itself-**unlinked** group of the same slot
+plus a user-entered `percent` (integer 10–100, no default): the linked group's first-set proposal is
+`roundToStepKg(referenceLoadKg × percent / 100, loadStepKg)` (existing nearest-step, half-up rounding,
+unmodified), where `referenceLoadKg` is the **highest actually-logged non-warm-up load** attributed to
+the reference group in the **current session** — V1 is performed-basis only, per §19 D-4, which narrows
+the evaluation's reviewed two-basis (`performed`/`prescribed`) proposal to this one; no `basis` field
+exists on the shipped shape because there is only ever one legal value. Later sets in the linked group
+copy the athlete's own previous logged load in that group through the pre-existing copy-forward rule —
+the link only ever supplies the first one. No reference work set yet falls back to the linked group's
+own carry-forward, then `baselineLoadKg`, then empty (the identical §4 chain every other group already
+follows), with a visible UI explanation. A manual override never rewrites the saved percentage. A group
+with a `link` must resolve to `progression.strategyId === 'manual'` (checked by
+`checkPrescriptionCompatibility`; the editor never offers another strategy for it) — a linked group
+therefore never competes with an independent recommendation.
+
+**Reconciling with the earlier sketch:** §6.5 originally proposed generalising `baselineLoadKg` into a
+`GroupLoad` union (`{mode: 'carryForward', baselineKg?}` | `{mode: 'percentOfGroup', ref, percent,
+basis}`). Stage A never adopted that union for `baselineLoadKg` — it shipped it as the flat field shown
+above. Stage B follows the same precedent: `link` is a second flat, additive, optional field, not a
+`load.mode` wrapper around both. `baselineLoadKg` keeps its existing meaning unchanged and continues to
+serve as the linked group's own fallback baseline exactly as the evaluation intended, just addressed
+through the existing field rather than a `carryForward` union member.
+
+The link is a **stable-key back-reference between fields of the same scheme** — the one fenced
+exception ADR-008 draws to "no references between fields" (§1); it is resolved by one pure client
+function of `(frozen snapshot, current session's sets, loadStepKg)`, never by the server at logging
+time, and lives inside `scheme.groups[]` so Stage A's existing snapshot freeze (ADR-007) already
+covers it with no separate freezing mechanism. Authoring a link to a group created in the **same** save
+(no server-assigned key yet) addresses that group by its positional index in the submitted array,
+resolved onto the real key exactly once `assignGroupKeys` has run — the identical pattern
+`progression.groupOverridesByIndex` already established for per-group progression overrides (§5.3).
+
+No top-level `sets` field, deliberately: every reader that switches on `scheme.sets` for the other four
+variants must handle `groups` explicitly instead of falling through (a compile error, not a runtime
+surprise). A single-group scheme is how a set-count **range** on an ordinary slot ("2–3 × 5") becomes
+representable, without a fifth ranged variant.
+
+Each group **projects** to the existing `fixed`/`repRange` shape the unmodified `load-progression`/
+`rep-progression` strategies already understand (fixed reps → `fixed`; a rep range → `repRange`, `sets =
+group.sets.min`); a work set carries an additive, nullable `groupKey` (`set_logs.group_key`) recording
+which group it was logged against — `null` on an ungrouped slot, and also `null` for a work set inside a
+grouped session the athlete hasn't attributed (excluded from every group's evaluation, still counted for
+volume/e1RM). Attribution is a stored fact, never an ordinal partition of `set_number` — the failure modes
+of ordinal partitioning (a skipped top set, a mid-list deletion) are exactly what a stable key exists to
+avoid. Independent per-group progression, the evaluation window (the first `sets.min` recorded sets, in
+order — never the best-performing ones), and the full per-group storage/sync-contract shape are specified
+in `progression-engine.md` and `set-groups-architecture-evaluation.md`. Both stages are implemented:
+independent per-group progression (Stage A) and the percentage-linked back-off (Stage B, above) — the
+latter as the flat, additive `link` field on the group entry itself, not a `load.mode` wrapper.
+
 ### Reserved (post-MVP) variants — designed, not implemented
 
 These exist to prove the union absorbs known future needs without rework. Do **not** implement in MVP.
 
 ```ts
-interface PerSetScheme {        // different prescription per set; also covers top set + backoffs
+interface PerSetScheme {        // a different prescription for each individual set
   type: 'perSet';
   sets: Array<{
     tag?: 'top' | 'backoff' | 'work';
@@ -86,7 +155,13 @@ interface AmrapScheme {         // straight sets, last set AMRAP (progression tr
 }
 ```
 
-Myo-reps, rest-pause, drop sets, clusters: each is one more variant with its own small shape when a concrete need exists. Percentage-based loading is **not** a scheme variant — it is a load prescription mode (§4), orthogonal to set/rep structure.
+`perSet` and `groups` (above) are **complements, not rivals** (`set-groups-architecture-evaluation.md`
+§4.1/M-4): `groups` covers ordered *runs* of like sets with a range and stays reserved for genuinely
+per-set variation that a range can't express — `perSet` enumerates every set individually (no set-count
+range is representable) and its identity is positional (the same skipped/deleted-set ambiguity a stored
+group key exists to avoid). `perSet` stays reserved, unimplemented, and is not superseded by `groups`.
+
+Myo-reps, rest-pause, drop sets, true intra-set clusters: each is one more variant with its own small shape when a concrete need exists — none is introduced implicitly by Set Groups (a "cluster heavy double" is read as a named top group of one set, nothing more). Percentage-based loading is **not** a scheme variant — it is a load prescription mode (§4), orthogonal to set/rep structure, except for the one fenced back-reference Set Groups Stage B implements (§4).
 
 ### Compatibility rule
 
@@ -155,6 +230,19 @@ type LoadPrescription =
 
 MVP persists only `baselineLoadKg`; introducing `LoadPrescription` later is an additive JSON field on the prescription.
 
+**Set Groups Stage A** generalises this per group: a group's own optional `baselineLoadKg` (§2) is step 3
+of the identical chain, read *before* the slot's own baseline — the group's carry-forward candidates are
+its own history plus, for the **first** group only, an existing ungrouped slot's pre-conversion history
+(the C-1/D-6 bridge; every other group starts with no automatic legacy attribution).
+
+**Set Groups Stage B** adds one more prefill source, spliced in ahead of the recommendation/decision
+step for a group carrying a `link` (§2): its first-set proposal is the reference group's highest
+logged work-set load this session × the user-entered percent, rounded to `loadStepKg` — never the
+reference's *prescribed* value (V1 is performed-basis only, §19 D-4) and never multiplied by
+`loadMultiplier` a second time (the logged figure already reflects whatever was actually lifted, deload
+included). This is the one fenced exception to "no references between fields" (§1) — validated at the
+schema boundary, non-transitive, one hop only.
+
 ---
 
 ## 5. Effective prescription & snapshot flow
@@ -205,5 +293,5 @@ Rules:
 - No conditional logic in schemes ("if last week was X do Y") — that is strategy territory.
 - No cross-exercise references ("same weight as squat") — out of scope entirely.
 - No plate-math/equipment inventory modeling in MVP (`loadStepKg` is the entire concession).
-- No per-set target RIR in MVP (band applies to the exercise slot; `perSet` variant can carry per-set targets later).
+- No per-set target RIR in MVP. Set Groups Stage A relaxes "no per-set target" to **no per-group** — a group's `targetRir` overrides the slot band for that group only (§2); the `perSet` variant remains the only path to a genuinely per-set target, and stays reserved.
 - No tempo/ROM prescription fields in MVP: the corpus treats tempo as a broad permissive range (EVIDENCE-021) and technique/ROM guidance as thin (EVIDENCE-022/026); free-text `notes` carries cues. Adding structured fields later is additive.

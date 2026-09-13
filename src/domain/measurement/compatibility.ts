@@ -10,9 +10,13 @@
 // this function's answer.
 import type { MeasurementProfile } from "./profile";
 
-// §9.2's four scheme columns.
+// §9.2's four scheme columns, plus set-groups-architecture-evaluation.md
+// §8 ("`groups` is offered for `load_reps` only in the first stage") —
+// generic across *exercises*, not across *profiles*: a `reps`-profile group
+// would be `manual`-only anyway (LOAD_REPS_ONLY_STRATEGIES below) and is
+// deferred; distance/duration profiles have no rep dimension to group.
 const SUPPORTED_SCHEMES: Record<MeasurementProfile, readonly string[]> = {
-  load_reps: ["fixed", "repRange"],
+  load_reps: ["fixed", "repRange", "groups"],
   reps: ["fixed", "repRange"],
   load_distance: ["distanceRounds"],
   distance_time: ["distanceRounds"],

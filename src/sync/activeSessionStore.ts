@@ -46,6 +46,7 @@ interface ActiveSessionState {
   decideRecommendation: (
     sessionExerciseId: string,
     decision: ExplicitDecisionInput,
+    groupKey?: string | null,
   ) => Promise<void>;
   editSet: (sessionExerciseId: string, setId: string, patch: EditSetPatch) => Promise<void>;
   deleteSet: (sessionExerciseId: string, setId: string) => Promise<void>;
@@ -138,8 +139,12 @@ export const useActiveSessionStore = create<ActiveSessionState>((set, get) => ({
     const session = await activeSession.logSet(input);
     set({ session });
   },
-  decideRecommendation: async (sessionExerciseId, decision) => {
-    const session = await activeSession.decideRecommendation(sessionExerciseId, decision);
+  decideRecommendation: async (sessionExerciseId, decision, groupKey) => {
+    const session = await activeSession.decideRecommendation(
+      sessionExerciseId,
+      decision,
+      groupKey ?? null,
+    );
     set({ session });
   },
   editSet: async (sessionExerciseId, setId, patch) => {

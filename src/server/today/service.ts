@@ -18,7 +18,10 @@ import { currentWeekIndex } from "@/domain/scheduling/weekIndex";
 import { isoWeekday } from "@/domain/scheduling/isoWeekday";
 import { resolveTodayTemplate } from "@/domain/scheduling/todayTemplate";
 import { resolveEffectiveWeekModifiers } from "@/domain/scheduling/effectiveModifiers";
-import { buildPrescriptionSnapshotData } from "@/domain/prescriptions/buildSnapshot";
+import {
+  buildPrescriptionSnapshotData,
+  type GroupSnapshotInputs,
+} from "@/domain/prescriptions/buildSnapshot";
 import { recommendationForDeload } from "@/domain/progression/deloadGuard";
 import type { CarryForwardCandidate } from "@/domain/progression/carryForward";
 import type { SetScheme, SetSchemeEnvelope } from "@/domain/schemes/setScheme";
@@ -28,12 +31,15 @@ import type { DeloadConfig, WeekModifiers } from "@/domain/blocks/schema";
 import type { LoadBasis, MeasurementProfile } from "@/domain/measurement/profile";
 import {
   prescriptionSnapshotSchema,
+  type Prefill,
   type PrescriptionSnapshot,
 } from "@/domain/schemas/prescriptionSnapshot";
 import {
+  exerciseGroupKey,
   getLatestDecisionChosenByExercise,
   getPendingRecommendationsByExercise,
   getSessionRecommendationsByExercise,
+  resolveGroupRecommendation,
   type RecommendationDto,
 } from "@/server/progression/service";
 import { listTemplateWarmupRoutines } from "@/server/warmupRoutines/service";
@@ -62,6 +68,11 @@ export interface HistorySetDto {
   distanceM: number | null;
   durationS: number | null;
   isWarmup: boolean;
+  // set-groups-architecture-evaluation.md §5.6 — needed by the offline
+  // client's own per-group evaluation fallback (activeSession.ts), which
+  // rebuilds engine history from these bundle-embedded sessions the same
+  // way the server's own `getEngineHistory` does.
+  groupKey: string | null;
 }
 
 export interface HistorySessionDto {
@@ -94,10 +105,23 @@ export interface TodayBundleExerciseEntry {
   // (single authoritative resolution point — see buildTodayBundle).
   appliedModifiers: WeekModifiers | null;
   // pwa-offline-strategy.md §4 — the at-most-one pending recommendation for
-  // this exercise in the active block. Never folded into `prefill` (a
-  // pending recommendation is not a Decision); the UI shows it as the
-  // proposed target with accept/modify/reject.
+  // this exercise in the active block, scoped to the NULL group key. Never
+  // folded into `prefill` (a pending recommendation is not a Decision); the
+  // UI shows it as the proposed target with accept/modify/reject. For an
+  // ungrouped slot this is the whole story, byte-identical to before Stage A.
   pendingRecommendation: RecommendationDto | null;
+  // set-groups-architecture-evaluation.md §5.3/§4.5 — one entry per group
+  // that has a pending recommendation, present ONLY for a `groups` scheme.
+  // Filtered to keys present in the CURRENT scheme (a removed group's
+  // pending record is never surfaced here, §4.5); the first group's entry
+  // additionally falls back to a pre-conversion null-key pending record
+  // (C-1/D-6(a)) when its own key has none yet.
+  pendingRecommendations?: RecommendationDto[];
+  // set-groups-architecture-evaluation.md §5.3 — one resolved {loadKg, reps}
+  // prefill per group key, present ONLY for a `groups` scheme; mirrors
+  // `PrescriptionSnapshotData.groupPrefills`, carried here so `startSession`
+  // (activeSession.ts) can freeze it verbatim.
+  groupPrefills?: Record<string, Prefill>;
   previousPerformance: HistorySessionDto[];
   history: HistorySessionDto[];
   // §12.1 — read from the exercise row, optional on the wire (H-10) so a
@@ -144,6 +168,13 @@ export interface ActiveSessionSetDto {
   durationS: number | null;
   loggedAt: string;
   notes: string | null;
+  // set-groups-architecture-evaluation.md §4.4 — this was missing entirely
+  // before this remediation pass: a cross-device adopt/resume of a grouped
+  // session lost every set's group attribution (every row would render
+  // unattributed, and `nextGroupSelection`'s recorded-count derivation on
+  // the ADOPTING device would see zero sets in every group regardless of
+  // what was actually logged). Mirrors `HistorySetDto.groupKey` above.
+  groupKey: string | null;
 }
 
 export interface ActiveSessionExerciseDto {
@@ -162,6 +193,11 @@ export interface ActiveSessionExerciseDto {
   // decided during this session) — carried so a cross-device adopt/resume
   // keeps the decision flow (progression-engine.md §7). Null when none.
   recommendation: RecommendationDto | null;
+  // set-groups-architecture-evaluation.md §5.3 — the per-group sibling of
+  // `recommendation` above, present only for a `groups` scheme; missing
+  // entirely before this remediation pass (a cross-device adopt/resume of a
+  // grouped, still-undecided session lost every group's recommendation).
+  recommendations?: RecommendationDto[];
   // H-1 remediation (athletic-measurement-profiles-release-2-review.md §5.1)
   // — the slot's own FROZEN measurement shape, read from `session_exercises`'
   // typed `measurement_profile`/`load_basis` columns (already selected by
@@ -313,6 +349,7 @@ async function getExerciseHistory(
       distanceM: s.distanceM,
       durationS: s.durationS,
       isWarmup: s.isWarmup,
+      groupKey: s.groupKey,
     });
     setsBySessionExercise.set(s.sessionExerciseId, list);
   }
@@ -327,8 +364,67 @@ async function getExerciseHistory(
   }));
 }
 
+// set-groups-architecture-evaluation.md §5.6 reverse bridge — an UNGROUPED
+// slot's own carry-forward chain reading a historical entry that was itself
+// a `groups` scheme. "First group" is resolved from THAT ENTRY'S OWN frozen
+// snapshot (`h.prescribed.scheme`) — never the current, ungrouped template,
+// which has no group list to read at all — and only that group's sets are
+// considered; every other group's sets are never pooled in (D-6's
+// "no rewrite of historical rows": this changes only how an already-stored
+// row is READ, not what is stored). An entry that was itself ungrouped (or
+// unparseable) is unaffected — every one of its sets already belonged to the
+// whole slot, exactly as before Stage A. Symmetric to
+// `historySetsForGroupCarryForward`'s forward-direction bridge below.
+function firstWorkSetForUngroupedCarryForward(
+  h: HistorySessionExerciseRow,
+): HistorySetDto | undefined {
+  const scheme = h.prescribed?.scheme;
+  if (scheme?.type === "groups") {
+    const firstKey = scheme.groups[0]?.key;
+    if (firstKey === undefined) return undefined;
+    return h.sets.find((s) => !s.isWarmup && s.groupKey === firstKey);
+  }
+  return h.sets.find((s) => !s.isWarmup);
+}
+
 function toCarryForwardCandidate(h: HistorySessionExerciseRow): CarryForwardCandidate {
-  const firstWorkSet = h.sets.find((s) => !s.isWarmup);
+  const firstWorkSet = firstWorkSetForUngroupedCarryForward(h);
+  return {
+    status: "completed",
+    isDeload: h.isDeload,
+    startedAt: h.startedAt.toISOString(),
+    firstWorkSetLoadKg: firstWorkSet ? firstWorkSet.weightKg : null,
+  };
+}
+
+// set-groups-architecture-evaluation.md §5.3/§5.6 carry-forward row — "first
+// work set WITH THAT KEY in the newest completed non-deload session"; the
+// FIRST group additionally bridges an ungrouped historical session's sets
+// (C-1/D-6(a) — that session was never grouped, so every one of its sets
+// belonged to the whole slot). Mirrors
+// `domain/progression/groupEvaluation.ts`'s `historySetsForGroup`, on this
+// module's own display-row shape (`HistorySessionExerciseRow` carries
+// `prescribed` and `HistorySetDto[]`, not `PerformedExercise`/`PerformedSet`)
+// rather than sharing a cross-layer helper between `src/domain` and
+// `src/server`.
+function historySetsForGroupCarryForward(
+  h: HistorySessionExerciseRow,
+  groupKey: string,
+  isFirstGroup: boolean,
+): HistorySetDto[] {
+  const scheme = h.prescribed?.scheme;
+  if (!scheme) return [];
+  if (scheme.type === "groups") return h.sets.filter((s) => s.groupKey === groupKey);
+  return isFirstGroup ? h.sets : [];
+}
+
+function toGroupCarryForwardCandidate(
+  h: HistorySessionExerciseRow,
+  groupKey: string,
+  isFirstGroup: boolean,
+): CarryForwardCandidate {
+  const matching = historySetsForGroupCarryForward(h, groupKey, isFirstGroup);
+  const firstWorkSet = matching.find((s) => !s.isWarmup);
   return {
     status: "completed",
     isDeload: h.isDeload,
@@ -412,6 +508,7 @@ export async function getActiveSession(
       durationS: s.durationS,
       loggedAt: s.loggedAt.toISOString(),
       notes: s.notes,
+      groupKey: s.groupKey,
     });
     setsBySessionExercise.set(s.sessionExerciseId, list);
   }
@@ -427,30 +524,62 @@ export async function getActiveSession(
     startedAt: session.startedAt.toISOString(),
     clientId: session.clientId,
     notes: session.notes,
-    exercises: exerciseRows.map((e) => ({
-      id: e.id,
-      exerciseId: e.exerciseId,
-      exerciseName: nameById.get(e.exerciseId) ?? "",
-      position: e.position,
-      source: e.source as "template" | "adhoc",
-      prescription: e.prescription as PrescriptionSnapshot | null,
-      skipped: e.skipped,
-      notes: e.notes,
-      loadStepKg: loadStepById.get(e.exerciseId) ?? null,
-      recommendation: recommendationForDeload(
-        session.isDeload,
-        recommendationByExercise.get(e.exerciseId) ?? null,
-      ),
-      // H-1 remediation — the slot's own frozen profile/load basis, already
-      // selected above as `e.measurementProfile`/`e.loadBasis`; previously
-      // dropped on the floor here, which is exactly what left a resumed
-      // non-`load_reps` session with no `measurement` to adopt.
-      measurement: {
-        profile: e.measurementProfile as MeasurementProfile,
-        loadBasis: e.loadBasis as LoadBasis | null,
-      },
-      sets: setsBySessionExercise.get(e.id) ?? [],
-    })),
+    exercises: exerciseRows.map((e) => {
+      // set-groups-architecture-evaluation.md §5.3/§5.6 — this was the
+      // second real bug this remediation pass found via a browser-level
+      // test: `.get(e.exerciseId)` here never matched
+      // `getSessionRecommendationsByExercise`'s own `exerciseGroupKey`-keyed
+      // map (whose null-group key is `"<exerciseId>:"`, WITH a trailing
+      // colon, never bare `exerciseId`) — cross-device resume of an
+      // IN-PROGRESS session's pending/decided recommendation was silently
+      // always `null`, for every exercise (grouped or not), regardless of
+      // what actually existed. Fixed by keying the lookup the same way
+      // every other consumer in this file already does.
+      const prescriptionSnapshot = e.prescription as PrescriptionSnapshot | null;
+      const scheme = prescriptionSnapshot?.snapshot.scheme;
+      let recommendations: RecommendationDto[] | undefined;
+      if (scheme?.type === "groups") {
+        recommendations = scheme.groups
+          .map((group, index) =>
+            recommendationForDeload(
+              session.isDeload,
+              resolveGroupRecommendation(
+                recommendationByExercise,
+                e.exerciseId,
+                group.key,
+                index === 0,
+                group.link !== undefined,
+              ) ?? null,
+            ),
+          )
+          .filter((r): r is RecommendationDto => r !== null);
+      }
+      return {
+        id: e.id,
+        exerciseId: e.exerciseId,
+        exerciseName: nameById.get(e.exerciseId) ?? "",
+        position: e.position,
+        source: e.source as "template" | "adhoc",
+        prescription: prescriptionSnapshot,
+        skipped: e.skipped,
+        notes: e.notes,
+        loadStepKg: loadStepById.get(e.exerciseId) ?? null,
+        recommendation: recommendationForDeload(
+          session.isDeload,
+          recommendationByExercise.get(exerciseGroupKey(e.exerciseId, null)) ?? null,
+        ),
+        ...(recommendations !== undefined ? { recommendations } : {}),
+        // H-1 remediation — the slot's own frozen profile/load basis, already
+        // selected above as `e.measurementProfile`/`e.loadBasis`; previously
+        // dropped on the floor here, which is exactly what left a resumed
+        // non-`load_reps` session with no `measurement` to adopt.
+        measurement: {
+          profile: e.measurementProfile as MeasurementProfile,
+          loadBasis: e.loadBasis as LoadBasis | null,
+        },
+        sets: setsBySessionExercise.get(e.id) ?? [],
+      };
+    }),
   };
 }
 
@@ -578,20 +707,65 @@ export async function buildTodayBundle(
             const exercise = exerciseById.get(p.exerciseId);
             if (!exercise) continue; // exercise_id is RESTRICT, shouldn't happen
             const history = await getExerciseHistory(db, userId, p.exerciseId);
+            const scheme = (p.scheme as SetSchemeEnvelope).scheme;
+
+            // set-groups-architecture-evaluation.md §5.3 — one
+            // GroupSnapshotInputs per group, keyed by group key, with the
+            // C-1/D-6(a) bridge applied to the FIRST group's candidate list
+            // only (§5.6).
+            let groupInputs: Map<string, GroupSnapshotInputs> | undefined;
+            if (scheme.type === "groups") {
+              groupInputs = new Map();
+              scheme.groups.forEach((group, index) => {
+                const isFirstGroup = index === 0;
+                const candidates = history.map((h) =>
+                  toGroupCarryForwardCandidate(h, group.key, isFirstGroup),
+                );
+                const decisionChosen =
+                  decisionChosenByExercise.get(exerciseGroupKey(p.exerciseId, group.key)) ??
+                  (isFirstGroup
+                    ? (decisionChosenByExercise.get(exerciseGroupKey(p.exerciseId, null)) ?? null)
+                    : null);
+                groupInputs!.set(group.key, { carryForwardCandidates: candidates, decisionChosen });
+              });
+            }
+
             const snapshotData = buildPrescriptionSnapshotData(
               { id: exercise.id, name: exercise.name },
               {
-                scheme: (p.scheme as SetSchemeEnvelope).scheme,
+                scheme,
                 targetRir: p.targetRir as RirBand | null,
                 restSeconds: p.restSeconds,
                 progression: p.progression as ResolvedProgression,
                 baselineLoadKg: p.baselineLoadKg,
               },
               history.map(toCarryForwardCandidate),
-              decisionChosenByExercise.get(p.exerciseId) ?? null,
+              decisionChosenByExercise.get(exerciseGroupKey(p.exerciseId, null)) ?? null,
               effective.modifiers,
               exercise.loadStepKg,
+              groupInputs,
             );
+
+            // set-groups-architecture-evaluation.md §4.5/§5.3 — filtered to
+            // keys present in the CURRENT scheme (a removed group's pending
+            // record is never surfaced, §4.5's removed-group filter), with
+            // the first group falling back to a pre-conversion null-key
+            // pending record (C-1/D-6(a)).
+            let pendingRecommendations: RecommendationDto[] | undefined;
+            if (scheme.type === "groups") {
+              pendingRecommendations = [];
+              scheme.groups.forEach((group, index) => {
+                const rec = resolveGroupRecommendation(
+                  pendingByExercise,
+                  p.exerciseId,
+                  group.key,
+                  index === 0,
+                  group.link !== undefined,
+                );
+                if (rec) pendingRecommendations!.push(rec);
+              });
+            }
+
             entries.push({
               prescriptionId: p.id,
               exerciseId: exercise.id,
@@ -606,8 +780,12 @@ export async function buildTodayBundle(
               appliedModifiers: snapshotData.appliedModifiers,
               pendingRecommendation: recommendationForDeload(
                 effective.isDeload,
-                pendingByExercise.get(p.exerciseId) ?? null,
+                pendingByExercise.get(exerciseGroupKey(p.exerciseId, null)) ?? null,
               ),
+              ...(pendingRecommendations !== undefined
+                ? { pendingRecommendations: effective.isDeload ? [] : pendingRecommendations }
+                : {}),
+              ...(snapshotData.groupPrefills ? { groupPrefills: snapshotData.groupPrefills } : {}),
               previousPerformance: history
                 .filter((h) => !h.isDeload)
                 .slice(0, PREVIOUS_PERFORMANCE_LIMIT)

@@ -11,8 +11,10 @@ import { describe, expect, it } from "vitest";
 import { schemeTypesForProfile, strategyIdsForProfile } from "@/ui/prescriptions/formOptions";
 
 describe("schemeTypesForProfile", () => {
-  it("offers fixed and repRange for load_reps (unchanged Release 1 behaviour)", () => {
-    expect(schemeTypesForProfile("load_reps")).toEqual(["fixed", "repRange"]);
+  // set-groups-architecture-evaluation.md §8 — `groups` is additive for
+  // `load_reps` (Stage A); every other Release 1 option is unchanged.
+  it("offers fixed, repRange and groups for load_reps", () => {
+    expect(schemeTypesForProfile("load_reps")).toEqual(["fixed", "repRange", "groups"]);
   });
 
   // Valid unlock: a load_distance exercise is offered distanceRounds, which
