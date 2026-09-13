@@ -43,7 +43,7 @@ the [pending iOS evaluation](reviews/ios-beta-distribution-evaluation.md), not d
 | [PI-009](#pi-009) | Account data export — selected product feature |
 | [PI-010](#pi-010) | Backup posture and demonstrated recovery — selected engineering task |
 | [PI-011](#pi-011) | Dashboard v2 — selected; scope/design before implementation |
-| [PI-012](#pi-012) | Set Groups — architecture verified, owner decisions accepted; A then B, joint release |
+| [PI-012](#pi-012) | Set Groups — A+B built, verified and deployed together, 2026-09-13; iPhone acceptance outstanding |
 | [PI-013](#pi-013) | e1RM Release B — deferred behind existing usage/design gates |
 | [PI-014](#pi-014) | Optional daily check-in reminder — accepted idea, scope/platform unselected |
 | [PI-015](#pi-015) | Set-rest timer — accepted idea, behavior/platform design-gated |
@@ -654,14 +654,18 @@ Inputs: [v1 verification](reviews/metrics-dashboard-remediation-verification-2.m
 
 ## PI-012 — Set Groups and linked back-offs
 
-**Status: Architecture verified; D-1…D-6 accepted by the owner on 2026-09-12.**
+**Status: Built, independently verified and deployed, 2026-09-13 (commit `9ff7253`).**
 Binding [owner addendum](reviews/set-groups-architecture-evaluation.md#19-owner-decisions--accepted-2026-09-12):
 explicit stored group attribution; independent progression for independent groups;
 A then B as verified build stages with a joint release; performed-only percentage
 links with user-entered percentages, nearest-step rounding and manual overrides;
 one backward hop without chains; legacy history bridged to the first group.
 This supersedes the earlier exclusions and open-choice wording preserved below.
-No implementation, production migration or deployment is claimed complete.
+Independently reviewed and remediated across four passes (F-1…F-9, V-1…V-3, W-1…W-3), ending
+[VERIFIED — READY FOR SET GROUPS A+B RELEASE CLOSEOUT](reviews/set-groups-supersession-verification.md);
+see the [release closeout](reviews/set-groups-release-closeout.md) for exact scope, deployment
+evidence and open limitations. Migration `0014` applied to production. iPhone device acceptance is
+outstanding and is not claimed complete.
 
 **Historical scope and rationale (superseded where the owner addendum differs):**
 Owner clarification, 2026-09-11: introduce generic ordered Set Groups within one exercise

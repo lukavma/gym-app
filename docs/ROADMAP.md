@@ -40,10 +40,10 @@ if a material real-use defect appears.
 - [PI-003](BACKLOG.md#pi-003)'s routine foundation is delivered; automatic composition/seeded content
   remains deferred with its research gate. [PI-005](BACKLOG.md#pi-005)'s profile foundation is complete;
   further athletic features/catalog expansion need real demand.
-- [PI-012 Set Groups](BACKLOG.md#pi-012): architecture verified and D-1…D-6 accepted on 2026-09-12
-  ([owner addendum](reviews/set-groups-architecture-evaluation.md#19-owner-decisions--accepted-2026-09-12)).
-  Build and verify A (groups), then B (performed-only percentage links), for a joint release.
-  This settles feature scope and internal sequencing; it does not claim delivery or reprioritize export.
+- [PI-012 Set Groups](BACKLOG.md#pi-012): A (groups) and B (performed-only percentage links) built,
+  independently verified and deployed together as one joint release, 2026-09-13, commit `9ff7253`
+  (see the [release closeout](reviews/set-groups-release-closeout.md)). iPhone device acceptance is
+  outstanding and is not claimed here.
 - Multiuser/Easy Auth stays deferred; the [pilot analysis](reviews/post-p10-roadmap-evaluation.md)
   remains reference material. No orchestration platform, new skills or automation framework is selected.
 
